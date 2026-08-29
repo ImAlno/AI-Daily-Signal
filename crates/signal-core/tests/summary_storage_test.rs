@@ -1,6 +1,6 @@
 use signal_core::{
-    AiSummaryFields, AttemptOutcome, BudgetDecision, GenerationFailureKind, GenerationStatus,
-    ProviderKind, SignalError, Store, SummarySettings,
+    AiSummaryFields, AttemptOutcome, BudgetDecision, GenerationFailureKind, GenerationOutcomeKind,
+    GenerationStatus, ProviderKind, SignalError, Store, SummarySettings,
 };
 
 #[test]
@@ -271,6 +271,114 @@ fn finalized_costs_replace_reservations_and_finalization_is_strictly_idempotent(
 }
 
 #[test]
+fn charged_zero_and_uncharged_failures_are_conflicting_outcomes() {
+    let fixture = signal_core::test_support::shared_budget_store(1_000);
+    let attempt_id = uuid::Uuid::from_u128(13);
+    fixture
+        .store
+        .reserve_generation(
+            &fixture.profile,
+            attempt_id,
+            fixture.now,
+            100,
+            fixture.expires_at,
+        )
+        .unwrap();
+    let finalized_at = fixture.now + chrono::Duration::seconds(2);
+    let charged_zero = AttemptOutcome::FailedCharged {
+        category: GenerationFailureKind::Timeout,
+        cost_microusd: 0,
+    };
+    let original = fixture
+        .store
+        .finalize_generation(attempt_id, finalized_at, charged_zero.clone())
+        .unwrap();
+    assert_eq!(
+        original.final_outcome,
+        Some(GenerationOutcomeKind::FailedCharged)
+    );
+
+    assert!(matches!(
+        fixture.store.finalize_generation(
+            attempt_id,
+            finalized_at,
+            AttemptOutcome::FailedUncharged {
+                category: GenerationFailureKind::Timeout,
+            },
+        ),
+        Err(SignalError::Storage(_))
+    ));
+    assert_eq!(
+        fixture
+            .store
+            .finalize_generation(attempt_id, finalized_at, charged_zero)
+            .unwrap(),
+        original
+    );
+}
+
+#[test]
+fn daily_limit_outside_sqlites_integer_range_is_a_checked_error() {
+    let store = signal_core::test_support::temporary_store();
+    let persisted = signal_core::test_support::model_profile("wide-cap", ProviderKind::OpenAi);
+    store.create_model_profile(&persisted).unwrap();
+    let mut supplied = persisted.clone();
+    supplied.limits.max_daily_cost_microusd = Some(u64::MAX);
+    supplied.limits.input_cost_microusd_per_million = Some(1);
+    supplied.limits.output_cost_microusd_per_million = Some(1);
+    let attempt_id = uuid::Uuid::from_u128(14);
+    let now = signal_core::test_support::fixed_now();
+
+    assert!(matches!(
+        store.reserve_generation(
+            &supplied,
+            attempt_id,
+            now,
+            1,
+            now + chrono::Duration::minutes(1),
+        ),
+        Err(SignalError::Serialization(_))
+    ));
+    assert!(matches!(
+        store
+            .reserve_generation(
+                &persisted,
+                attempt_id,
+                now,
+                1,
+                now + chrono::Duration::minutes(1),
+            )
+            .unwrap(),
+        BudgetDecision::Reserved(_)
+    ));
+}
+
+#[test]
+fn finalized_attempt_rows_require_an_explicit_outcome_disposition() {
+    let fixture = signal_core::test_support::version_two_database();
+    let store = Store::open(&fixture.path).unwrap();
+    drop(store);
+    let connection = rusqlite::Connection::open(&fixture.path).unwrap();
+    let now = signal_core::test_support::fixed_now().to_rfc3339();
+
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO generation_attempts (
+                     id, profile_id, provider, model, endpoint, dialect, usage_date, status,
+                     final_outcome, estimated_cost_microusd, actual_cost_microusd, input_tokens,
+                     output_tokens, failure_kind, reserved_at, expires_at, finalized_at
+                 ) VALUES (
+                     ?1, NULL, 'open_ai', 'fixture-model', NULL, NULL, '2026-08-29', 'failed',
+                     NULL, 1, 0, NULL, NULL, 'timeout', ?2, ?2, ?2
+                 )",
+                rusqlite::params![uuid::Uuid::from_u128(15).hyphenated().to_string(), now],
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn expired_reservations_are_ignored_and_uncapped_profiles_are_still_accounted() {
     let fixture = signal_core::test_support::shared_budget_store(1_000);
     fixture
@@ -445,6 +553,17 @@ fn failure_categories_have_stable_snake_case_values() {
         assert_eq!(
             serde_json::from_str::<GenerationFailureKind>(&format!("\"{expected}\"")).unwrap(),
             kind
+        );
+    }
+
+    for (outcome, expected) in [
+        (GenerationOutcomeKind::Completed, "completed"),
+        (GenerationOutcomeKind::FailedCharged, "failed_charged"),
+        (GenerationOutcomeKind::FailedUncharged, "failed_uncharged"),
+    ] {
+        assert_eq!(
+            serde_json::to_string(&outcome).unwrap(),
+            format!("\"{expected}\"")
         );
     }
 }

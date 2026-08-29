@@ -80,6 +80,35 @@ pub enum GenerationStatus {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationOutcomeKind {
+    Completed,
+    FailedCharged,
+    FailedUncharged,
+}
+
+impl GenerationOutcomeKind {
+    pub(crate) fn as_storage(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::FailedCharged => "failed_charged",
+            Self::FailedUncharged => "failed_uncharged",
+        }
+    }
+
+    pub(crate) fn from_storage(value: &str) -> Result<Self> {
+        match value {
+            "completed" => Ok(Self::Completed),
+            "failed_charged" => Ok(Self::FailedCharged),
+            "failed_uncharged" => Ok(Self::FailedUncharged),
+            _ => Err(SignalError::Serialization(format!(
+                "invalid generation outcome kind {value:?}"
+            ))),
+        }
+    }
+}
+
 impl GenerationStatus {
     pub(crate) fn as_storage(self) -> &'static str {
         match self {
@@ -155,6 +184,7 @@ pub struct GenerationAttempt {
     pub dialect: Option<ApiDialect>,
     pub usage_date: NaiveDate,
     pub status: GenerationStatus,
+    pub final_outcome: Option<GenerationOutcomeKind>,
     pub estimated_cost_microusd: u64,
     pub actual_cost_microusd: Option<u64>,
     pub input_tokens: Option<u64>,

@@ -31,8 +31,8 @@ pub use pipeline::{
 pub use storage::{RefreshRun, Store, StoreStatus};
 pub use summaries::{
     AiSummaryFields, AttemptOutcome, BudgetDecision, BudgetReservation, GenerationAttempt,
-    GenerationFailureKind, GenerationReport, GenerationStatus, SummarySettings, SummaryVariant,
-    summary_cache_key,
+    GenerationFailureKind, GenerationOutcomeKind, GenerationReport, GenerationStatus,
+    SummarySettings, SummaryVariant, summary_cache_key,
 };
 
 #[cfg(any(test, feature = "test-support"))]

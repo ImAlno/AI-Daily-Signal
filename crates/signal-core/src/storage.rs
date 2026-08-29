@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AiSummaryFields, ApiDialect, AttemptOutcome, Briefing, BriefingItem, BudgetDecision,
-    BudgetReservation, CredentialRef, GenerationAttempt, GenerationFailureKind, GenerationStatus,
-    ModelProfile, ProfileLimits, ProviderKind, Result, ScoreBreakdown, SignalError, Story,
-    SummarySettings, SummaryVariant,
+    BudgetReservation, CredentialRef, GenerationAttempt, GenerationFailureKind,
+    GenerationOutcomeKind, GenerationStatus, ModelProfile, ProfileLimits, ProviderKind, Result,
+    ScoreBreakdown, SignalError, Story, SummarySettings, SummaryVariant,
 };
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/001_initial.sql");
@@ -34,7 +34,7 @@ const SUMMARY_VARIANT_COLUMNS: &str = "
     generated_at";
 
 const GENERATION_ATTEMPT_COLUMNS: &str = "
-    id, profile_id, provider, model, endpoint, dialect, usage_date, status,
+    id, profile_id, provider, model, endpoint, dialect, usage_date, status, final_outcome,
     estimated_cost_microusd, actual_cost_microusd, input_tokens, output_tokens, failure_kind,
     reserved_at, expires_at, finalized_at";
 
@@ -268,6 +268,11 @@ impl Store {
             ));
         }
         let estimate = integer_as_i64(estimated_cost_microusd)?;
+        let daily_limit = profile
+            .limits
+            .max_daily_cost_microusd
+            .map(integer_as_i64)
+            .transpose()?;
         let usage_date = now.date_naive();
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -293,11 +298,7 @@ impl Store {
         let projected = committed_or_reserved.checked_add(estimate).ok_or_else(|| {
             SignalError::Storage("daily generation budget arithmetic overflow".to_owned())
         })?;
-        if profile
-            .limits
-            .max_daily_cost_microusd
-            .is_some_and(|limit| projected > i64::try_from(limit).unwrap_or(i64::MAX))
-        {
+        if daily_limit.is_some_and(|limit| projected > limit) {
             transaction.commit()?;
             return Ok(BudgetDecision::Exhausted);
         }
@@ -305,10 +306,10 @@ impl Store {
         transaction.execute(
             "INSERT INTO generation_attempts (
                  id, profile_id, provider, model, endpoint, dialect, usage_date, status,
-                 estimated_cost_microusd, actual_cost_microusd, input_tokens, output_tokens,
-                 failure_kind, reserved_at, expires_at, finalized_at
+                 final_outcome, estimated_cost_microusd, actual_cost_microusd, input_tokens,
+                 output_tokens, failure_kind, reserved_at, expires_at, finalized_at
              ) VALUES (
-                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'reserved', ?8, NULL, NULL, NULL, NULL,
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'reserved', NULL, ?8, NULL, NULL, NULL, NULL,
                  ?9, ?10, NULL
              )",
             params![
@@ -345,11 +346,12 @@ impl Store {
         let connection = self.connect()?;
         let changed = connection.execute(
             "UPDATE generation_attempts SET
-                 status = ?1, actual_cost_microusd = ?2, input_tokens = ?3,
-                 output_tokens = ?4, failure_kind = ?5, finalized_at = ?6
-             WHERE id = ?7 AND status = 'reserved'",
+                 status = ?1, final_outcome = ?2, actual_cost_microusd = ?3, input_tokens = ?4,
+                 output_tokens = ?5, failure_kind = ?6, finalized_at = ?7
+             WHERE id = ?8 AND status = 'reserved'",
             params![
                 finalized.status.as_storage(),
+                finalized.final_outcome.as_storage(),
                 finalized.actual_cost,
                 finalized.input_tokens,
                 finalized.output_tokens,
@@ -364,6 +366,7 @@ impl Store {
             .ok_or_else(|| SignalError::NotFound(format!("generation attempt {attempt_id}")))?;
         if changed == 0
             && (attempt.status != finalized.status
+                || attempt.final_outcome != Some(finalized.final_outcome)
                 || attempt.actual_cost_microusd
                     != Some(integer_as_u64(finalized.actual_cost, "actual cost")?)
                 || attempt.input_tokens
@@ -937,19 +940,21 @@ fn generation_attempt_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredGen
         dialect: row.get(5)?,
         usage_date: row.get(6)?,
         status: row.get(7)?,
-        estimated_cost_microusd: row.get(8)?,
-        actual_cost_microusd: row.get(9)?,
-        input_tokens: row.get(10)?,
-        output_tokens: row.get(11)?,
-        failure_kind: row.get(12)?,
-        reserved_at: row.get(13)?,
-        expires_at: row.get(14)?,
-        finalized_at: row.get(15)?,
+        final_outcome: row.get(8)?,
+        estimated_cost_microusd: row.get(9)?,
+        actual_cost_microusd: row.get(10)?,
+        input_tokens: row.get(11)?,
+        output_tokens: row.get(12)?,
+        failure_kind: row.get(13)?,
+        reserved_at: row.get(14)?,
+        expires_at: row.get(15)?,
+        finalized_at: row.get(16)?,
     })
 }
 
 struct FinalizedValues {
     status: GenerationStatus,
+    final_outcome: GenerationOutcomeKind,
     actual_cost: i64,
     input_tokens: Option<i64>,
     output_tokens: Option<i64>,
@@ -964,6 +969,7 @@ fn finalized_values(outcome: &AttemptOutcome) -> Result<FinalizedValues> {
             cost_microusd,
         } => Ok(FinalizedValues {
             status: GenerationStatus::Completed,
+            final_outcome: GenerationOutcomeKind::Completed,
             actual_cost: integer_as_i64(*cost_microusd)?,
             input_tokens: optional_integer_as_i64(*input_tokens)?,
             output_tokens: optional_integer_as_i64(*output_tokens)?,
@@ -974,6 +980,7 @@ fn finalized_values(outcome: &AttemptOutcome) -> Result<FinalizedValues> {
             cost_microusd,
         } => Ok(FinalizedValues {
             status: GenerationStatus::Failed,
+            final_outcome: GenerationOutcomeKind::FailedCharged,
             actual_cost: integer_as_i64(*cost_microusd)?,
             input_tokens: None,
             output_tokens: None,
@@ -981,6 +988,7 @@ fn finalized_values(outcome: &AttemptOutcome) -> Result<FinalizedValues> {
         }),
         AttemptOutcome::FailedUncharged { category } => Ok(FinalizedValues {
             status: GenerationStatus::Failed,
+            final_outcome: GenerationOutcomeKind::FailedUncharged,
             actual_cost: 0,
             input_tokens: None,
             output_tokens: None,
@@ -1255,6 +1263,7 @@ struct StoredGenerationAttempt {
     dialect: Option<String>,
     usage_date: String,
     status: String,
+    final_outcome: Option<String>,
     estimated_cost_microusd: i64,
     actual_cost_microusd: Option<i64>,
     input_tokens: Option<i64>,
@@ -1286,6 +1295,11 @@ impl StoredGenerationAttempt {
             usage_date: NaiveDate::parse_from_str(&self.usage_date, "%Y-%m-%d")
                 .map_err(|error| SignalError::Serialization(error.to_string()))?,
             status: GenerationStatus::from_storage(&self.status)?,
+            final_outcome: self
+                .final_outcome
+                .as_deref()
+                .map(GenerationOutcomeKind::from_storage)
+                .transpose()?,
             estimated_cost_microusd: integer_as_u64(
                 self.estimated_cost_microusd,
                 "estimated cost",
