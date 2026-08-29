@@ -37,7 +37,7 @@ impl OpenAiProvider {
         let valid_origin = matches!(origin.scheme(), "http" | "https")
             && origin
                 .host_str()
-                .is_some_and(crate::models::is_literal_loopback_host)
+                .is_some_and(crate::models::is_literal_loopback_ip_host)
             && origin.username().is_empty()
             && origin.password().is_none()
             && origin.path() == "/"

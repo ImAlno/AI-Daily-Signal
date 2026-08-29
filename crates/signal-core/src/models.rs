@@ -377,6 +377,14 @@ pub(crate) fn is_literal_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
+pub(crate) fn is_literal_loopback_ip_host(host: &str) -> bool {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host == "127.0.0.1" || host == "::1"
+}
+
 fn valid_environment_variable(value: &str) -> bool {
     let mut characters = value.chars();
     matches!(characters.next(), Some('_' | 'A'..='Z' | 'a'..='z'))

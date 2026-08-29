@@ -122,9 +122,10 @@ async fn official_messages_maps_the_wire_contract_and_concatenates_text_blocks()
 }
 
 #[test]
-fn official_test_origin_rejects_external_and_nonroot_origins_before_any_request() {
+fn official_test_origin_accepts_only_numeric_loopback_root_origins_before_any_request() {
     for origin in [
         "https://SENTINEL-EXTERNAL.example",
+        "http://localhost",
         "https://localhost/not-an-origin",
         "https://credential@localhost/",
     ] {
@@ -134,6 +135,10 @@ fn official_test_origin_rejects_external_and_nonroot_origins_before_any_request(
         assert_eq!(failure.kind(), ProviderFailureKind::Transport);
         assert_eq!(failure.charge_status(), RequestChargeStatus::NotSent);
         assert!(!format!("{failure:?} {failure}").contains("SENTINEL"));
+    }
+
+    for origin in ["http://127.0.0.1:8181", "http://[::1]:8181"] {
+        assert!(AnthropicProvider::official_for_test(origin).is_ok());
     }
 }
 

@@ -159,14 +159,20 @@ async fn official_responses_maps_the_wire_contract_and_collects_all_output_text(
 }
 
 #[test]
-fn official_test_origin_rejects_a_nonloopback_host_before_any_request() {
-    let failure = OpenAiProvider::official_for_test("https://SENTINEL-EXTERNAL.example")
-        .err()
-        .expect("external test origins must be rejected");
+fn official_test_origin_accepts_only_numeric_loopback_root_origins_before_any_request() {
+    for origin in ["https://SENTINEL-EXTERNAL.example", "http://localhost"] {
+        let failure = OpenAiProvider::official_for_test(origin)
+            .err()
+            .expect("unsafe test origins must be rejected");
 
-    assert_eq!(failure.kind(), ProviderFailureKind::Transport);
-    assert_eq!(failure.charge_status(), RequestChargeStatus::NotSent);
-    assert!(!format!("{failure:?} {failure}").contains("SENTINEL"));
+        assert_eq!(failure.kind(), ProviderFailureKind::Transport);
+        assert_eq!(failure.charge_status(), RequestChargeStatus::NotSent);
+        assert!(!format!("{failure:?} {failure}").contains("SENTINEL"));
+    }
+
+    for origin in ["http://127.0.0.1:8181", "http://[::1]:8181"] {
+        assert!(OpenAiProvider::official_for_test(origin).is_ok());
+    }
 }
 
 #[tokio::test]
