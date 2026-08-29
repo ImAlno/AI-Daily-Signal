@@ -8,6 +8,7 @@ mod models;
 mod paths;
 mod pipeline;
 mod storage;
+mod summaries;
 
 pub use app::{RefreshReport, SignalApp, TodayView};
 pub use collector::{CollectionReport, FeedCollector, SourceFailure};
@@ -28,15 +29,23 @@ pub use pipeline::{
     score_story, smart_summary,
 };
 pub use storage::{RefreshRun, Store, StoreStatus};
+pub use summaries::{
+    AiSummaryFields, AttemptOutcome, BudgetDecision, BudgetReservation, GenerationAttempt,
+    GenerationFailureKind, GenerationReport, GenerationStatus, SummarySettings, SummaryVariant,
+    summary_cache_key,
+};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
+    use std::path::PathBuf;
+
     use chrono::{DateTime, NaiveDate, TimeZone, Utc};
     use sha2::Digest;
 
     use crate::{
-        AppConfig, Briefing, BriefingConfig, BriefingItem, Candidate, CredentialRef, ModelProfile,
-        ProfileLimits, ProviderKind, ScoreBreakdown, Source, SourceKind, Store, Story,
+        AiSummaryFields, ApiDialect, AppConfig, Briefing, BriefingConfig, BriefingItem, Candidate,
+        CredentialRef, ModelProfile, ProfileLimits, ProviderKind, ScoreBreakdown, Source,
+        SourceKind, Store, Story, SummarySettings, SummaryVariant,
     };
 
     pub use crate::credentials::MemoryCredentialStore;
@@ -84,6 +93,7 @@ pub mod test_support {
                 section: "top_signals".to_owned(),
                 is_stale: false,
                 story: story_fixture("story-1"),
+                selected_summary: None,
             }],
         }
     }
@@ -95,7 +105,9 @@ pub mod test_support {
     pub fn temporary_store() -> Store {
         let path =
             std::env::temp_dir().join(format!("signal-core-{}.sqlite3", uuid::Uuid::new_v4()));
-        Store::open(path).unwrap()
+        let store = Store::open(path).unwrap();
+        store.upsert_stories(&[story_fixture("story-1")]).unwrap();
+        store
     }
 
     pub fn model_profile(name: &str, provider: ProviderKind) -> ModelProfile {
@@ -117,6 +129,183 @@ pub mod test_support {
             created_at: fixed_now(),
             updated_at: fixed_now(),
         }
+    }
+
+    pub fn summary_variant(
+        id_seed: &str,
+        cache_key: &str,
+        generated_at: DateTime<Utc>,
+    ) -> SummaryVariant {
+        let digest = sha2::Sha256::digest(id_seed.as_bytes());
+        SummaryVariant {
+            id: uuid::Uuid::from_slice(&digest[..16]).unwrap(),
+            story_id: "story-1".to_owned(),
+            profile_id: None,
+            provider: ProviderKind::OpenAi,
+            model: "fixture-model".to_owned(),
+            endpoint: None,
+            dialect: None,
+            prompt_version: "ai-summary-v1".to_owned(),
+            cache_key: cache_key.to_owned(),
+            fields: AiSummaryFields {
+                what_happened: "A deterministic event happened.".to_owned(),
+                why_it_matters: "It has a deterministic consequence.".to_owned(),
+                caveat: Some("The fixture is synthetic.".to_owned()),
+            },
+            input_tokens: Some(120),
+            output_tokens: Some(60),
+            cost_microusd: 42,
+            generated_at,
+        }
+    }
+
+    #[derive(Clone)]
+    pub struct CacheIdentityFixture {
+        pub story: Story,
+        pub profile: ModelProfile,
+        pub prompt_version: String,
+        pub settings: SummarySettings,
+    }
+
+    impl CacheIdentityFixture {
+        pub fn each_single_field_changed(&self) -> Vec<Self> {
+            let mut values = Vec::new();
+            macro_rules! changed {
+                ($body:expr) => {{
+                    let mut fixture = self.clone();
+                    $body(&mut fixture);
+                    values.push(fixture);
+                }};
+            }
+            changed!(|fixture: &mut Self| fixture.story.title = "A changed title".to_owned());
+            changed!(|fixture: &mut Self| fixture.story.excerpt = "Changed excerpt".to_owned());
+            changed!(|fixture: &mut Self| fixture.story.canonical_url =
+                "https://example.com/changed".to_owned());
+            changed!(|fixture: &mut Self| fixture.story.published_at =
+                Some(fixed_now() + chrono::Duration::seconds(1)));
+            changed!(|fixture: &mut Self| fixture.story.category = "releases".to_owned());
+            changed!(|fixture: &mut Self| fixture.story.source_ids =
+                vec!["example-feed".to_owned(), "second-feed".to_owned()]);
+            changed!(|fixture: &mut Self| fixture.profile.provider = ProviderKind::Anthropic);
+            changed!(|fixture: &mut Self| fixture.profile.endpoint =
+                Some("https://other.example/v1".parse().unwrap()));
+            changed!(|fixture: &mut Self| fixture.profile.model = "opaque/model:changed".to_owned());
+            changed!(
+                |fixture: &mut Self| fixture.profile.dialect = Some(ApiDialect::ChatCompletions)
+            );
+            changed!(|fixture: &mut Self| fixture.prompt_version = "ai-summary-v2".to_owned());
+            changed!(|fixture: &mut Self| fixture.profile.limits.max_output_tokens += 1);
+            changed!(|fixture: &mut Self| fixture.settings.what_happened_max_chars += 1);
+            changed!(|fixture: &mut Self| fixture.settings.why_it_matters_max_chars += 1);
+            changed!(|fixture: &mut Self| fixture.settings.caveat_max_chars += 1);
+            values
+        }
+    }
+
+    pub fn cache_identity_fixture() -> CacheIdentityFixture {
+        let mut profile = model_profile("cache", ProviderKind::OpenAiCompatible);
+        profile.endpoint = Some("https://provider.example/v1/".parse().unwrap());
+        profile.dialect = Some(ApiDialect::Responses);
+        profile.credential = CredentialRef::Environment {
+            variable: "CACHE_API_KEY".to_owned(),
+        };
+        CacheIdentityFixture {
+            story: story_fixture("story-1"),
+            profile,
+            prompt_version: "ai-summary-v1".to_owned(),
+            settings: SummarySettings::default(),
+        }
+    }
+
+    pub struct SharedBudgetStore {
+        pub store: Store,
+        pub profile: ModelProfile,
+        pub now: DateTime<Utc>,
+        pub expires_at: DateTime<Utc>,
+    }
+
+    pub fn shared_budget_store(daily_limit_microusd: u64) -> SharedBudgetStore {
+        let path = std::env::temp_dir().join(format!(
+            "signal-core-budget-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let store = Store::open(path).unwrap();
+        let mut profile = model_profile("budget", ProviderKind::OpenAi);
+        profile.limits.max_daily_cost_microusd = Some(daily_limit_microusd);
+        profile.limits.input_cost_microusd_per_million = Some(1);
+        profile.limits.output_cost_microusd_per_million = Some(1);
+        store.create_model_profile(&profile).unwrap();
+        let now = fixed_now();
+        SharedBudgetStore {
+            store,
+            profile,
+            now,
+            expires_at: now + chrono::Duration::minutes(10),
+        }
+    }
+
+    pub struct VersionTwoDatabase {
+        pub path: PathBuf,
+    }
+
+    pub fn version_two_database() -> VersionTwoDatabase {
+        let path =
+            std::env::temp_dir().join(format!("signal-core-v2-{}.sqlite3", uuid::Uuid::new_v4()));
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .unwrap();
+        connection
+            .execute_batch(include_str!(
+                "../migrations/002_briefing_item_staleness.sql"
+            ))
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?1), (2, ?1)",
+                [fixed_now().to_rfc3339()],
+            )
+            .unwrap();
+        let story = story_fixture("story-1");
+        connection
+            .execute(
+                "INSERT INTO stories (
+                     id, title, canonical_url, excerpt, category, published_at, source_ids_json,
+                     score_json, smart_summary, is_read, is_saved, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10)",
+                rusqlite::params![
+                    story.id,
+                    story.title,
+                    story.canonical_url,
+                    story.excerpt,
+                    story.category,
+                    story.published_at.map(|value| value.to_rfc3339()),
+                    serde_json::to_string(&story.source_ids).unwrap(),
+                    serde_json::to_string(&story.score).unwrap(),
+                    story.smart_summary,
+                    fixed_now().to_rfc3339(),
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO briefings (date, generated_at) VALUES (?1, ?2)",
+                rusqlite::params![
+                    fixed_now().date_naive().to_string(),
+                    fixed_now().to_rfc3339()
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO briefing_items (
+                     briefing_date, story_id, position, section, is_stale
+                 ) VALUES (?1, 'story-1', 1, 'top_signals', 0)",
+                [fixed_now().date_naive().to_string()],
+            )
+            .unwrap();
+        drop(connection);
+        VersionTwoDatabase { path }
     }
 
     pub fn config_fixture() -> AppConfig {

@@ -193,6 +193,7 @@ pub fn assemble_briefing(stories: &[Story], config: &AppConfig, now: DateTime<Ut
             section: "top_signals".to_owned(),
             is_stale: false,
             story: story.clone(),
+            selected_summary: None,
         })
         .collect();
 

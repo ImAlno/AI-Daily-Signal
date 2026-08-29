@@ -58,6 +58,8 @@ pub struct BriefingItem {
     #[serde(default)]
     pub is_stale: bool,
     pub story: Story,
+    #[serde(default)]
+    pub selected_summary: Option<crate::SummaryVariant>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

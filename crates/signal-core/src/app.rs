@@ -280,6 +280,7 @@ mod tests {
                 section: "top_signals".to_owned(),
                 is_stale: false,
                 story: fresh_story,
+                selected_summary: None,
             }],
         };
         let mut carried_story = test_support::story_fixture("failed-story");
@@ -298,12 +299,14 @@ mod tests {
                     section: "top_signals".to_owned(),
                     is_stale: false,
                     story: carried_story,
+                    selected_summary: None,
                 },
                 BriefingItem {
                     position: 2,
                     section: "top_signals".to_owned(),
                     is_stale: false,
                     story: duplicate_story,
+                    selected_summary: None,
                 },
             ],
         };

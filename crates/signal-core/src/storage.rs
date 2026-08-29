@@ -5,8 +5,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiDialect, Briefing, BriefingItem, CredentialRef, ModelProfile, ProfileLimits, ProviderKind,
-    Result, ScoreBreakdown, SignalError, Story,
+    AiSummaryFields, ApiDialect, AttemptOutcome, Briefing, BriefingItem, BudgetDecision,
+    BudgetReservation, CredentialRef, GenerationAttempt, GenerationFailureKind, GenerationStatus,
+    ModelProfile, ProfileLimits, ProviderKind, Result, ScoreBreakdown, SignalError, Story,
+    SummarySettings, SummaryVariant,
 };
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/001_initial.sql");
@@ -16,6 +18,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/002_briefing_item_staleness.sql"),
     ),
     (3, include_str!("../migrations/003_model_profiles.sql")),
+    (4, include_str!("../migrations/004_ai_summaries.sql")),
 ];
 
 const MODEL_PROFILE_COLUMNS: &str = "
@@ -24,6 +27,16 @@ const MODEL_PROFILE_COLUMNS: &str = "
     max_daily_cost_microusd, input_cost_microusd_per_million,
     output_cost_microusd_per_million, max_output_tokens, timeout_seconds, max_retries,
     created_at, updated_at";
+
+const SUMMARY_VARIANT_COLUMNS: &str = "
+    id, story_id, profile_id, provider, model, endpoint, dialect, prompt_version, cache_key,
+    what_happened, why_it_matters, caveat, input_tokens, output_tokens, cost_microusd,
+    generated_at";
+
+const GENERATION_ATTEMPT_COLUMNS: &str = "
+    id, profile_id, provider, model, endpoint, dialect, usage_date, status,
+    estimated_cost_microusd, actual_cost_microusd, input_tokens, output_tokens, failure_kind,
+    reserved_at, expires_at, finalized_at";
 
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -111,16 +124,27 @@ impl Store {
             [briefing.date.to_string()],
         )?;
         for item in &briefing.items {
+            if let Some(selected) = &item.selected_summary
+                && selected.story_id != item.story.id
+            {
+                return Err(SignalError::Storage(
+                    "selected summary belongs to a different story".to_owned(),
+                ));
+            }
             transaction.execute(
                 "INSERT INTO briefing_items (
-                     briefing_date, story_id, position, section, is_stale
-                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                     briefing_date, story_id, position, section, is_stale,
+                     selected_summary_variant_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     briefing.date.to_string(),
                     item.story.id,
                     i64::from(item.position),
                     item.section,
-                    item.is_stale
+                    item.is_stale,
+                    item.selected_summary
+                        .as_ref()
+                        .map(|variant| variant.id.hyphenated().to_string()),
                 ],
             )?;
         }
@@ -168,6 +192,238 @@ impl Store {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         insert_model_profile(&transaction, &profile)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn find_cached_summary(&self, cache_key: &str) -> Result<Option<SummaryVariant>> {
+        let connection = self.connect()?;
+        find_summary_variant(
+            &connection,
+            &format!(
+                "SELECT {SUMMARY_VARIANT_COLUMNS} FROM summary_variants
+                 WHERE cache_key = ?1 ORDER BY generated_at DESC, id ASC LIMIT 1"
+            ),
+            cache_key,
+        )
+    }
+
+    pub fn insert_summary_variant(&self, variant: &SummaryVariant) -> Result<()> {
+        validate_summary_variant(variant)?;
+        let connection = self.connect()?;
+        connection.execute(
+            "INSERT INTO summary_variants (
+                 id, story_id, profile_id, provider, model, endpoint, dialect, prompt_version,
+                 cache_key, what_happened, why_it_matters, caveat, input_tokens, output_tokens,
+                 cost_microusd, generated_at
+             ) VALUES (
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+             )",
+            params![
+                variant.id.hyphenated().to_string(),
+                variant.story_id,
+                variant
+                    .profile_id
+                    .map(|value| value.hyphenated().to_string()),
+                variant.provider.as_storage(),
+                variant.model,
+                variant.endpoint,
+                variant.dialect.map(ApiDialect::as_storage),
+                variant.prompt_version,
+                variant.cache_key,
+                variant.fields.what_happened,
+                variant.fields.why_it_matters,
+                variant.fields.caveat,
+                optional_integer_as_i64(variant.input_tokens)?,
+                optional_integer_as_i64(variant.output_tokens)?,
+                integer_as_i64(variant.cost_microusd)?,
+                variant.generated_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_summary_variants(&self, story_id: &str) -> Result<Vec<SummaryVariant>> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT {SUMMARY_VARIANT_COLUMNS} FROM summary_variants
+             WHERE story_id = ?1 ORDER BY generated_at DESC, id ASC"
+        ))?;
+        let rows = statement.query_map([story_id], summary_variant_row)?;
+        collect_summary_variants(rows)
+    }
+
+    pub fn reserve_generation(
+        &self,
+        profile: &ModelProfile,
+        attempt_id: uuid::Uuid,
+        now: DateTime<Utc>,
+        estimated_cost_microusd: u64,
+        expires_at: DateTime<Utc>,
+    ) -> Result<BudgetDecision> {
+        profile.validate()?;
+        if expires_at <= now {
+            return Err(SignalError::InvalidConfiguration(
+                "budget reservation expiry must be after its start".to_owned(),
+            ));
+        }
+        let estimate = integer_as_i64(estimated_cost_microusd)?;
+        let usage_date = now.date_naive();
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let committed_or_reserved = transaction.query_row(
+            "SELECT COALESCE(SUM(
+                 CASE
+                     WHEN status = 'reserved' AND expires_at > ?3
+                         THEN estimated_cost_microusd
+                     WHEN status IN ('completed', 'failed')
+                         THEN actual_cost_microusd
+                     ELSE 0
+                 END
+             ), 0)
+             FROM generation_attempts
+             WHERE profile_id = ?1 AND usage_date = ?2",
+            params![
+                profile.id.hyphenated().to_string(),
+                usage_date.to_string(),
+                now.to_rfc3339(),
+            ],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let projected = committed_or_reserved.checked_add(estimate).ok_or_else(|| {
+            SignalError::Storage("daily generation budget arithmetic overflow".to_owned())
+        })?;
+        if profile
+            .limits
+            .max_daily_cost_microusd
+            .is_some_and(|limit| projected > i64::try_from(limit).unwrap_or(i64::MAX))
+        {
+            transaction.commit()?;
+            return Ok(BudgetDecision::Exhausted);
+        }
+
+        transaction.execute(
+            "INSERT INTO generation_attempts (
+                 id, profile_id, provider, model, endpoint, dialect, usage_date, status,
+                 estimated_cost_microusd, actual_cost_microusd, input_tokens, output_tokens,
+                 failure_kind, reserved_at, expires_at, finalized_at
+             ) VALUES (
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'reserved', ?8, NULL, NULL, NULL, NULL,
+                 ?9, ?10, NULL
+             )",
+            params![
+                attempt_id.hyphenated().to_string(),
+                profile.id.hyphenated().to_string(),
+                profile.provider.as_storage(),
+                profile.model,
+                profile.endpoint.as_ref().map(url::Url::as_str),
+                profile.dialect.map(ApiDialect::as_storage),
+                usage_date.to_string(),
+                estimate,
+                now.to_rfc3339(),
+                expires_at.to_rfc3339(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(BudgetDecision::Reserved(BudgetReservation {
+            attempt_id,
+            profile_id: profile.id,
+            usage_date,
+            estimated_cost_microusd,
+            reserved_at: now,
+            expires_at,
+        }))
+    }
+
+    pub fn finalize_generation(
+        &self,
+        attempt_id: uuid::Uuid,
+        finalized_at: DateTime<Utc>,
+        outcome: AttemptOutcome,
+    ) -> Result<GenerationAttempt> {
+        let finalized = finalized_values(&outcome)?;
+        let connection = self.connect()?;
+        let changed = connection.execute(
+            "UPDATE generation_attempts SET
+                 status = ?1, actual_cost_microusd = ?2, input_tokens = ?3,
+                 output_tokens = ?4, failure_kind = ?5, finalized_at = ?6
+             WHERE id = ?7 AND status = 'reserved'",
+            params![
+                finalized.status.as_storage(),
+                finalized.actual_cost,
+                finalized.input_tokens,
+                finalized.output_tokens,
+                finalized
+                    .failure_kind
+                    .map(GenerationFailureKind::as_storage),
+                finalized_at.to_rfc3339(),
+                attempt_id.hyphenated().to_string(),
+            ],
+        )?;
+        let attempt = find_generation_attempt(&connection, attempt_id)?
+            .ok_or_else(|| SignalError::NotFound(format!("generation attempt {attempt_id}")))?;
+        if changed == 0
+            && (attempt.status != finalized.status
+                || attempt.actual_cost_microusd
+                    != Some(integer_as_u64(finalized.actual_cost, "actual cost")?)
+                || attempt.input_tokens
+                    != finalized
+                        .input_tokens
+                        .map(|value| integer_as_u64(value, "input tokens"))
+                        .transpose()?
+                || attempt.output_tokens
+                    != finalized
+                        .output_tokens
+                        .map(|value| integer_as_u64(value, "output tokens"))
+                        .transpose()?
+                || attempt.failure_kind != finalized.failure_kind
+                || attempt.finalized_at != Some(finalized_at))
+        {
+            return Err(SignalError::Storage(format!(
+                "generation attempt {attempt_id} has a conflicting finalization"
+            )));
+        }
+        Ok(attempt)
+    }
+
+    pub fn select_story_summary(
+        &self,
+        story_id: &str,
+        summary_variant_id: uuid::Uuid,
+    ) -> Result<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let variant_story_id = transaction
+            .query_row(
+                "SELECT story_id FROM summary_variants WHERE id = ?1",
+                [summary_variant_id.hyphenated().to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                SignalError::NotFound(format!("summary variant {summary_variant_id}"))
+            })?;
+        if variant_story_id != story_id {
+            return Err(SignalError::Storage(
+                "summary variant belongs to a different story".to_owned(),
+            ));
+        }
+        let changed = transaction.execute(
+            "UPDATE briefing_items SET selected_summary_variant_id = ?1
+             WHERE briefing_date = (
+                 SELECT bi.briefing_date FROM briefing_items bi
+                 JOIN briefings b ON b.date = bi.briefing_date
+                 WHERE bi.story_id = ?2
+                 ORDER BY b.generated_at DESC, b.date DESC, bi.position ASC
+                 LIMIT 1
+             ) AND story_id = ?2",
+            params![summary_variant_id.hyphenated().to_string(), story_id],
+        )?;
+        if changed == 0 {
+            return Err(SignalError::NotFound(format!(
+                "briefing item for story {story_id}"
+            )));
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -324,7 +580,7 @@ impl Store {
         };
 
         let mut statement = connection.prepare(
-            "SELECT bi.position, bi.section, bi.is_stale,
+            "SELECT bi.position, bi.section, bi.is_stale, bi.selected_summary_variant_id,
                     s.id, s.title, s.canonical_url, s.excerpt, s.category, s.published_at,
                     s.source_ids_json, s.score_json, s.smart_summary, s.is_read, s.is_saved
              FROM briefing_items bi
@@ -333,9 +589,30 @@ impl Store {
              ORDER BY bi.position ASC",
         )?;
         let rows = statement.query_map([date.to_string()], briefing_item_row)?;
-        let mut items = Vec::new();
+        let mut stored_items = Vec::new();
         for row in rows {
-            items.push(row?.into_briefing_item()?);
+            stored_items.push(row?);
+        }
+        drop(statement);
+        let mut items = Vec::new();
+        for item in stored_items {
+            let selected_summary = item
+                .selected_summary_variant_id
+                .as_deref()
+                .map(|id| {
+                    find_summary_variant(
+                        &connection,
+                        &format!(
+                            "SELECT {SUMMARY_VARIANT_COLUMNS} FROM summary_variants WHERE id = ?1"
+                        ),
+                        id,
+                    )?
+                    .ok_or_else(|| {
+                        SignalError::Serialization(format!("missing selected summary variant {id}"))
+                    })
+                })
+                .transpose()?;
+            items.push(item.into_briefing_item(selected_summary)?);
         }
 
         Ok(Some(Briefing {
@@ -564,6 +841,10 @@ fn integer_as_i64(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|error| SignalError::Serialization(error.to_string()))
 }
 
+fn optional_integer_as_i64(value: Option<u64>) -> Result<Option<i64>> {
+    value.map(integer_as_i64).transpose()
+}
+
 fn count_as_i64(count: usize) -> Result<i64> {
     i64::try_from(count).map_err(|error| SignalError::Serialization(error.to_string()))
 }
@@ -583,6 +864,161 @@ fn collect_model_profiles(
         profiles.push(row?.into_model_profile()?);
     }
     Ok(profiles)
+}
+
+fn collect_summary_variants(
+    rows: rusqlite::MappedRows<
+        '_,
+        impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<StoredSummaryVariant>,
+    >,
+) -> Result<Vec<SummaryVariant>> {
+    let mut variants = Vec::new();
+    for row in rows {
+        variants.push(row?.into_summary_variant()?);
+    }
+    Ok(variants)
+}
+
+fn find_summary_variant(
+    connection: &Connection,
+    sql: &str,
+    parameter: &str,
+) -> Result<Option<SummaryVariant>> {
+    connection
+        .query_row(sql, [parameter], summary_variant_row)
+        .optional()?
+        .map(StoredSummaryVariant::into_summary_variant)
+        .transpose()
+}
+
+fn summary_variant_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSummaryVariant> {
+    Ok(StoredSummaryVariant {
+        id: row.get(0)?,
+        story_id: row.get(1)?,
+        profile_id: row.get(2)?,
+        provider: row.get(3)?,
+        model: row.get(4)?,
+        endpoint: row.get(5)?,
+        dialect: row.get(6)?,
+        prompt_version: row.get(7)?,
+        cache_key: row.get(8)?,
+        what_happened: row.get(9)?,
+        why_it_matters: row.get(10)?,
+        caveat: row.get(11)?,
+        input_tokens: row.get(12)?,
+        output_tokens: row.get(13)?,
+        cost_microusd: row.get(14)?,
+        generated_at: row.get(15)?,
+    })
+}
+
+fn find_generation_attempt(
+    connection: &Connection,
+    attempt_id: uuid::Uuid,
+) -> Result<Option<GenerationAttempt>> {
+    connection
+        .query_row(
+            &format!("SELECT {GENERATION_ATTEMPT_COLUMNS} FROM generation_attempts WHERE id = ?1"),
+            [attempt_id.hyphenated().to_string()],
+            generation_attempt_row,
+        )
+        .optional()?
+        .map(StoredGenerationAttempt::into_generation_attempt)
+        .transpose()
+}
+
+fn generation_attempt_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredGenerationAttempt> {
+    Ok(StoredGenerationAttempt {
+        id: row.get(0)?,
+        profile_id: row.get(1)?,
+        provider: row.get(2)?,
+        model: row.get(3)?,
+        endpoint: row.get(4)?,
+        dialect: row.get(5)?,
+        usage_date: row.get(6)?,
+        status: row.get(7)?,
+        estimated_cost_microusd: row.get(8)?,
+        actual_cost_microusd: row.get(9)?,
+        input_tokens: row.get(10)?,
+        output_tokens: row.get(11)?,
+        failure_kind: row.get(12)?,
+        reserved_at: row.get(13)?,
+        expires_at: row.get(14)?,
+        finalized_at: row.get(15)?,
+    })
+}
+
+struct FinalizedValues {
+    status: GenerationStatus,
+    actual_cost: i64,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    failure_kind: Option<GenerationFailureKind>,
+}
+
+fn finalized_values(outcome: &AttemptOutcome) -> Result<FinalizedValues> {
+    match outcome {
+        AttemptOutcome::Completed {
+            input_tokens,
+            output_tokens,
+            cost_microusd,
+        } => Ok(FinalizedValues {
+            status: GenerationStatus::Completed,
+            actual_cost: integer_as_i64(*cost_microusd)?,
+            input_tokens: optional_integer_as_i64(*input_tokens)?,
+            output_tokens: optional_integer_as_i64(*output_tokens)?,
+            failure_kind: None,
+        }),
+        AttemptOutcome::FailedCharged {
+            category,
+            cost_microusd,
+        } => Ok(FinalizedValues {
+            status: GenerationStatus::Failed,
+            actual_cost: integer_as_i64(*cost_microusd)?,
+            input_tokens: None,
+            output_tokens: None,
+            failure_kind: Some(*category),
+        }),
+        AttemptOutcome::FailedUncharged { category } => Ok(FinalizedValues {
+            status: GenerationStatus::Failed,
+            actual_cost: 0,
+            input_tokens: None,
+            output_tokens: None,
+            failure_kind: Some(*category),
+        }),
+    }
+}
+
+fn validate_summary_variant(variant: &SummaryVariant) -> Result<()> {
+    let unrestricted = SummarySettings {
+        what_happened_max_chars: u32::MAX,
+        why_it_matters_max_chars: u32::MAX,
+        caveat_max_chars: u32::MAX,
+    };
+    variant.fields.validate(&unrestricted)?;
+    if variant.story_id.trim().is_empty()
+        || variant.model.trim().is_empty()
+        || variant.prompt_version.trim().is_empty()
+        || variant.cache_key.trim().is_empty()
+    {
+        return Err(SignalError::InvalidConfiguration(
+            "summary variant identity fields are required".to_owned(),
+        ));
+    }
+    if let Some(endpoint) = &variant.endpoint {
+        let endpoint = url::Url::parse(endpoint).map_err(|_| {
+            SignalError::InvalidConfiguration("summary endpoint snapshot is invalid".to_owned())
+        })?;
+        if !endpoint.username().is_empty() || endpoint.password().is_some() {
+            return Err(SignalError::InvalidConfiguration(
+                "summary endpoint snapshot must not contain user info".to_owned(),
+            ));
+        }
+    }
+    integer_as_i64(variant.cost_microusd)?;
+    optional_integer_as_i64(variant.input_tokens)?;
+    optional_integer_as_i64(variant.output_tokens)?;
+    Ok(())
 }
 
 fn model_profile_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredModelProfile> {
@@ -696,18 +1132,19 @@ fn briefing_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredBriefing
         position: row.get(0)?,
         section: row.get(1)?,
         is_stale: row.get(2)?,
+        selected_summary_variant_id: row.get(3)?,
         story: StoredStory {
-            id: row.get(3)?,
-            title: row.get(4)?,
-            canonical_url: row.get(5)?,
-            excerpt: row.get(6)?,
-            category: row.get(7)?,
-            published_at: row.get(8)?,
-            source_ids_json: row.get(9)?,
-            score_json: row.get(10)?,
-            smart_summary: row.get(11)?,
-            is_read: row.get(12)?,
-            is_saved: row.get(13)?,
+            id: row.get(4)?,
+            title: row.get(5)?,
+            canonical_url: row.get(6)?,
+            excerpt: row.get(7)?,
+            category: row.get(8)?,
+            published_at: row.get(9)?,
+            source_ids_json: row.get(10)?,
+            score_json: row.get(11)?,
+            smart_summary: row.get(12)?,
+            is_read: row.get(13)?,
+            is_saved: row.get(14)?,
         },
     })
 }
@@ -748,6 +1185,136 @@ struct StoredModelProfile {
     max_retries: i64,
     created_at: String,
     updated_at: String,
+}
+
+struct StoredSummaryVariant {
+    id: String,
+    story_id: String,
+    profile_id: Option<String>,
+    provider: String,
+    model: String,
+    endpoint: Option<String>,
+    dialect: Option<String>,
+    prompt_version: String,
+    cache_key: String,
+    what_happened: String,
+    why_it_matters: String,
+    caveat: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cost_microusd: i64,
+    generated_at: String,
+}
+
+impl StoredSummaryVariant {
+    fn into_summary_variant(self) -> Result<SummaryVariant> {
+        Ok(SummaryVariant {
+            id: uuid::Uuid::parse_str(&self.id)
+                .map_err(|error| SignalError::Serialization(error.to_string()))?,
+            story_id: self.story_id,
+            profile_id: self
+                .profile_id
+                .map(|value| uuid::Uuid::parse_str(&value))
+                .transpose()
+                .map_err(|error| SignalError::Serialization(error.to_string()))?,
+            provider: ProviderKind::from_storage(&self.provider)?,
+            model: self.model,
+            endpoint: self.endpoint,
+            dialect: self
+                .dialect
+                .as_deref()
+                .map(ApiDialect::from_storage)
+                .transpose()?,
+            prompt_version: self.prompt_version,
+            cache_key: self.cache_key,
+            fields: AiSummaryFields {
+                what_happened: self.what_happened,
+                why_it_matters: self.why_it_matters,
+                caveat: self.caveat,
+            },
+            input_tokens: self
+                .input_tokens
+                .map(|value| integer_as_u64(value, "input tokens"))
+                .transpose()?,
+            output_tokens: self
+                .output_tokens
+                .map(|value| integer_as_u64(value, "output tokens"))
+                .transpose()?,
+            cost_microusd: integer_as_u64(self.cost_microusd, "summary cost")?,
+            generated_at: parse_datetime(&self.generated_at)?,
+        })
+    }
+}
+
+struct StoredGenerationAttempt {
+    id: String,
+    profile_id: Option<String>,
+    provider: String,
+    model: String,
+    endpoint: Option<String>,
+    dialect: Option<String>,
+    usage_date: String,
+    status: String,
+    estimated_cost_microusd: i64,
+    actual_cost_microusd: Option<i64>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    failure_kind: Option<String>,
+    reserved_at: String,
+    expires_at: String,
+    finalized_at: Option<String>,
+}
+
+impl StoredGenerationAttempt {
+    fn into_generation_attempt(self) -> Result<GenerationAttempt> {
+        Ok(GenerationAttempt {
+            id: uuid::Uuid::parse_str(&self.id)
+                .map_err(|error| SignalError::Serialization(error.to_string()))?,
+            profile_id: self
+                .profile_id
+                .map(|value| uuid::Uuid::parse_str(&value))
+                .transpose()
+                .map_err(|error| SignalError::Serialization(error.to_string()))?,
+            provider: ProviderKind::from_storage(&self.provider)?,
+            model: self.model,
+            endpoint: self.endpoint,
+            dialect: self
+                .dialect
+                .as_deref()
+                .map(ApiDialect::from_storage)
+                .transpose()?,
+            usage_date: NaiveDate::parse_from_str(&self.usage_date, "%Y-%m-%d")
+                .map_err(|error| SignalError::Serialization(error.to_string()))?,
+            status: GenerationStatus::from_storage(&self.status)?,
+            estimated_cost_microusd: integer_as_u64(
+                self.estimated_cost_microusd,
+                "estimated cost",
+            )?,
+            actual_cost_microusd: self
+                .actual_cost_microusd
+                .map(|value| integer_as_u64(value, "actual cost"))
+                .transpose()?,
+            input_tokens: self
+                .input_tokens
+                .map(|value| integer_as_u64(value, "input tokens"))
+                .transpose()?,
+            output_tokens: self
+                .output_tokens
+                .map(|value| integer_as_u64(value, "output tokens"))
+                .transpose()?,
+            failure_kind: self
+                .failure_kind
+                .as_deref()
+                .map(GenerationFailureKind::from_storage)
+                .transpose()?,
+            reserved_at: parse_datetime(&self.reserved_at)?,
+            expires_at: parse_datetime(&self.expires_at)?,
+            finalized_at: self
+                .finalized_at
+                .map(|value| parse_datetime(&value))
+                .transpose()?,
+        })
+    }
 }
 
 impl StoredModelProfile {
@@ -856,16 +1423,18 @@ struct StoredBriefingItem {
     position: u32,
     section: String,
     is_stale: bool,
+    selected_summary_variant_id: Option<String>,
     story: StoredStory,
 }
 
 impl StoredBriefingItem {
-    fn into_briefing_item(self) -> Result<BriefingItem> {
+    fn into_briefing_item(self, selected_summary: Option<SummaryVariant>) -> Result<BriefingItem> {
         Ok(BriefingItem {
             position: self.position,
             section: self.section,
             is_stale: self.is_stale,
             story: self.story.into_story()?,
+            selected_summary,
         })
     }
 }
