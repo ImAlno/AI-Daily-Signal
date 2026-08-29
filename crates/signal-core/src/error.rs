@@ -10,8 +10,12 @@ pub enum SignalError {
     Network(#[from] reqwest::Error),
     #[error("feed parse error: {0}")]
     Feed(String),
+    #[error("refresh failed: {0}")]
+    Refresh(String),
     #[error("serialization error: {0}")]
     Serialization(String),
+    #[error("storage error: {0}")]
+    Storage(String),
     #[error("not found: {0}")]
     NotFound(String),
 }

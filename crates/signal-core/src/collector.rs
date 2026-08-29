@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{Candidate, Result, SignalError, Source, SourceKind};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct SourceFailure {
     pub source_id: String,
     pub message: String,

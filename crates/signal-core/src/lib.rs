@@ -1,3 +1,4 @@
+mod app;
 mod collector;
 mod config;
 mod domain;
@@ -6,6 +7,7 @@ mod paths;
 mod pipeline;
 mod storage;
 
+pub use app::{RefreshReport, SignalApp};
 pub use collector::{CollectionReport, FeedCollector, SourceFailure};
 pub use config::{AppConfig, BriefingConfig, ConfigRepository};
 pub use domain::{Briefing, BriefingItem, Candidate, ScoreBreakdown, Source, SourceKind, Story};
