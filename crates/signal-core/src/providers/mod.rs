@@ -1,3 +1,4 @@
+mod openai;
 mod parse;
 mod retry;
 
@@ -10,10 +11,11 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::{
-    AiSummaryFields, GenerationFailureKind, ModelProfile, ProviderKind, ResolvedCredential,
-    SignalError,
+    AiSummaryFields, ApiDialect, GenerationFailureKind, ModelProfile, ProviderKind,
+    ResolvedCredential, SignalError,
 };
 
+pub use openai::OpenAiProvider;
 pub use parse::{
     AI_SUMMARY_PROMPT_VERSION, AiSummaryPrompt, build_ai_summary_prompt, parse_ai_summary,
 };
@@ -30,10 +32,12 @@ pub struct ProviderRequest {
     pub(crate) story_id: String,
     pub(crate) model: String,
     pub(crate) endpoint: Option<Url>,
+    pub(crate) dialect: Option<ApiDialect>,
     pub(crate) system_text: String,
     pub(crate) user_text: String,
     pub(crate) timeout: Duration,
     pub(crate) max_output_tokens: u32,
+    pub(crate) max_retries: u32,
 }
 
 impl ProviderRequest {
@@ -54,10 +58,12 @@ impl ProviderRequest {
             story_id: story_id.into(),
             model: profile.model.trim().to_owned(),
             endpoint: profile.endpoint.clone(),
+            dialect: profile.dialect,
             system_text: prompt.system_text,
             user_text: prompt.user_text,
             timeout: Duration::from_secs(profile.limits.timeout_seconds),
             max_output_tokens: profile.limits.max_output_tokens,
+            max_retries: profile.limits.max_retries,
         })
     }
 }
@@ -68,6 +74,7 @@ impl fmt::Debug for ProviderRequest {
             .debug_struct("ProviderRequest")
             .field("timeout", &self.timeout)
             .field("max_output_tokens", &self.max_output_tokens)
+            .field("max_retries", &self.max_retries)
             .finish_non_exhaustive()
     }
 }
