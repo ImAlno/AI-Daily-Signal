@@ -21,7 +21,7 @@ fn request_with_limits(max_retries: u32, timeout_seconds: u64) -> ProviderReques
         "official-anthropic",
         signal_core::ProviderKind::Anthropic,
     );
-    profile.model = "opaque/model:2026-08-29".to_owned();
+    profile.model = "  opaque/model:2026-08-29  ".to_owned();
     profile.limits.max_output_tokens = 321;
     profile.limits.max_retries = max_retries;
     profile.limits.timeout_seconds = timeout_seconds;
@@ -108,7 +108,7 @@ async fn official_messages_maps_the_wire_contract_and_concatenates_text_blocks()
     assert_eq!(
         body,
         json!({
-            "model": "opaque/model:2026-08-29",
+            "model": "  opaque/model:2026-08-29  ",
             "system": "Return the required summary JSON.",
             "messages": [{
                 "role": "user",

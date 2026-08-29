@@ -213,7 +213,7 @@ async fn parse_http_response(response: Response) -> Result<ProviderResponse, Ret
             .filter_map(|part| part.text)
             .collect::<String>();
         if text.trim().is_empty() {
-            continue;
+            return Err(malformed_attempt());
         }
         if selected_text
             .as_ref()
@@ -236,15 +236,18 @@ async fn parse_http_response(response: Response) -> Result<ProviderResponse, Ret
 }
 
 fn normalized_model_for_route(model: &str) -> Result<&str, ProviderFailure> {
+    if model.chars().any(char::is_control) {
+        return Err(not_sent(ProviderFailureKind::ProviderRejected));
+    }
     let model = model.strip_prefix("models/").unwrap_or(model);
-    if model.is_empty() || model.chars().any(char::is_control) {
+    if model.is_empty() {
         return Err(not_sent(ProviderFailureKind::ProviderRejected));
     }
     Ok(model)
 }
 
 pub(super) fn valid_profile_model(model: &str) -> bool {
-    normalized_model_for_route(model.trim()).is_ok()
+    normalized_model_for_route(model).is_ok()
 }
 
 fn encode_path_segment(value: &str) -> String {

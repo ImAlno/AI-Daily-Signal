@@ -20,7 +20,7 @@ fn official_request_with_retries(max_retries: u32) -> ProviderRequest {
         "official-openai",
         signal_core::ProviderKind::OpenAi,
     );
-    profile.model = "opaque/model:2026-08-29".to_owned();
+    profile.model = "  opaque/model:2026-08-29  ".to_owned();
     profile.limits.max_output_tokens = 321;
     profile.limits.max_retries = max_retries;
     let prompt = signal_core::AiSummaryPrompt {
@@ -119,7 +119,7 @@ async fn official_responses_maps_the_wire_contract_and_collects_all_output_text(
         format!("Bearer {SENTINEL_SECRET}")
     );
     let body: Value = serde_json::from_slice(&request.body).unwrap();
-    assert_eq!(body["model"], "opaque/model:2026-08-29");
+    assert_eq!(body["model"], "  opaque/model:2026-08-29  ");
     assert_eq!(body["instructions"], "Return the required summary JSON.");
     assert_eq!(
         body["input"],

@@ -218,7 +218,13 @@ shared_runtime_test!(
 
 #[test]
 fn provider_request_rejects_invalid_mutated_gemini_profiles_before_credentials() {
-    for model in ["models/", "models/gemini\nunsafe", "gemini\u{0085}unsafe"] {
+    for model in [
+        "models/",
+        "\ngemini-2.5-flash",
+        "gemini-2.5-flash\n",
+        "models/gemini\nunsafe",
+        "gemini\u{0085}unsafe",
+    ] {
         let mut profile = signal_core::test_support::model_profile(
             "invalid-gemini",
             signal_core::ProviderKind::Gemini,
@@ -553,35 +559,32 @@ shared_runtime_test!(no_or_blank_usable_candidate_text_is_rejected, {
     }
 });
 
-shared_runtime_test!(
-    blank_candidates_are_ignored_and_identical_usable_candidates_are_unambiguous,
-    {
-        let server = MockServer::start().await;
-        let text = r#"{"what_happened":"Matching candidates.","why_it_matters":"They are not ambiguous.","caveat":null}"#;
-        Mock::given(method("POST"))
-            .and(path("/v1beta/models/gemini-2.5-flash:generateContent"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "candidates": [
-                    {"content": {"parts": [{"text": "  "}]}, "finishReason": "STOP"},
-                    {"content": {"parts": [{"text": text}]}, "finishReason": "STOP"},
-                    {"content": {"parts": [{"text": text}]}, "finishReason": "STOP"}
-                ]
-            })))
-            .mount(&server)
-            .await;
+shared_runtime_test!(mixed_blank_and_valid_candidates_are_rejected, {
+    let server = MockServer::start().await;
+    let text = r#"{"what_happened":"Matching candidates.","why_it_matters":"They are not ambiguous.","caveat":null}"#;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/models/gemini-2.5-flash:generateContent"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "candidates": [
+                {"content": {"parts": [{"text": "  "}]}, "finishReason": "STOP"},
+                {"content": {"parts": [{"text": text}]}, "finishReason": "STOP"},
+                {"content": {"parts": [{"text": text}]}, "finishReason": "STOP"}
+            ]
+        })))
+        .mount(&server)
+        .await;
 
-        let response = GeminiProvider::official_for_test(server.uri())
-            .unwrap()
-            .generate(
-                &request_for_model("gemini-2.5-flash"),
-                &ResolvedCredential::new(SENTINEL_SECRET.to_owned()),
-            )
-            .await
-            .unwrap();
+    let failure = GeminiProvider::official_for_test(server.uri())
+        .unwrap()
+        .generate(
+            &request_for_model("gemini-2.5-flash"),
+            &ResolvedCredential::new(SENTINEL_SECRET.to_owned()),
+        )
+        .await
+        .unwrap_err();
 
-        assert_eq!(response.fields.what_happened, "Matching candidates.");
-    }
-);
+    assert_eq!(failure.kind(), ProviderFailureKind::MalformedOutput);
+});
 
 shared_runtime_test!(
     malformed_and_oversized_success_bodies_use_the_shared_cap_and_remain_redacted,

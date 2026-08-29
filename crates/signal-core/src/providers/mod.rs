@@ -62,7 +62,7 @@ impl ProviderRequest {
 
         Ok(Self {
             story_id: story_id.into(),
-            model: profile.model.trim().to_owned(),
+            model: profile.model.clone(),
             endpoint: profile.endpoint.clone(),
             dialect: profile.dialect,
             system_text: prompt.system_text,
