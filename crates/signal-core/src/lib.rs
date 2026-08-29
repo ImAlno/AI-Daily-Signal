@@ -7,6 +7,7 @@ mod error;
 mod models;
 mod paths;
 mod pipeline;
+mod providers;
 mod storage;
 mod summaries;
 
@@ -27,6 +28,12 @@ pub use paths::AppPaths;
 pub use pipeline::{
     Pipeline, PipelineOutput, assemble_briefing, deduplicate, normalize_title, normalize_url,
     score_story, smart_summary,
+};
+pub use providers::{
+    AI_SUMMARY_PROMPT_VERSION, AiSummaryPrompt, ProviderFailure, ProviderFailureKind,
+    ProviderRegistry, ProviderRequest, ProviderResponse, ProviderUsage, RequestChargeStatus,
+    RetryAttemptFailure, RetryPolicy, RetrySleeper, SummaryProvider, TokioRetrySleeper,
+    build_ai_summary_prompt, parse_ai_summary, retry_provider_operation,
 };
 pub use storage::{RefreshRun, Store, StoreStatus};
 pub use summaries::{
@@ -49,6 +56,16 @@ pub mod test_support {
     };
 
     pub use crate::credentials::MemoryCredentialStore;
+
+    pub fn provider_http_client() -> Result<reqwest::Client, crate::ProviderFailure> {
+        crate::providers::shared_http_client()
+    }
+
+    pub async fn read_provider_json(
+        response: reqwest::Response,
+    ) -> Result<serde_json::Value, crate::ProviderFailure> {
+        crate::providers::read_json_response(response).await
+    }
 
     pub fn feed_source(id: &str) -> Source {
         Source {

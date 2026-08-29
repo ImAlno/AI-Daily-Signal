@@ -20,6 +20,8 @@ pub enum SignalError {
     NotFound(String),
     #[error("{0}")]
     Credential(String),
+    #[error(transparent)]
+    Provider(#[from] crate::ProviderFailure),
 }
 
 pub type Result<T> = std::result::Result<T, SignalError>;

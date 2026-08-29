@@ -104,7 +104,10 @@ fn exit_code(error: &SignalError) -> i32 {
         SignalError::InvalidConfiguration(_)
         | SignalError::Io(_)
         | SignalError::Serialization(_) => 2,
-        SignalError::Network(_) | SignalError::Feed(_) | SignalError::Refresh(_) => 3,
+        SignalError::Network(_)
+        | SignalError::Feed(_)
+        | SignalError::Refresh(_)
+        | SignalError::Provider(_) => 3,
         SignalError::NotFound(_) => 4,
         SignalError::Database(_) | SignalError::Storage(_) | SignalError::Credential(_) => 5,
     }
@@ -119,6 +122,7 @@ fn display_error(error: &SignalError) -> String {
         SignalError::Network(_) | SignalError::Feed(_) | SignalError::Refresh(_) => {
             "Refresh failed".to_owned()
         }
+        SignalError::Provider(_) => "AI provider request failed".to_owned(),
         SignalError::NotFound(message) => message.clone(),
         SignalError::Database(_) | SignalError::Storage(_) => "Storage operation failed".to_owned(),
         SignalError::Credential(_) => "Credential operation failed".to_owned(),
