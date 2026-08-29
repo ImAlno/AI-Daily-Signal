@@ -1,0 +1,375 @@
+use std::{path::PathBuf, time::Duration};
+
+use chrono::{DateTime, NaiveDate, Utc};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use serde::{Deserialize, Serialize};
+
+use crate::{Briefing, BriefingItem, Result, ScoreBreakdown, SignalError, Story};
+
+const INITIAL_MIGRATION: &str = include_str!("../migrations/001_initial.sql");
+
+#[derive(Clone, Debug)]
+pub struct Store {
+    path: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoreStatus {
+    pub story_count: u64,
+    pub last_refresh_at: Option<DateTime<Utc>>,
+    pub data_generation: u64,
+}
+
+impl Store {
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let store = Self { path };
+        store.apply_migrations()?;
+        Ok(store)
+    }
+
+    pub fn upsert_stories(&self, stories: &[Story]) -> Result<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        upsert_stories_in_transaction(&transaction, stories)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn commit_refresh(&self, stories: &[Story], briefing: &Briefing) -> Result<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        upsert_stories_in_transaction(&transaction, stories)?;
+        transaction.execute(
+            "INSERT INTO briefings (date, generated_at) VALUES (?1, ?2)
+             ON CONFLICT(date) DO UPDATE SET generated_at = excluded.generated_at",
+            params![
+                briefing.date.to_string(),
+                briefing.generated_at.to_rfc3339()
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM briefing_items WHERE briefing_date = ?1",
+            [briefing.date.to_string()],
+        )?;
+        for item in &briefing.items {
+            transaction.execute(
+                "INSERT INTO briefing_items (briefing_date, story_id, position, section)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    briefing.date.to_string(),
+                    item.story.id,
+                    i64::from(item.position),
+                    item.section
+                ],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE metadata SET value = CAST(value AS INTEGER) + 1
+             WHERE key = 'data_generation'",
+            [],
+        )?;
+
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn load_briefing(&self, date: NaiveDate) -> Result<Option<Briefing>> {
+        let connection = self.connect()?;
+        let generated_at = connection
+            .query_row(
+                "SELECT generated_at FROM briefings WHERE date = ?1",
+                [date.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+
+        let Some(generated_at) = generated_at else {
+            return Ok(None);
+        };
+
+        let mut statement = connection.prepare(
+            "SELECT bi.position, bi.section,
+                    s.id, s.title, s.canonical_url, s.excerpt, s.category, s.published_at,
+                    s.source_ids_json, s.score_json, s.smart_summary, s.is_read, s.is_saved
+             FROM briefing_items bi
+             JOIN stories s ON s.id = bi.story_id
+             WHERE bi.briefing_date = ?1
+             ORDER BY bi.position ASC",
+        )?;
+        let rows = statement.query_map([date.to_string()], briefing_item_row)?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row?.into_briefing_item()?);
+        }
+
+        Ok(Some(Briefing {
+            date,
+            generated_at: parse_datetime(&generated_at)?,
+            items,
+        }))
+    }
+
+    pub fn list_latest(&self) -> Result<Vec<Story>> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT id, title, canonical_url, excerpt, category, published_at,
+                    source_ids_json, score_json, smart_summary, is_read, is_saved
+             FROM stories
+             ORDER BY published_at IS NULL ASC, published_at DESC, updated_at DESC, id ASC",
+        )?;
+        collect_stories(statement.query_map([], story_row)?)
+    }
+
+    pub fn list_saved(&self) -> Result<Vec<Story>> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT id, title, canonical_url, excerpt, category, published_at,
+                    source_ids_json, score_json, smart_summary, is_read, is_saved
+             FROM stories
+             WHERE is_saved = 1
+             ORDER BY published_at IS NULL ASC, published_at DESC, updated_at DESC, id ASC",
+        )?;
+        collect_stories(statement.query_map([], story_row)?)
+    }
+
+    pub fn find_story(&self, id: &str) -> Result<Option<Story>> {
+        let connection = self.connect()?;
+        let stored = connection
+            .query_row(
+                "SELECT id, title, canonical_url, excerpt, category, published_at,
+                        source_ids_json, score_json, smart_summary, is_read, is_saved
+                 FROM stories WHERE id = ?1",
+                [id],
+                story_row,
+            )
+            .optional()?;
+        stored.map(StoredStory::into_story).transpose()
+    }
+
+    pub fn set_saved(&self, id: &str, saved: bool) -> Result<()> {
+        let connection = self.connect()?;
+        let changed = connection.execute(
+            "UPDATE stories SET is_saved = ?1 WHERE id = ?2",
+            params![saved, id],
+        )?;
+        if changed == 0 {
+            return Err(SignalError::NotFound(format!("story {id}")));
+        }
+        Ok(())
+    }
+
+    pub fn status(&self) -> Result<StoreStatus> {
+        let connection = self.connect()?;
+        let story_count = connection.query_row("SELECT COUNT(*) FROM stories", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
+        let last_refresh_at = connection
+            .query_row("SELECT MAX(generated_at) FROM briefings", [], |row| {
+                row.get::<_, Option<String>>(0)
+            })?
+            .map(|value| parse_datetime(&value))
+            .transpose()?;
+        let data_generation = connection.query_row(
+            "SELECT value FROM metadata WHERE key = 'data_generation'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+
+        Ok(StoreStatus {
+            story_count: u64::try_from(story_count)
+                .map_err(|error| SignalError::Serialization(error.to_string()))?,
+            last_refresh_at,
+            data_generation: data_generation.parse().map_err(
+                |error: std::num::ParseIntError| SignalError::Serialization(error.to_string()),
+            )?,
+        })
+    }
+
+    pub fn journal_mode(&self) -> Result<String> {
+        let connection = self.connect()?;
+        connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .map_err(Into::into)
+    }
+
+    fn connect(&self) -> Result<Connection> {
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        Ok(connection)
+    }
+
+    fn apply_migrations(&self) -> Result<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(INITIAL_MIGRATION)?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+             VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            [],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+fn upsert_stories_in_transaction(transaction: &Transaction<'_>, stories: &[Story]) -> Result<()> {
+    let updated_at = Utc::now().to_rfc3339();
+    let mut statement = transaction.prepare(
+        "INSERT INTO stories (
+             id, title, canonical_url, excerpt, category, published_at, source_ids_json,
+             score_json, smart_summary, is_read, is_saved, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(id) DO UPDATE SET
+             title = excluded.title,
+             canonical_url = excluded.canonical_url,
+             excerpt = excluded.excerpt,
+             category = excluded.category,
+             published_at = excluded.published_at,
+             source_ids_json = excluded.source_ids_json,
+             score_json = excluded.score_json,
+             smart_summary = excluded.smart_summary,
+             updated_at = excluded.updated_at",
+    )?;
+
+    for story in stories {
+        let source_ids = serialize(&story.source_ids)?;
+        let score = serialize(&story.score)?;
+        statement.execute(params![
+            story.id,
+            story.title,
+            story.canonical_url,
+            story.excerpt,
+            story.category,
+            story.published_at.map(|value| value.to_rfc3339()),
+            source_ids,
+            score,
+            story.smart_summary,
+            story.is_read,
+            story.is_saved,
+            updated_at,
+        ])?;
+    }
+    Ok(())
+}
+
+fn serialize<T: Serialize>(value: &T) -> Result<String> {
+    serde_json::to_string(value).map_err(|error| SignalError::Serialization(error.to_string()))
+}
+
+fn deserialize<T: for<'de> Deserialize<'de>>(value: &str) -> Result<T> {
+    serde_json::from_str(value).map_err(|error| SignalError::Serialization(error.to_string()))
+}
+
+fn parse_datetime(value: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|error| SignalError::Serialization(error.to_string()))
+}
+
+fn collect_stories(
+    rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<StoredStory>>,
+) -> Result<Vec<Story>> {
+    let mut stories = Vec::new();
+    for row in rows {
+        stories.push(row?.into_story()?);
+    }
+    Ok(stories)
+}
+
+fn story_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredStory> {
+    Ok(StoredStory {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        canonical_url: row.get(2)?,
+        excerpt: row.get(3)?,
+        category: row.get(4)?,
+        published_at: row.get(5)?,
+        source_ids_json: row.get(6)?,
+        score_json: row.get(7)?,
+        smart_summary: row.get(8)?,
+        is_read: row.get(9)?,
+        is_saved: row.get(10)?,
+    })
+}
+
+fn briefing_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredBriefingItem> {
+    Ok(StoredBriefingItem {
+        position: row.get(0)?,
+        section: row.get(1)?,
+        story: StoredStory {
+            id: row.get(2)?,
+            title: row.get(3)?,
+            canonical_url: row.get(4)?,
+            excerpt: row.get(5)?,
+            category: row.get(6)?,
+            published_at: row.get(7)?,
+            source_ids_json: row.get(8)?,
+            score_json: row.get(9)?,
+            smart_summary: row.get(10)?,
+            is_read: row.get(11)?,
+            is_saved: row.get(12)?,
+        },
+    })
+}
+
+struct StoredStory {
+    id: String,
+    title: String,
+    canonical_url: String,
+    excerpt: String,
+    category: String,
+    published_at: Option<String>,
+    source_ids_json: String,
+    score_json: String,
+    smart_summary: String,
+    is_read: bool,
+    is_saved: bool,
+}
+
+impl StoredStory {
+    fn into_story(self) -> Result<Story> {
+        Ok(Story {
+            id: self.id,
+            title: self.title,
+            canonical_url: self.canonical_url,
+            excerpt: self.excerpt,
+            category: self.category,
+            published_at: self
+                .published_at
+                .map(|value| parse_datetime(&value))
+                .transpose()?,
+            source_ids: deserialize(&self.source_ids_json)?,
+            score: deserialize::<ScoreBreakdown>(&self.score_json)?,
+            smart_summary: self.smart_summary,
+            is_read: self.is_read,
+            is_saved: self.is_saved,
+        })
+    }
+}
+
+struct StoredBriefingItem {
+    position: u32,
+    section: String,
+    story: StoredStory,
+}
+
+impl StoredBriefingItem {
+    fn into_briefing_item(self) -> Result<BriefingItem> {
+        Ok(BriefingItem {
+            position: self.position,
+            section: self.section,
+            story: self.story.into_story()?,
+        })
+    }
+}
