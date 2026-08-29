@@ -1844,6 +1844,7 @@ dependencies = [
  "chrono",
  "clap",
  "predicates",
+ "rusqlite",
  "serde",
  "serde_json",
  "signal-core",

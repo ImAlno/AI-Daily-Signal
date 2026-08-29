@@ -20,6 +20,14 @@ pub struct StoreStatus {
     pub data_generation: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RefreshRun {
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub successful_sources: u64,
+    pub failed_sources: u64,
+}
+
 impl Store {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
@@ -44,6 +52,31 @@ impl Store {
     }
 
     pub fn commit_refresh(&self, stories: &[Story], briefing: &Briefing) -> Result<()> {
+        self.commit_refresh_transaction(stories, briefing, None)
+    }
+
+    pub fn commit_refresh_with_counts(
+        &self,
+        stories: &[Story],
+        briefing: &Briefing,
+        successful_sources: usize,
+        failed_sources: usize,
+    ) -> Result<()> {
+        let successful_sources = count_as_i64(successful_sources)?;
+        let failed_sources = count_as_i64(failed_sources)?;
+        self.commit_refresh_transaction(
+            stories,
+            briefing,
+            Some((successful_sources, failed_sources)),
+        )
+    }
+
+    fn commit_refresh_transaction(
+        &self,
+        stories: &[Story],
+        briefing: &Briefing,
+        source_counts: Option<(i64, i64)>,
+    ) -> Result<()> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
@@ -77,9 +110,73 @@ impl Store {
              WHERE key = 'data_generation'",
             [],
         )?;
+        if let Some((successful_sources, failed_sources)) = source_counts {
+            insert_refresh_run(
+                &transaction,
+                briefing.generated_at,
+                successful_sources,
+                failed_sources,
+                None,
+            )?;
+        }
 
         transaction.commit()?;
         Ok(())
+    }
+
+    pub fn record_refresh_failure(
+        &self,
+        occurred_at: DateTime<Utc>,
+        failed_sources: usize,
+    ) -> Result<()> {
+        let failed_sources = count_as_i64(failed_sources)?;
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_refresh_run(
+            &transaction,
+            occurred_at,
+            0,
+            failed_sources,
+            Some(r#"{"kind":"all_sources_failed"}"#),
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn latest_refresh_run(&self) -> Result<Option<RefreshRun>> {
+        let connection = self.connect()?;
+        let stored = connection
+            .query_row(
+                "SELECT started_at, finished_at, successful_sources, failed_sources
+                 FROM refresh_runs
+                 ORDER BY id DESC
+                 LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        stored
+            .map(
+                |(started_at, finished_at, successful_sources, failed_sources)| {
+                    Ok(RefreshRun {
+                        started_at: parse_datetime(&started_at)?,
+                        finished_at: finished_at
+                            .map(|value| parse_datetime(&value))
+                            .transpose()?,
+                        successful_sources: count_as_u64(successful_sources)?,
+                        failed_sources: count_as_u64(failed_sources)?,
+                    })
+                },
+            )
+            .transpose()
     }
 
     pub fn load_briefing(&self, date: NaiveDate) -> Result<Option<Briefing>> {
@@ -221,6 +318,31 @@ impl Store {
         transaction.commit()?;
         Ok(())
     }
+}
+
+fn insert_refresh_run(
+    transaction: &Transaction<'_>,
+    occurred_at: DateTime<Utc>,
+    successful_sources: i64,
+    failed_sources: i64,
+    error_json: Option<&str>,
+) -> Result<()> {
+    let occurred_at = occurred_at.to_rfc3339();
+    transaction.execute(
+        "INSERT INTO refresh_runs (
+             started_at, finished_at, successful_sources, failed_sources, error_json
+         ) VALUES (?1, ?1, ?2, ?3, ?4)",
+        params![occurred_at, successful_sources, failed_sources, error_json],
+    )?;
+    Ok(())
+}
+
+fn count_as_i64(count: usize) -> Result<i64> {
+    i64::try_from(count).map_err(|error| SignalError::Serialization(error.to_string()))
+}
+
+fn count_as_u64(count: i64) -> Result<u64> {
+    u64::try_from(count).map_err(|error| SignalError::Serialization(error.to_string()))
 }
 
 fn upsert_stories_in_transaction(transaction: &Transaction<'_>, stories: &[Story]) -> Result<()> {

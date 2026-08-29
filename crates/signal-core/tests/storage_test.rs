@@ -84,3 +84,85 @@ fn saved_stories_are_listed_and_can_be_removed() {
     store.set_saved(&story.id, false).unwrap();
     assert!(store.list_saved().unwrap().is_empty());
 }
+
+#[test]
+fn counted_refresh_commit_persists_source_counts() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = signal_core::Store::open(temp.path().join("signal.sqlite3")).unwrap();
+    let briefing = signal_core::test_support::briefing_fixture();
+    let stories = briefing
+        .items
+        .iter()
+        .map(|item| item.story.clone())
+        .collect::<Vec<_>>();
+
+    store
+        .commit_refresh_with_counts(&stories, &briefing, 2, 1)
+        .unwrap();
+
+    let run = store.latest_refresh_run().unwrap().unwrap();
+    assert_eq!(run.started_at, briefing.generated_at);
+    assert_eq!(run.finished_at, Some(briefing.generated_at));
+    assert_eq!(run.successful_sources, 2);
+    assert_eq!(run.failed_sources, 1);
+}
+
+#[test]
+fn failed_refresh_run_does_not_change_the_cached_generation() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = signal_core::Store::open(temp.path().join("signal.sqlite3")).unwrap();
+    let briefing = signal_core::test_support::briefing_fixture();
+    let stories = briefing
+        .items
+        .iter()
+        .map(|item| item.story.clone())
+        .collect::<Vec<_>>();
+    store.commit_refresh(&stories, &briefing).unwrap();
+    let before = store.status().unwrap();
+
+    store
+        .record_refresh_failure(briefing.generated_at + chrono::Duration::minutes(5), 3)
+        .unwrap();
+
+    let after = store.status().unwrap();
+    assert_eq!(after.data_generation, before.data_generation);
+    assert_eq!(after.last_refresh_at, before.last_refresh_at);
+    assert_eq!(store.load_briefing(briefing.date).unwrap(), Some(briefing));
+    let run = store.latest_refresh_run().unwrap().unwrap();
+    assert_eq!(run.successful_sources, 0);
+    assert_eq!(run.failed_sources, 3);
+}
+
+#[test]
+fn refresh_bookkeeping_failure_rolls_back_the_briefing_commit() {
+    let temp = tempfile::tempdir().unwrap();
+    let database_path = temp.path().join("signal.sqlite3");
+    let store = signal_core::Store::open(&database_path).unwrap();
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_refresh_run
+             BEFORE INSERT ON refresh_runs
+             BEGIN
+                 SELECT RAISE(ABORT, 'fixture bookkeeping failure');
+             END;",
+        )
+        .unwrap();
+    let briefing = signal_core::test_support::briefing_fixture();
+    let stories = briefing
+        .items
+        .iter()
+        .map(|item| item.story.clone())
+        .collect::<Vec<_>>();
+
+    assert!(
+        store
+            .commit_refresh_with_counts(&stories, &briefing, 1, 0)
+            .is_err()
+    );
+
+    assert_eq!(store.status().unwrap().data_generation, 0);
+    assert!(store.load_briefing(briefing.date).unwrap().is_none());
+    assert!(store.find_story("story-1").unwrap().is_none());
+    assert!(store.latest_refresh_run().unwrap().is_none());
+}

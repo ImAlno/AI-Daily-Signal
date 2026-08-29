@@ -17,7 +17,7 @@ pub use pipeline::{
     Pipeline, PipelineOutput, assemble_briefing, deduplicate, normalize_title, normalize_url,
     score_story, smart_summary,
 };
-pub use storage::{Store, StoreStatus};
+pub use storage::{RefreshRun, Store, StoreStatus};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {

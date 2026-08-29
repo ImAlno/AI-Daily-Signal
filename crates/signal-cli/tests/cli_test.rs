@@ -190,6 +190,9 @@ fn disabling_a_source_survives_a_new_process() {
 #[test]
 fn a_total_refresh_failure_preserves_the_cached_briefing() {
     let home = cached_home();
+    let paths = AppPaths::for_root(home.path());
+    let store = Store::open(paths.data_dir.join("signal.sqlite3")).unwrap();
+    let generation_before = store.status().unwrap().data_generation;
     Command::cargo_bin("signal")
         .unwrap()
         .env("SIGNAL_HOME", home.path())
@@ -206,6 +209,12 @@ fn a_total_refresh_failure_preserves_the_cached_briefing() {
         .assert()
         .success()
         .stdout(predicate::str::contains("A deterministic signal"));
+
+    let status = store.status().unwrap();
+    assert_eq!(status.data_generation, generation_before);
+    let run = store.latest_refresh_run().unwrap().unwrap();
+    assert_eq!(run.successful_sources, 0);
+    assert_eq!(run.failed_sources, 7);
 }
 
 #[test]
@@ -397,14 +406,26 @@ fn refresh_collects_a_local_feed_and_reports_source_counts() {
     let repository = ConfigRepository::new(paths);
     let mut config = repository.load_or_create().unwrap();
     let (feed_url, server) = local_feed_once();
-    config.sources = vec![Source {
-        id: "local-fixture".to_owned(),
-        name: "Local fixture".to_owned(),
-        category: "research".to_owned(),
-        enabled: true,
-        weight: 1.0,
-        kind: SourceKind::Feed { url: feed_url },
-    }];
+    config.sources = vec![
+        Source {
+            id: "local-fixture".to_owned(),
+            name: "Local fixture".to_owned(),
+            category: "research".to_owned(),
+            enabled: true,
+            weight: 1.0,
+            kind: SourceKind::Feed { url: feed_url },
+        },
+        Source {
+            id: "failed-fixture".to_owned(),
+            name: "Failed fixture".to_owned(),
+            category: "research".to_owned(),
+            enabled: true,
+            weight: 1.0,
+            kind: SourceKind::Feed {
+                url: "http://127.0.0.1:9/unreachable.xml".to_owned(),
+            },
+        },
+    ];
     repository.save(&config).unwrap();
 
     let output = Command::cargo_bin("signal")
@@ -419,11 +440,20 @@ fn refresh_collects_a_local_feed_and_reports_source_counts() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["schema_version"], 1);
     assert_eq!(value["data"]["successful_sources"], 1);
-    assert_eq!(value["data"]["failures"].as_array().unwrap().len(), 0);
+    assert_eq!(value["data"]["failures"].as_array().unwrap().len(), 1);
     assert_eq!(
         value["data"]["briefing"]["items"][0]["story"]["title"],
         "Local fixture signal"
     );
+    let store = Store::open(
+        AppPaths::for_root(home.path())
+            .data_dir
+            .join("signal.sqlite3"),
+    )
+    .unwrap();
+    let run = store.latest_refresh_run().unwrap().unwrap();
+    assert_eq!(run.successful_sources, 1);
+    assert_eq!(run.failed_sources, 1);
 
     Command::cargo_bin("signal")
         .unwrap()
@@ -432,4 +462,43 @@ fn refresh_collects_a_local_feed_and_reports_source_counts() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Local fixture signal"));
+}
+
+#[test]
+fn failed_refresh_bookkeeping_is_a_redacted_storage_error() {
+    let home = cached_home();
+    let paths = AppPaths::for_root(home.path());
+    let database_path = paths.data_dir.join("signal.sqlite3");
+    let store = Store::open(&database_path).unwrap();
+    let generation_before = store.status().unwrap().data_generation;
+    rusqlite::Connection::open(&database_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER reject_failed_refresh_run
+             BEFORE INSERT ON refresh_runs
+             BEGIN
+                 SELECT RAISE(ABORT, 'private bookkeeping detail');
+             END;",
+        )
+        .unwrap();
+
+    Command::cargo_bin("signal")
+        .unwrap()
+        .env("SIGNAL_HOME", home.path())
+        .arg("refresh")
+        .assert()
+        .failure()
+        .code(5)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Storage operation failed"))
+        .stderr(predicate::str::contains("private bookkeeping detail").not());
+
+    assert_eq!(store.status().unwrap().data_generation, generation_before);
+    assert!(
+        store
+            .load_briefing(chrono::Utc::now().date_naive())
+            .unwrap()
+            .is_some()
+    );
+    assert!(store.latest_refresh_run().unwrap().is_none());
 }

@@ -59,16 +59,23 @@ impl SignalApp {
         let collection = FeedCollector::new()?
             .collect_all(&self.config.sources, now)
             .await;
+        let successful_sources = collection.successful_source_ids.len();
+        let failed_sources = collection.failures.len();
         if collection.successful_source_ids.is_empty() {
+            storage_result(self.store.record_refresh_failure(now, failed_sources))?;
             return Err(SignalError::Refresh(
                 "every enabled source failed".to_owned(),
             ));
         }
 
-        let successful_sources = collection.successful_source_ids.len();
         let failures = collection.failures;
         let output = Pipeline::build(collection.candidates, &self.config, now);
-        storage_result(self.store.commit_refresh(&output.stories, &output.briefing))?;
+        storage_result(self.store.commit_refresh_with_counts(
+            &output.stories,
+            &output.briefing,
+            successful_sources,
+            failed_sources,
+        ))?;
 
         Ok(RefreshReport {
             briefing: output.briefing,
