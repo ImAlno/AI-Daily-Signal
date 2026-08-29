@@ -1,4 +1,73 @@
-use signal_core::{Briefing, RefreshReport, Source, StoreStatus, Story, TodayView};
+use signal_core::{
+    AiSummaryFields, ApiDialect, Briefing, CredentialRef, GenerationAttempt, GenerationReport,
+    ManualGenerationStatus, ModelProfile, ProfileLimits, ProviderKind, RefreshReport,
+    RemoveModelReport, Source, StoreStatus, Story, SummarizeReport, SummaryVariant,
+    TestModelReport, TodayView,
+};
+
+#[derive(serde::Serialize)]
+pub struct ModelProfileData {
+    pub id: String,
+    pub name: String,
+    pub provider: &'static str,
+    pub model: String,
+    pub endpoint_host: Option<String>,
+    pub dialect: Option<&'static str>,
+    pub credential_source: &'static str,
+    pub consented: bool,
+    pub enabled: bool,
+    pub is_default: bool,
+    pub limits: ProfileLimits,
+}
+
+#[derive(serde::Serialize)]
+pub struct SummaryVariantData {
+    pub provider: &'static str,
+    pub model: String,
+    pub endpoint_host: Option<String>,
+    pub dialect: Option<&'static str>,
+    pub fields: AiSummaryFields,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_microusd: u64,
+    pub generated_at: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct GenerationAttemptData {
+    pub provider: &'static str,
+    pub model: String,
+    pub endpoint_host: Option<String>,
+    pub dialect: Option<&'static str>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cost_microusd: Option<u64>,
+    pub failure_kind: Option<signal_core::GenerationFailureKind>,
+}
+
+#[derive(serde::Serialize)]
+pub struct SummarizeData {
+    pub story_id: String,
+    pub status: &'static str,
+    pub summary: Option<SummaryVariantData>,
+    pub attempt: Option<GenerationAttemptData>,
+    pub generation: GenerationReport,
+}
+
+#[derive(serde::Serialize)]
+pub struct TestModelData {
+    pub status: &'static str,
+    pub cost_may_apply: bool,
+    pub attempt: Option<GenerationAttemptData>,
+    pub generation: GenerationReport,
+}
+
+#[derive(serde::Serialize)]
+pub struct StoryData<'a> {
+    #[serde(flatten)]
+    pub story: &'a Story,
+    pub selected_summary: Option<SummaryVariantData>,
+}
 
 #[derive(serde::Serialize)]
 pub struct JsonEnvelope<T> {
@@ -49,6 +118,9 @@ pub fn briefing(briefing: &Briefing) -> String {
             item.story.smart_summary,
             item.story.canonical_url
         ));
+        if let Some(summary) = &item.selected_summary {
+            rendered.push_str(&summary_variant(summary));
+        }
     }
     rendered
 }
@@ -60,19 +132,43 @@ pub fn today(view: &TodayView) -> String {
 
 pub fn refresh(report: &RefreshReport) -> String {
     format!(
-        "Refreshed from {} source(s); {} failed\n{}",
+        "Refreshed from {} source(s); {} failed\n{}\n{}",
         report.successful_sources,
         report.failures.len(),
+        generation(&report.generation),
         briefing(&report.briefing)
     )
 }
 
-pub fn story(story: &Story) -> String {
-    let saved = if story.is_saved { " [saved]" } else { "" };
-    format!(
+pub fn story_data<'a>(
+    story: &'a Story,
+    selected_summary: Option<&SummaryVariant>,
+) -> StoryData<'a> {
+    StoryData {
+        story,
+        selected_summary: selected_summary.map(summary_variant_data),
+    }
+}
+
+pub fn story(data: &StoryData<'_>) -> String {
+    let saved = if data.story.is_saved { " [saved]" } else { "" };
+    let mut rendered = format!(
         "{}{}\n{}\n{}",
-        story.title, saved, story.smart_summary, story.canonical_url
-    )
+        data.story.title, saved, data.story.smart_summary, data.story.canonical_url
+    );
+    if let Some(summary) = &data.selected_summary {
+        rendered.push_str(&format!(
+            "\nSummary mode: AI\nProvider: {}\nModel: {}\nWhat happened: {}\nWhy it matters: {}",
+            summary.provider,
+            summary.model,
+            summary.fields.what_happened,
+            summary.fields.why_it_matters
+        ));
+        if let Some(caveat) = &summary.fields.caveat {
+            rendered.push_str(&format!("\nCaveat: {caveat}"));
+        }
+    }
+    rendered
 }
 
 pub fn stories(stories: &[Story]) -> String {
@@ -111,4 +207,269 @@ pub fn sources(sources: &[Source]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+pub fn model_profile_data(profile: &ModelProfile, is_default: bool) -> ModelProfileData {
+    ModelProfileData {
+        id: profile.id.hyphenated().to_string(),
+        name: profile.name.clone(),
+        provider: provider(profile.provider),
+        model: profile.model.clone(),
+        endpoint_host: profile
+            .endpoint
+            .as_ref()
+            .and_then(|endpoint| endpoint.host_str())
+            .map(str::to_owned),
+        dialect: profile.dialect.map(dialect),
+        credential_source: match profile.credential {
+            CredentialRef::SystemStore { .. } => "system-store",
+            CredentialRef::Environment { .. } => "environment",
+        },
+        consented: profile.consented_at.is_some(),
+        enabled: profile.enabled,
+        is_default,
+        limits: profile.limits.clone(),
+    }
+}
+
+pub fn model_profiles_data(
+    profiles: &[ModelProfile],
+    default_id: Option<uuid::Uuid>,
+) -> Vec<ModelProfileData> {
+    profiles
+        .iter()
+        .map(|profile| model_profile_data(profile, default_id == Some(profile.id)))
+        .collect()
+}
+
+pub fn model_profile(profile: &ModelProfileData) -> String {
+    model_profiles(std::slice::from_ref(profile))
+}
+
+pub fn model_profiles(profiles: &[ModelProfileData]) -> String {
+    if profiles.is_empty() {
+        return "No model profiles configured".to_owned();
+    }
+    profiles
+        .iter()
+        .map(|profile| {
+            let endpoint = profile
+                .endpoint_host
+                .as_deref()
+                .map_or_else(String::new, |host| format!("\nEndpoint host: {host}"));
+            let dialect = profile
+                .dialect
+                .map_or_else(String::new, |value| format!("\nDialect: {value}"));
+            let daily_budget = profile
+                .limits
+                .max_daily_cost_microusd
+                .map_or_else(|| "none".to_owned(), format_usd);
+            let input_rate = profile
+                .limits
+                .input_cost_microusd_per_million
+                .map_or_else(|| "none".to_owned(), format_usd);
+            let output_rate = profile
+                .limits
+                .output_cost_microusd_per_million
+                .map_or_else(|| "none".to_owned(), format_usd);
+            format!(
+                "{}\nProvider: {}\nModel: {}{}{}\nCredential source: {}\nConsented: {}\nDefault: {}\nEnabled: {}\nLimits: {} summaries/refresh, {} max output tokens, {}s timeout, {} retries\nRates: daily ${}, input ${}/million, output ${}/million",
+                profile.name,
+                profile.provider,
+                profile.model,
+                endpoint,
+                dialect,
+                profile.credential_source,
+                yes_no(profile.consented),
+                yes_no(profile.is_default),
+                yes_no(profile.enabled),
+                profile.limits.max_summaries_per_refresh,
+                profile.limits.max_output_tokens,
+                profile.limits.timeout_seconds,
+                profile.limits.max_retries,
+                daily_budget,
+                input_rate,
+                output_rate,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+pub fn summarize_data(report: &SummarizeReport) -> SummarizeData {
+    SummarizeData {
+        story_id: report.story_id.clone(),
+        status: manual_status(report.status),
+        summary: report.summary.as_ref().map(summary_variant_data),
+        attempt: report.attempt.as_ref().map(generation_attempt_data),
+        generation: report.generation.clone(),
+    }
+}
+
+pub fn summarize(report: &SummarizeData) -> String {
+    let mut rendered = format!(
+        "Summary mode: {}\nStatus: {}\n{}",
+        if report.summary.is_some() {
+            "AI"
+        } else {
+            "Smart fallback"
+        },
+        report.status,
+        generation(&report.generation)
+    );
+    if let Some(summary) = &report.summary {
+        rendered.push_str(&format!(
+            "\nProvider: {}\nModel: {}\nWhat happened: {}\nWhy it matters: {}",
+            summary.provider,
+            summary.model,
+            summary.fields.what_happened,
+            summary.fields.why_it_matters
+        ));
+        if let Some(caveat) = &summary.fields.caveat {
+            rendered.push_str(&format!("\nCaveat: {caveat}"));
+        }
+    }
+    rendered
+}
+
+pub fn test_model_data(report: &TestModelReport) -> TestModelData {
+    TestModelData {
+        status: manual_status(report.status),
+        cost_may_apply: report.cost_may_apply,
+        attempt: report.attempt.as_ref().map(generation_attempt_data),
+        generation: report.generation.clone(),
+    }
+}
+
+pub fn test_model(report: &TestModelData) -> String {
+    let mut rendered = format!(
+        "Model test status: {}\nCost may apply: {}\n{}",
+        report.status,
+        yes_no(report.cost_may_apply),
+        generation(&report.generation)
+    );
+    if let Some(attempt) = &report.attempt {
+        rendered.push_str(&format!(
+            "\nProvider: {}\nModel: {}",
+            attempt.provider, attempt.model
+        ));
+    }
+    rendered
+}
+
+pub fn remove_model(report: &RemoveModelReport) -> String {
+    let mut rendered = "Model profile removed".to_owned();
+    if report.warning.is_some() {
+        rendered
+            .push_str("\nWarning: the stored credential could not be deleted; remove it manually");
+    }
+    rendered
+}
+
+fn summary_variant_data(summary: &SummaryVariant) -> SummaryVariantData {
+    SummaryVariantData {
+        provider: provider(summary.provider),
+        model: summary.model.clone(),
+        endpoint_host: summary.endpoint.as_deref().and_then(endpoint_host),
+        dialect: summary.dialect.map(dialect),
+        fields: summary.fields.clone(),
+        input_tokens: summary.input_tokens,
+        output_tokens: summary.output_tokens,
+        cost_microusd: summary.cost_microusd,
+        generated_at: summary.generated_at.to_rfc3339(),
+    }
+}
+
+fn generation_attempt_data(attempt: &GenerationAttempt) -> GenerationAttemptData {
+    GenerationAttemptData {
+        provider: provider(attempt.provider),
+        model: attempt.model.clone(),
+        endpoint_host: attempt.endpoint.as_deref().and_then(endpoint_host),
+        dialect: attempt.dialect.map(dialect),
+        input_tokens: attempt.input_tokens,
+        output_tokens: attempt.output_tokens,
+        cost_microusd: attempt.actual_cost_microusd,
+        failure_kind: attempt.failure_kind,
+    }
+}
+
+fn summary_variant(summary: &SummaryVariant) -> String {
+    let mut rendered = format!(
+        "Summary mode: AI\nProvider: {}\nModel: {}\nWhat happened: {}\nWhy it matters: {}\n",
+        provider(summary.provider),
+        summary.model,
+        summary.fields.what_happened,
+        summary.fields.why_it_matters
+    );
+    if let Some(caveat) = &summary.fields.caveat {
+        rendered.push_str(&format!("Caveat: {caveat}\n"));
+    }
+    rendered
+}
+
+fn endpoint_host(value: &str) -> Option<String> {
+    value
+        .parse::<url::Url>()
+        .ok()
+        .and_then(|endpoint| endpoint.host_str().map(str::to_owned))
+}
+
+fn manual_status(status: ManualGenerationStatus) -> &'static str {
+    match status {
+        ManualGenerationStatus::Generated => "generated",
+        ManualGenerationStatus::CacheHit => "cache_hit",
+        ManualGenerationStatus::BudgetExhausted => "budget_exhausted",
+        ManualGenerationStatus::CredentialUnavailable => "credential_unavailable",
+        ManualGenerationStatus::ConsentRequired => "consent_required",
+        ManualGenerationStatus::ProfileUnavailable => "profile_unavailable",
+        ManualGenerationStatus::RefreshCapReached => "refresh_cap_reached",
+        ManualGenerationStatus::ProviderFailure => "provider_failure",
+        ManualGenerationStatus::MalformedOutput => "malformed_output",
+    }
+}
+
+fn generation(report: &GenerationReport) -> String {
+    format!(
+        "AI generation: {} generated, {} cache hits, {} cap skips, {} budget skips, {} missing credentials, {} provider failures, {} malformed outputs, {} Smart fallbacks",
+        report.generated,
+        report.cache_hits,
+        report.skipped_cap,
+        report.skipped_budget,
+        report.missing_credentials,
+        report.provider_failures,
+        report.malformed_outputs,
+        report.smart_fallbacks
+    )
+}
+
+fn provider(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::OpenAi => "open-ai",
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::Gemini => "gemini",
+        ProviderKind::OpenAiCompatible => "open-ai-compatible",
+    }
+}
+
+fn dialect(dialect: ApiDialect) -> &'static str {
+    match dialect {
+        ApiDialect::Responses => "responses",
+        ApiDialect::ChatCompletions => "chat-completions",
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn format_usd(micros: u64) -> String {
+    let whole = micros / 1_000_000;
+    let fraction = micros % 1_000_000;
+    if fraction == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{fraction:06}")
+            .trim_end_matches('0')
+            .to_owned()
+    }
 }

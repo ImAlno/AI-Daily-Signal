@@ -238,6 +238,10 @@ impl SignalApp {
         storage_result(self.store.list_model_profiles())
     }
 
+    pub fn default_model_profile(&self) -> Result<Option<ModelProfile>> {
+        storage_result(self.store.default_model_profile())
+    }
+
     pub fn add_model(&self, input: AddModelInput, now: DateTime<Utc>) -> Result<AddModelReport> {
         if input.consented_at.is_none() {
             return Err(SignalError::InvalidConfiguration(
@@ -497,6 +501,40 @@ mod tests {
 
     use super::*;
     use crate::{BriefingItem, SourceFailure, test_support};
+
+    #[test]
+    fn default_model_profile_reflects_use_and_removal() {
+        let fixture = test_support::ai_app_fixture();
+        let added = fixture
+            .app
+            .add_model(
+                AddModelInput {
+                    name: "Second profile".to_owned(),
+                    provider: ProviderKind::Anthropic,
+                    model: "opaque-model".to_owned(),
+                    endpoint: None,
+                    dialect: None,
+                    credential: AddModelCredential::Environment {
+                        variable: "SECOND_PROFILE_KEY".to_owned(),
+                    },
+                    consented_at: Some(fixture.now),
+                    enabled: true,
+                    limits: ProfileLimits::default(),
+                },
+                fixture.now,
+            )
+            .unwrap()
+            .profile;
+
+        fixture.app.use_model("second PROFILE").unwrap();
+        assert_eq!(
+            fixture.app.default_model_profile().unwrap().unwrap().id,
+            added.id
+        );
+
+        fixture.app.remove_model("Second profile").unwrap();
+        assert!(fixture.app.default_model_profile().unwrap().is_none());
+    }
 
     #[test]
     fn today_loads_yesterdays_latest_briefing_and_reports_staleness() {
