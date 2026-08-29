@@ -116,11 +116,23 @@ pub fn persist_system_credential_then<T>(
     secret: SecretString,
     persist: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
-    store.set(reference, secret)?;
+    let previous = match store.get(reference) {
+        Ok(secret) => Some(secret),
+        Err(error) if is_missing_credential_error(&error) => None,
+        Err(error) => return Err(redact_store_error(error)),
+    };
+    store.set(reference, secret).map_err(redact_store_error)?;
     match persist() {
         Ok(value) => Ok(value),
         Err(error) => {
-            let _ = store.delete(reference);
+            match previous {
+                Some(secret) => {
+                    let _ = store.set(reference, secret);
+                }
+                None => {
+                    let _ = store.delete(reference);
+                }
+            }
             Err(error)
         }
     }
@@ -154,6 +166,10 @@ fn redact_store_error(error: SignalError) -> SignalError {
         }
         _ => unavailable(),
     }
+}
+
+fn is_missing_credential_error(error: &SignalError) -> bool {
+    matches!(error, SignalError::Credential(message) if message == MISSING_CREDENTIAL)
 }
 
 fn missing() -> SignalError {

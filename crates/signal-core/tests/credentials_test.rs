@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use signal_core::{
     CredentialRef, CredentialResolver, CredentialStore, EnvironmentReader, ResolvedCredential,
     Result, SignalError, persist_system_credential_then,
@@ -128,7 +128,7 @@ fn system_store_failure_is_redacted() {
 }
 
 #[test]
-fn failed_nonsecret_persistence_removes_the_new_system_credential() {
+fn failed_nonsecret_persistence_deletes_an_initially_missing_credential() {
     let store = signal_core::test_support::MemoryCredentialStore::default();
     let reference = CredentialRef::for_profile(uuid::Uuid::new_v4());
 
@@ -145,6 +145,30 @@ fn failed_nonsecret_persistence_removes_the_new_system_credential() {
         store.get(&reference).unwrap_err().to_string(),
         "credential is missing"
     );
+}
+
+#[test]
+fn failed_nonsecret_persistence_restores_an_existing_credential() {
+    let store = signal_core::test_support::MemoryCredentialStore::default();
+    let reference = CredentialRef::for_profile(uuid::Uuid::new_v4());
+    store
+        .set(&reference, SecretString::from("existing-secret".to_owned()))
+        .unwrap();
+
+    let error = persist_system_credential_then(
+        &store,
+        &reference,
+        SecretString::from("replacement-secret".to_owned()),
+        || Err::<(), _>(SignalError::Storage("database write failed".to_owned())),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "storage error: database write failed");
+    let stored = store
+        .get(&reference)
+        .ok()
+        .map(|secret| secret.expose_secret().to_owned());
+    assert_eq!(stored.as_deref(), Some("existing-secret"));
 }
 
 #[derive(Default)]
