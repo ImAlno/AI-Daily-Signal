@@ -1,4 +1,5 @@
 mod anthropic;
+mod gemini;
 mod openai;
 mod parse;
 mod retry;
@@ -17,6 +18,7 @@ use crate::{
 };
 
 pub use anthropic::AnthropicProvider;
+pub use gemini::GeminiProvider;
 pub use openai::OpenAiProvider;
 pub use parse::{
     AI_SUMMARY_PROMPT_VERSION, AiSummaryPrompt, build_ai_summary_prompt, parse_ai_summary,
@@ -51,6 +53,12 @@ impl ProviderRequest {
         profile.validate().map_err(|_| {
             SignalError::InvalidConfiguration("provider request profile is invalid".to_owned())
         })?;
+        if profile.provider == ProviderKind::Gemini && !gemini::valid_profile_model(&profile.model)
+        {
+            return Err(SignalError::InvalidConfiguration(
+                "provider request profile is invalid".to_owned(),
+            ));
+        }
 
         Ok(Self {
             story_id: story_id.into(),

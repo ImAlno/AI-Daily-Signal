@@ -30,10 +30,11 @@ pub use pipeline::{
     score_story, smart_summary,
 };
 pub use providers::{
-    AI_SUMMARY_PROMPT_VERSION, AiSummaryPrompt, AnthropicProvider, OpenAiProvider, ProviderFailure,
-    ProviderFailureKind, ProviderRegistry, ProviderRequest, ProviderResponse, ProviderUsage,
-    RequestChargeStatus, RetryAttemptFailure, RetryPolicy, RetrySleeper, SummaryProvider,
-    TokioRetrySleeper, build_ai_summary_prompt, parse_ai_summary, retry_provider_operation,
+    AI_SUMMARY_PROMPT_VERSION, AiSummaryPrompt, AnthropicProvider, GeminiProvider, OpenAiProvider,
+    ProviderFailure, ProviderFailureKind, ProviderRegistry, ProviderRequest, ProviderResponse,
+    ProviderUsage, RequestChargeStatus, RetryAttemptFailure, RetryPolicy, RetrySleeper,
+    SummaryProvider, TokioRetrySleeper, build_ai_summary_prompt, parse_ai_summary,
+    retry_provider_operation,
 };
 pub use storage::{RefreshRun, Store, StoreStatus};
 pub use summaries::{
