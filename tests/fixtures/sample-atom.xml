@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Fixture Atom</title>
+  <id>urn:fixture:atom</id>
+  <updated>2026-08-29T08:00:00Z</updated>
+  <entry>
+    <id>atom-shared-id</id>
+    <title>Apple   Ships A Signal Report</title>
+    <link rel="self" href="https://example.com/feeds/atom"/>
+    <link rel="alternate" href="https://example.com/stories/signal-report?utm_source=atom"/>
+    <published>2026-08-29T07:30:00Z</published>
+    <updated>2026-08-29T07:45:00Z</updated>
+    <summary type="html"><![CDATA[<p>A <em>useful</em> signal report.</p>]]></summary>
+  </entry>
+  <entry>
+    <id>atom-unique-id</id>
+    <title>Second Unique Story</title>
+    <link rel="alternate" href="https://example.com/stories/second-atom"/>
+    <published>2026-08-29T06:00:00Z</published>
+    <summary type="html"><![CDATA[<p>Another useful update.</p>]]></summary>
+  </entry>
+</feed>

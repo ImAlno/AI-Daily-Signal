@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Fixture RSS</title>
+    <link>https://example.com</link>
+    <description>Deterministic test feed</description>
+    <item>
+      <guid>rss-shared-id</guid>
+      <title>Apple Ships a Signal Report</title>
+      <link>https://example.com/stories/signal-report?utm_source=rss</link>
+      <pubDate>Fri, 29 Aug 2026 07:30:00 +0000</pubDate>
+      <description><![CDATA[<p> A <strong>useful</strong> signal   report. </p>]]></description>
+    </item>
+    <item>
+      <guid>rss-unique-id</guid>
+      <title>Second Unique Story</title>
+      <link>https://example.com/stories/second</link>
+      <pubDate>Fri, 29 Aug 2026 06:00:00 +0000</pubDate>
+      <description><![CDATA[<p> Another  useful   update. </p>]]></description>
+    </item>
+  </channel>
+</rss>

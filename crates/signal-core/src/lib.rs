@@ -1,9 +1,11 @@
+mod collector;
 mod config;
 mod domain;
 mod error;
 mod paths;
 mod storage;
 
+pub use collector::{CollectionReport, FeedCollector, SourceFailure};
 pub use config::{AppConfig, BriefingConfig, ConfigRepository};
 pub use domain::{Briefing, BriefingItem, Candidate, ScoreBreakdown, Source, SourceKind, Story};
 pub use error::{Result, SignalError};
@@ -14,7 +16,20 @@ pub use storage::{Store, StoreStatus};
 pub mod test_support {
     use chrono::{NaiveDate, TimeZone, Utc};
 
-    use crate::{Briefing, BriefingItem, ScoreBreakdown, Story};
+    use crate::{Briefing, BriefingItem, ScoreBreakdown, Source, SourceKind, Story};
+
+    pub fn feed_source(id: &str) -> Source {
+        Source {
+            id: id.to_owned(),
+            name: "Fixture feed".to_owned(),
+            category: "research".to_owned(),
+            enabled: true,
+            weight: 1.0,
+            kind: SourceKind::Feed {
+                url: "https://example.com/feed.xml".to_owned(),
+            },
+        }
+    }
 
     pub fn story_fixture(id: &str) -> Story {
         Story {
