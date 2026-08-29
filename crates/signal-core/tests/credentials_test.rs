@@ -68,6 +68,27 @@ fn empty_environment_credential_is_rejected() {
 }
 
 #[test]
+fn empty_and_whitespace_system_credentials_are_rejected_after_store_read() {
+    for value in ["", " \t\n"] {
+        let store = signal_core::test_support::MemoryCredentialStore::default();
+        let environment = FixedEnvironment::missing();
+        let reference = CredentialRef::for_profile(uuid::Uuid::new_v4());
+        store
+            .set(&reference, SecretString::from(value.to_owned()))
+            .unwrap();
+
+        let error = CredentialResolver::new(&store, &environment)
+            .resolve(&reference)
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "credential is empty");
+        if !value.is_empty() {
+            assert!(!error.to_string().contains(value));
+        }
+    }
+}
+
+#[test]
 fn non_unicode_environment_credential_is_reported_without_exposing_its_value() {
     let store = TrackingStore::default();
     let environment = FixedEnvironment::non_unicode();

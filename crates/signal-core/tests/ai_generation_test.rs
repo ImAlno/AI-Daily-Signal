@@ -1,9 +1,10 @@
 use chrono::Duration;
 use secrecy::SecretString;
 use signal_core::{
-    AddModelCredential, AddModelInput, CredentialWarningKind, GenerationFailureKind,
-    GenerationOutcomeKind, ManualGenerationStatus, ProfileLimits, ProviderFailureKind,
-    ProviderKind, RefreshOptions, RequestChargeStatus, SummarizeOptions, TestModelOptions,
+    AddModelCredential, AddModelInput, CredentialStore, CredentialWarningKind,
+    GenerationFailureKind, GenerationOutcomeKind, ManualGenerationStatus, ProfileLimits,
+    ProviderFailureKind, ProviderKind, RefreshOptions, RequestChargeStatus, SummarizeOptions,
+    TestModelOptions,
 };
 
 #[tokio::test]
@@ -97,6 +98,51 @@ async fn not_sent_provider_failure_is_finalized_uncharged() {
 }
 
 #[tokio::test]
+async fn not_sent_failure_does_not_consume_the_outbound_refresh_cap() {
+    let fixture = signal_core::test_support::ai_app_fixture()
+        .with_max_items(2)
+        .with_refresh_cap(1)
+        .with_provider_failure_then_success(
+            ProviderFailureKind::Transport,
+            RequestChargeStatus::NotSent,
+        );
+
+    let report = fixture.app.refresh(fixture.now).await.unwrap();
+
+    assert_eq!(fixture.provider.request_count(), 2);
+    assert_eq!(report.generation.provider_failures, 1);
+    assert_eq!(report.generation.generated, 1);
+    assert_eq!(report.generation.skipped_cap, 0);
+    assert!(report.briefing.items[0].selected_summary.is_none());
+    assert!(report.briefing.items[1].selected_summary.is_some());
+}
+
+#[tokio::test]
+async fn possibly_sent_failure_consumes_the_outbound_refresh_cap() {
+    let fixture = signal_core::test_support::ai_app_fixture()
+        .with_max_items(2)
+        .with_refresh_cap(1)
+        .with_provider_failure_then_success(
+            ProviderFailureKind::Timeout,
+            RequestChargeStatus::PossiblySent,
+        );
+
+    let report = fixture.app.refresh(fixture.now).await.unwrap();
+
+    assert_eq!(fixture.provider.request_count(), 1);
+    assert_eq!(report.generation.provider_failures, 1);
+    assert_eq!(report.generation.generated, 0);
+    assert_eq!(report.generation.skipped_cap, 1);
+    assert!(
+        report
+            .briefing
+            .items
+            .iter()
+            .all(|item| item.selected_summary.is_none())
+    );
+}
+
+#[tokio::test]
 async fn budget_exhaustion_stops_calls_in_briefing_order() {
     let fixture = signal_core::test_support::ai_app_fixture()
         .with_max_items(3)
@@ -147,6 +193,65 @@ async fn no_ai_option_and_missing_default_make_no_provider_request() {
 }
 
 #[tokio::test]
+async fn carried_selected_summary_is_cleared_when_ai_is_disabled() {
+    let fixture = signal_core::test_support::ai_app_fixture().with_carried_selected_summary();
+
+    let report = fixture
+        .app
+        .refresh_with_options(fixture.now, RefreshOptions { ai: false })
+        .await
+        .unwrap();
+
+    let carried = report
+        .briefing
+        .items
+        .iter()
+        .find(|item| item.story.id == "carried-failed-story")
+        .expect("stale story should be carried");
+    assert!(carried.is_stale);
+    assert!(carried.selected_summary.is_none());
+}
+
+#[tokio::test]
+async fn carried_selected_summary_is_cleared_when_credentials_are_unavailable() {
+    let fixture = signal_core::test_support::ai_app_fixture()
+        .with_carried_selected_summary()
+        .without_credential();
+
+    let report = fixture.app.refresh(fixture.now).await.unwrap();
+
+    let carried = report
+        .briefing
+        .items
+        .iter()
+        .find(|item| item.story.id == "carried-failed-story")
+        .expect("stale story should be carried");
+    assert!(carried.is_stale);
+    assert!(carried.selected_summary.is_none());
+    assert_eq!(fixture.provider.request_count(), 0);
+}
+
+#[tokio::test]
+async fn carried_selected_summary_is_reselected_only_from_a_usable_cache() {
+    let fixture = signal_core::test_support::ai_app_fixture()
+        .with_carried_selected_cache()
+        .without_credential();
+
+    let report = fixture.app.refresh(fixture.now).await.unwrap();
+
+    let carried = report
+        .briefing
+        .items
+        .iter()
+        .find(|item| item.story.id == "carried-failed-story")
+        .expect("stale story should be carried");
+    assert!(carried.is_stale);
+    assert!(carried.selected_summary.is_some());
+    assert_eq!(report.generation.cache_hits, 1);
+    assert_eq!(fixture.provider.request_count(), 0);
+}
+
+#[tokio::test]
 async fn missing_consent_and_missing_or_empty_credentials_keep_smart() {
     let no_consent = signal_core::test_support::ai_app_fixture().without_consent();
     let report = no_consent.app.refresh(no_consent.now).await.unwrap();
@@ -171,6 +276,24 @@ async fn missing_consent_and_missing_or_empty_credentials_keep_smart() {
         report.generation.missing_credentials,
         report.briefing.items.len()
     );
+}
+
+#[tokio::test]
+async fn empty_and_whitespace_system_credentials_make_no_provider_request() {
+    for value in ["", " \t\n"] {
+        let fixture = signal_core::test_support::ai_app_fixture().with_max_items(1);
+        let profile = fixture.profile();
+        fixture
+            .credential_store
+            .set(&profile.credential, SecretString::from(value.to_owned()))
+            .unwrap();
+
+        let report = fixture.app.refresh(fixture.now).await.unwrap();
+
+        assert_eq!(fixture.provider.request_count(), 0);
+        assert_eq!(report.generation.missing_credentials, 1);
+        assert!(report.briefing.items[0].selected_summary.is_none());
+    }
 }
 
 #[tokio::test]
@@ -436,6 +559,41 @@ async fn model_test_records_attempt_but_no_story_variant_or_selection() {
 }
 
 #[tokio::test]
+async fn model_test_payload_is_fixed_while_attempts_use_invocation_clocks() {
+    let fixture = signal_core::test_support::ai_app_fixture();
+    let profile = fixture.profile();
+    let first_now = fixture.now;
+    let second_now = fixture.now + Duration::days(2);
+
+    let first = fixture
+        .app
+        .test_model(
+            TestModelOptions {
+                profile: profile.name.clone(),
+            },
+            first_now,
+        )
+        .await
+        .unwrap();
+    let second = fixture
+        .app
+        .test_model(
+            TestModelOptions {
+                profile: profile.name,
+            },
+            second_now,
+        )
+        .await
+        .unwrap();
+
+    let prompts = fixture.provider.requested_prompts();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[0], prompts[1]);
+    assert_eq!(first.attempt.unwrap().reserved_at, first_now);
+    assert_eq!(second.attempt.unwrap().reserved_at, second_now);
+}
+
+#[tokio::test]
 async fn model_test_uses_the_same_daily_budget_path() {
     let fixture = signal_core::test_support::ai_app_fixture()
         .with_max_items(1)
@@ -639,4 +797,39 @@ fn add_model_compensates_system_credential_when_profile_persistence_fails() {
 
     assert!(result.is_err());
     assert_eq!(fixture.credential_store.credential_count_for_test(), 1);
+}
+
+#[test]
+fn add_model_rejects_empty_and_whitespace_system_secrets_without_side_effects() {
+    for (index, value) in ["", " \t\n"].into_iter().enumerate() {
+        let fixture = signal_core::test_support::ai_app_fixture();
+        let profile_count = fixture.app.list_models().unwrap().len();
+        let credential_count = fixture.credential_store.credential_count_for_test();
+
+        let result = fixture.app.add_model(
+            AddModelInput {
+                name: format!("invalid-secret-{index}"),
+                provider: ProviderKind::OpenAi,
+                model: "invalid-secret-model".to_owned(),
+                endpoint: None,
+                dialect: None,
+                credential: AddModelCredential::SystemStore {
+                    secret: SecretString::from(value.to_owned()),
+                },
+                consented_at: Some(fixture.now),
+                enabled: true,
+                limits: ProfileLimits::default(),
+            },
+            fixture.now,
+        );
+
+        let error = result.expect_err("empty secret should be rejected");
+        assert_eq!(error.to_string(), "credential is empty");
+        assert_eq!(fixture.app.list_models().unwrap().len(), profile_count);
+        assert_eq!(
+            fixture.credential_store.credential_count_for_test(),
+            credential_count
+        );
+        assert_eq!(fixture.provider.request_count(), 0);
+    }
 }

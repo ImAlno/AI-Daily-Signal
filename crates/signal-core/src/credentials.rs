@@ -79,6 +79,7 @@ impl<'a> CredentialResolver<'a> {
                 .system_store
                 .get(reference)
                 .map_err(redact_store_error)
+                .and_then(nonempty_secret)
                 .map(ResolvedCredential),
             CredentialRef::Environment { variable } => self
                 .environment
@@ -143,12 +144,16 @@ fn entry_for(reference: &CredentialRef) -> Result<Entry> {
     Entry::new(service, account).map_err(map_keyring_error)
 }
 
-fn nonempty_credential(value: String) -> Result<SecretString> {
-    if value.is_empty() {
+pub(crate) fn nonempty_secret(secret: SecretString) -> Result<SecretString> {
+    if secret.expose_secret().trim().is_empty() {
         Err(empty())
     } else {
-        Ok(SecretString::from(value))
+        Ok(secret)
     }
+}
+
+fn nonempty_credential(value: String) -> Result<SecretString> {
+    nonempty_secret(SecretString::from(value))
 }
 
 fn map_keyring_error(error: KeyringError) -> SignalError {

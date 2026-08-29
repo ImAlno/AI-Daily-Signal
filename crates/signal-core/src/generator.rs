@@ -14,6 +14,7 @@ use crate::{
 
 const RESERVATION_SAFETY_MARGIN_SECONDS: u64 = 60;
 const COST_DENOMINATOR: u128 = 1_000_000;
+const MODEL_TEST_PUBLISHED_AT: DateTime<Utc> = DateTime::<Utc>::UNIX_EPOCH;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SummarizeOptions {
@@ -167,7 +168,7 @@ impl<'a> AiGenerationCoordinator<'a> {
         profile: &ModelProfile,
         now: DateTime<Utc>,
     ) -> Result<TestModelReport> {
-        let story = synthetic_test_story(now);
+        let story = synthetic_test_story();
         let generated = self
             .generate_story(
                 &story,
@@ -299,14 +300,6 @@ impl<'a> AiGenerationCoordinator<'a> {
             ));
         }
 
-        if let Some(cap) = control.refresh_cap.as_mut() {
-            *cap.used = (*cap.used).checked_add(1).ok_or_else(|| {
-                SignalError::InvalidConfiguration(
-                    "refresh generation cap arithmetic overflow".to_owned(),
-                )
-            })?;
-        }
-
         let Some(provider) = self.providers.provider(profile.provider) else {
             let failure = ProviderFailure::new(
                 ProviderFailureKind::ProviderRejected,
@@ -321,8 +314,14 @@ impl<'a> AiGenerationCoordinator<'a> {
         };
 
         let response = match provider.generate(&request, &credential).await {
-            Ok(response) => response,
+            Ok(response) => {
+                consume_refresh_cap(&mut control)?;
+                response
+            }
             Err(failure) => {
+                if failure.charge_status() == RequestChargeStatus::PossiblySent {
+                    consume_refresh_cap(&mut control)?;
+                }
                 let status = if failure.kind() == ProviderFailureKind::MalformedOutput {
                     ManualGenerationStatus::MalformedOutput
                 } else {
@@ -467,6 +466,17 @@ struct SingleGeneration {
     attempt: Option<GenerationAttempt>,
 }
 
+fn consume_refresh_cap(control: &mut GenerationControl<'_>) -> Result<()> {
+    if let Some(cap) = control.refresh_cap.as_mut() {
+        *cap.used = (*cap.used).checked_add(1).ok_or_else(|| {
+            SignalError::InvalidConfiguration(
+                "refresh generation cap arithmetic overflow".to_owned(),
+            )
+        })?;
+    }
+    Ok(())
+}
+
 impl SingleGeneration {
     fn skipped(status: ManualGenerationStatus) -> Self {
         Self {
@@ -573,14 +583,14 @@ fn arithmetic_error(field: &str) -> SignalError {
     SignalError::InvalidConfiguration(format!("{field} arithmetic overflow"))
 }
 
-fn synthetic_test_story(now: DateTime<Utc>) -> Story {
+fn synthetic_test_story() -> Story {
     Story {
         id: "model-test".to_owned(),
         title: "Synthetic public AI model connectivity test".to_owned(),
         canonical_url: "https://example.com/ai-daily-signal/model-test".to_owned(),
         excerpt: "This fixed synthetic public story tests structured summary generation without transmitting private user data.".to_owned(),
         category: "test".to_owned(),
-        published_at: Some(now),
+        published_at: Some(MODEL_TEST_PUBLISHED_AT),
         source_ids: vec!["synthetic-public-test".to_owned()],
         score: crate::ScoreBreakdown {
             recency: 0.0,

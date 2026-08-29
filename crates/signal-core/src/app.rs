@@ -5,6 +5,7 @@ use secrecy::SecretString;
 use url::Url;
 use uuid::Uuid;
 
+use crate::credentials::nonempty_secret;
 use crate::{
     AiGenerationCoordinator, AnthropicProvider, ApiDialect, AppConfig, AppPaths, Briefing,
     ConfigRepository, CredentialRef, CredentialStore, EnvironmentReader, FeedCollector,
@@ -206,6 +207,9 @@ impl SignalApp {
             &failures,
             self.config.briefing.max_items,
         );
+        for item in &mut output.briefing.items {
+            item.selected_summary = None;
+        }
         let generation = if options.ai {
             storage_result(self.store.upsert_stories(&output.stories))?;
             let profile = storage_result(self.store.default_model_profile())?;
@@ -242,9 +246,10 @@ impl SignalApp {
         }
         let id = Uuid::new_v4();
         let (credential, system_secret) = match input.credential {
-            AddModelCredential::SystemStore { secret } => {
-                (CredentialRef::for_profile(id), Some(secret))
-            }
+            AddModelCredential::SystemStore { secret } => (
+                CredentialRef::for_profile(id),
+                Some(nonempty_secret(secret)?),
+            ),
             AddModelCredential::Environment { variable } => {
                 (CredentialRef::Environment { variable }, None)
             }

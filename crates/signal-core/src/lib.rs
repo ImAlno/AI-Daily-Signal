@@ -54,7 +54,7 @@ pub use summaries::{
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, VecDeque},
         io::{Read, Write},
         net::{TcpListener, TcpStream},
         path::PathBuf,
@@ -477,17 +477,21 @@ pub mod test_support {
 
     pub struct RecordingProvider {
         requested_story_ids: Mutex<Vec<String>>,
+        requested_prompts: Mutex<Vec<(String, String)>>,
         mode: Mutex<RecordingProviderMode>,
+        queued_modes: Mutex<VecDeque<RecordingProviderMode>>,
     }
 
     impl Default for RecordingProvider {
         fn default() -> Self {
             Self {
                 requested_story_ids: Mutex::new(Vec::new()),
+                requested_prompts: Mutex::new(Vec::new()),
                 mode: Mutex::new(RecordingProviderMode::Success(Some(ProviderUsage {
                     input_tokens: 120,
                     output_tokens: 60,
                 }))),
+                queued_modes: Mutex::new(VecDeque::new()),
             }
         }
     }
@@ -507,6 +511,13 @@ pub mod test_support {
                 .clone()
         }
 
+        pub fn requested_prompts(&self) -> Vec<(String, String)> {
+            self.requested_prompts
+                .lock()
+                .expect("recording provider mutex")
+                .clone()
+        }
+
         fn fail_with(&self, kind: ProviderFailureKind, charge_status: RequestChargeStatus) {
             *self.mode.lock().expect("recording provider mutex") =
                 RecordingProviderMode::Failure(ProviderFailure::new(kind, charge_status));
@@ -519,6 +530,23 @@ pub mod test_support {
         fn report_usage(&self, usage: Option<ProviderUsage>) {
             *self.mode.lock().expect("recording provider mutex") =
                 RecordingProviderMode::Success(usage);
+        }
+
+        fn fail_once_then_success(
+            &self,
+            kind: ProviderFailureKind,
+            charge_status: RequestChargeStatus,
+        ) {
+            self.queued_modes
+                .lock()
+                .expect("recording provider mutex")
+                .extend([
+                    RecordingProviderMode::Failure(ProviderFailure::new(kind, charge_status)),
+                    RecordingProviderMode::Success(Some(ProviderUsage {
+                        input_tokens: 120,
+                        output_tokens: 60,
+                    })),
+                ]);
         }
     }
 
@@ -533,7 +561,17 @@ pub mod test_support {
                 .lock()
                 .expect("recording provider mutex")
                 .push(request.story_id.clone());
-            match *self.mode.lock().expect("recording provider mutex") {
+            self.requested_prompts
+                .lock()
+                .expect("recording provider mutex")
+                .push((request.system_text.clone(), request.user_text.clone()));
+            let mode = self
+                .queued_modes
+                .lock()
+                .expect("recording provider mutex")
+                .pop_front()
+                .unwrap_or_else(|| *self.mode.lock().expect("recording provider mutex"));
+            match mode {
                 RecordingProviderMode::Success(usage) => Ok(ProviderResponse {
                     fields: AiSummaryFields {
                         what_happened: "A deterministic public fixture event happened.".to_owned(),
@@ -569,6 +607,7 @@ pub mod test_support {
         profile_id: uuid::Uuid,
         _root: TemporaryRoot,
         feed_server: FixtureFeedServer,
+        failed_feed_server: Option<FixtureFeedServer>,
     }
 
     impl AiAppFixture {
@@ -620,6 +659,14 @@ pub mod test_support {
             self
         }
 
+        pub fn with_carried_selected_summary(self) -> Self {
+            self.with_carried_summary(false)
+        }
+
+        pub fn with_carried_selected_cache(self) -> Self {
+            self.with_carried_summary(true)
+        }
+
         pub fn with_provider_failure(self, kind: ProviderFailureKind) -> Self {
             self.provider
                 .fail_with(kind, RequestChargeStatus::PossiblySent);
@@ -632,6 +679,15 @@ pub mod test_support {
             charge_status: RequestChargeStatus,
         ) -> Self {
             self.provider.fail_with(kind, charge_status);
+            self
+        }
+
+        pub fn with_provider_failure_then_success(
+            self,
+            kind: ProviderFailureKind,
+            charge_status: RequestChargeStatus,
+        ) -> Self {
+            self.provider.fail_once_then_success(kind, charge_status);
             self
         }
 
@@ -734,6 +790,82 @@ pub mod test_support {
 
         pub fn feed_server_stats(&self) -> (usize, usize, usize) {
             self.feed_server.stats()
+        }
+
+        fn with_carried_summary(mut self, cache_matches: bool) -> Self {
+            let failed_feed_server = FixtureFeedServer::start("not a feed");
+            let mut config = ConfigRepository::new(self.paths.clone())
+                .load_or_create()
+                .expect("fixture config");
+            config.briefing.max_items = 4;
+            config.sources.push(Source {
+                id: "failed-fixture".to_owned(),
+                name: "Failed fixture feed".to_owned(),
+                category: "research".to_owned(),
+                enabled: true,
+                weight: 1.0,
+                kind: SourceKind::Feed {
+                    url: failed_feed_server.url(),
+                },
+            });
+            ConfigRepository::new(self.paths.clone())
+                .save(&config)
+                .expect("fixture config save");
+
+            let profile = self.profile();
+            let mut story = story_fixture("carried-failed-story");
+            story.source_ids = vec!["failed-fixture".to_owned()];
+            let cache_key = if cache_matches {
+                crate::summary_cache_key(
+                    &story,
+                    &profile,
+                    crate::AI_SUMMARY_PROMPT_VERSION,
+                    &SummarySettings::default(),
+                )
+                .expect("fixture cache key")
+            } else {
+                "obsolete-cache-key".to_owned()
+            };
+            let mut variant = summary_variant(
+                "carried-selected-variant",
+                &cache_key,
+                self.now - chrono::Duration::minutes(2),
+            );
+            variant.story_id = story.id.clone();
+            variant.profile_id = Some(profile.id);
+            variant.provider = profile.provider;
+            variant.model = profile.model;
+            let store = self.store();
+            store
+                .upsert_stories(std::slice::from_ref(&story))
+                .expect("fixture carried story insert");
+            store
+                .insert_summary_variant(&variant)
+                .expect("fixture carried variant insert");
+            let briefing = Briefing {
+                date: self.now.date_naive(),
+                generated_at: self.now - chrono::Duration::minutes(1),
+                items: vec![BriefingItem {
+                    position: 1,
+                    section: "top_signals".to_owned(),
+                    is_stale: false,
+                    story,
+                    selected_summary: Some(variant),
+                }],
+            };
+            store
+                .commit_refresh(
+                    &briefing
+                        .items
+                        .iter()
+                        .map(|item| item.story.clone())
+                        .collect::<Vec<_>>(),
+                    &briefing,
+                )
+                .expect("fixture carried briefing insert");
+            self.failed_feed_server = Some(failed_feed_server);
+            self.reopen();
+            self
         }
 
         fn selected_story(&self, index: usize) -> Story {
@@ -851,6 +983,7 @@ pub mod test_support {
             profile_id: profile.id,
             _root: root,
             feed_server,
+            failed_feed_server: None,
         }
     }
 
