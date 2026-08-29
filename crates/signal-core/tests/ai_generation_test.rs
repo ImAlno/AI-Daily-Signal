@@ -466,6 +466,54 @@ async fn reported_usage_replaces_estimate_and_unreported_usage_keeps_it() {
 }
 
 #[tokio::test]
+async fn multilingual_framing_heavy_prompt_reserves_bytes_schema_and_maximum_output() {
+    let fixture = signal_core::test_support::ai_app_fixture();
+    let mut story = signal_core::test_support::story_fixture("multilingual-framing-story");
+    story.title = "研究🙂 lancement café".to_owned();
+    story.excerpt = "中文、العربية、emoji 🚀 plus \\\"quoted\\\" structured facts.".to_owned();
+    story.category = "研究/announcements".to_owned();
+    story.source_ids = vec![
+        "source-\\\"quoted\\\"".to_owned(),
+        "源-一".to_owned(),
+        "emoji-🙂".to_owned(),
+    ];
+    story.smart_summary = "A multilingual framing fixture.".to_owned();
+
+    let settings = signal_core::SummarySettings::default();
+    let prompt = signal_core::build_ai_summary_prompt(&story, &settings).unwrap();
+    let conservative_input = u64::try_from(
+        prompt
+            .system_text
+            .len()
+            .checked_add(prompt.user_text.len())
+            .unwrap(),
+    )
+    .unwrap()
+    .checked_add(1_024)
+    .unwrap();
+
+    let store = fixture.store();
+    store.upsert_stories(std::slice::from_ref(&story)).unwrap();
+    let mut profile = fixture.profile();
+    let reservation = conservative_input + u64::from(profile.limits.max_output_tokens);
+    profile.limits.max_daily_cost_microusd = Some(reservation - 1);
+    store.remove_model_profile(profile.id).unwrap();
+    store.create_model_profile(&profile).unwrap();
+    store.set_default_model_profile(Some(profile.id)).unwrap();
+
+    let report = fixture
+        .app
+        .summarize_story(&story.id, SummarizeOptions::default(), fixture.now)
+        .await
+        .unwrap();
+
+    assert_eq!(report.status, ManualGenerationStatus::BudgetExhausted);
+    assert_eq!(report.generation.skipped_budget, 1);
+    assert_eq!(fixture.provider.request_count(), 0);
+    assert!(store.list_generation_attempts().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn summarize_cache_hit_and_force_share_identity_and_select_forced_variant() {
     let fixture = signal_core::test_support::ai_app_fixture().with_max_items(1);
     let refresh = fixture

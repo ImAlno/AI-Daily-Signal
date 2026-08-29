@@ -14,6 +14,7 @@ use crate::{
 
 const RESERVATION_SAFETY_MARGIN_SECONDS: u64 = 60;
 const COST_DENOMINATOR: u128 = 1_000_000;
+const PROVIDER_FRAMING_TOKEN_ALLOWANCE: u64 = 1_024;
 const MODEL_TEST_PUBLISHED_AT: DateTime<Utc> = DateTime::<Utc>::UNIX_EPOCH;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -512,16 +513,18 @@ fn update_report(report: &mut GenerationReport, generated: &SingleGeneration) {
 }
 
 fn estimate_prompt_tokens(prompt: &crate::AiSummaryPrompt) -> Result<u64> {
-    let characters = prompt
+    // Provider tokenizers differ, but their byte-fallback vocabularies cannot require more
+    // content tokens than the canonical prompt's UTF-8 byte length. Reserve one token per byte
+    // plus a fixed allowance for provider message framing and the structured-output schema.
+    let prompt_bytes = prompt
         .system_text
-        .chars()
-        .count()
-        .checked_add(prompt.user_text.chars().count())
+        .len()
+        .checked_add(prompt.user_text.len())
         .ok_or_else(|| arithmetic_error("prompt length"))?;
-    let characters = u64::try_from(characters).map_err(|_| arithmetic_error("prompt length"))?;
-    characters
-        .checked_add(2)
-        .map(|value| value / 3)
+    let prompt_bytes =
+        u64::try_from(prompt_bytes).map_err(|_| arithmetic_error("prompt length"))?;
+    prompt_bytes
+        .checked_add(PROVIDER_FRAMING_TOKEN_ALLOWANCE)
         .ok_or_else(|| arithmetic_error("prompt token estimate"))
 }
 
@@ -610,13 +613,13 @@ mod tests {
     use crate::{AiSummaryPrompt, ProviderKind, test_support};
 
     #[test]
-    fn prompt_estimate_uses_character_count_and_integer_ceiling() {
+    fn prompt_estimate_uses_utf8_bytes_plus_provider_framing_allowance() {
         let prompt = AiSummaryPrompt {
-            system_text: "éa".to_owned(),
-            user_text: "中bc".to_owned(),
+            system_text: "é🙂".to_owned(),
+            user_text: "中文".to_owned(),
         };
 
-        assert_eq!(estimate_prompt_tokens(&prompt).unwrap(), 2);
+        assert_eq!(estimate_prompt_tokens(&prompt).unwrap(), 1_036);
     }
 
     #[test]

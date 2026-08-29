@@ -63,7 +63,7 @@ fn nested_generation_help_exposes_every_supported_flag() {
         ),
         (
             &["summarize", "--help"][..],
-            ["--model", "--force"].as_slice(),
+            ["--profile", "--force"].as_slice(),
         ),
         (&["refresh", "--help"][..], ["--no-ai"].as_slice()),
     ];

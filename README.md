@@ -69,7 +69,7 @@ Useful profile and manual-generation commands include:
 signal models list
 signal models test daily-env
 signal summarize YOUR_STORY_ID
-signal summarize YOUR_STORY_ID --model daily-env --force
+signal summarize YOUR_STORY_ID --profile daily-env --force
 signal models remove daily-env
 ```
 

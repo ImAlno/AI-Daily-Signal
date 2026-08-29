@@ -143,18 +143,11 @@ async fn run(cli: Cli) -> Result<(), CliError> {
         },
         Command::Summarize {
             story_id,
-            model,
+            profile,
             force,
         } => {
             let report = app
-                .summarize_story(
-                    &story_id,
-                    SummarizeOptions {
-                        profile: model,
-                        force,
-                    },
-                    Utc::now(),
-                )
+                .summarize_story(&story_id, SummarizeOptions { profile, force }, Utc::now())
                 .await?;
             let status = report.status;
             let safe = output::summarize_data(&report);

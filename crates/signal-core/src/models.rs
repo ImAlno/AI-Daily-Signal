@@ -197,7 +197,7 @@ impl NewModelProfile {
             id,
             name: self.name.trim().to_owned(),
             provider: self.provider,
-            model: self.model.trim().to_owned(),
+            model: self.model,
             endpoint: self.endpoint,
             dialect: self.dialect,
             credential: self.credential,
@@ -236,7 +236,6 @@ impl ModelProfile {
     pub(crate) fn normalized(&self) -> Self {
         let mut profile = self.clone();
         profile.name = profile.name.trim().to_owned();
-        profile.model = profile.model.trim().to_owned();
         profile
     }
 }

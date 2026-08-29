@@ -207,7 +207,7 @@ signal models add \
 
 Custom endpoints must use HTTPS and must not contain URL user information. For local development only, literal loopback hosts `localhost`, `127.0.0.1`, and `[::1]` may use HTTP. Redirects are disabled, and profile output shows only the destination host rather than a complete sensitive path.
 
-The default profile limits are 5 summaries per refresh, 384 maximum output tokens, a 30-second timeout, and 2 retries. A daily monetary cap is disabled unless configured. Input and output rates must be supplied together and must be nonzero; a daily cap requires both rates. Currency is parsed exactly into integer micro-US-dollars rather than floating point.
+The default profile limits are 5 summaries per refresh, 384 maximum output tokens, a 30-second timeout, and 2 retries. A daily monetary cap is disabled unless configured. Input and output rates must be supplied together and must be nonzero; a daily cap requires both rates. Currency is parsed exactly into integer micro-US-dollars rather than floating point. Before dispatch, the provider-neutral input reservation counts every UTF-8 byte in the canonical prompt as one token and adds a checked 1,024-token allowance for provider message framing and the structured-output schema. The configured maximum output tokens are reserved in full.
 
 Before a request, Signal estimates prompt tokens conservatively and reserves the maximum output-token cost using the user rates. The daily check atomically counts completed charges plus active reservations across concurrent processes. Reported provider usage replaces the estimate when safely available. Unreported success, malformed output, timeouts, and other possibly-sent failures retain a conservative charge; a proven pre-send connection failure is uncharged. Stale reservations expire after the full request/retry horizon plus a safety margin.
 
@@ -245,14 +245,14 @@ signal models remove daily --yes
 
 Application-owned vault credentials are deleted best-effort. Environment variables are never changed. If vault deletion fails, output contains only a generic warning instructing the user to remove the stored credential manually; backend diagnostics are never exposed. Likewise, restoring or deleting a vault entry after a later profile-persistence failure is best-effort and preserves the original generic local error.
 
-### `summarize <story-id> [--model <profile>] [--force]`
+### `summarize <story-id> [--profile <profile>] [--force]`
 
-Generates or selects an AI summary for one stored story. Without `--model`, it uses the default profile; the override applies only to this invocation. The same credential, consent, request validation, daily budget, cache, immutable persistence, and structured-output validation used by automatic generation apply here:
+Generates or selects an AI summary for one stored story. Without `--profile`, it uses the default profile; the override applies only to this invocation. The same credential, consent, request validation, daily budget, cache, immutable persistence, and structured-output validation used by automatic generation apply here:
 
 ```sh
 signal summarize YOUR_STORY_ID
-signal summarize YOUR_STORY_ID --model daily-env
-signal summarize YOUR_STORY_ID --model daily-env --force
+signal summarize YOUR_STORY_ID --profile daily-env
+signal summarize YOUR_STORY_ID --profile daily-env --force
 signal --json summarize YOUR_STORY_ID
 ```
 

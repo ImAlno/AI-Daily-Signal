@@ -1,5 +1,6 @@
 use std::time::SystemTime;
 
+use reqwest::header::HeaderValue;
 use reqwest::{Client, Response};
 use serde::Deserialize;
 use serde_json::json;
@@ -10,6 +11,7 @@ use super::{
     ProviderFailure, ProviderFailureKind, ProviderRequest, ProviderResponse, ProviderUsage,
     RequestChargeStatus, RetryAttemptFailure, RetryPolicy, SummaryProvider, TokioRetrySleeper,
     parse_ai_summary, read_json_response, retry_provider_operation, shared_http_client,
+    transport_attempt_failure,
 };
 
 const OFFICIAL_ANTHROPIC_ORIGIN: &str = "https://api.anthropic.com";
@@ -65,6 +67,7 @@ impl AnthropicProvider {
         request: &ProviderRequest,
         credential: &ResolvedCredential,
     ) -> Result<ProviderResponse, RetryAttemptFailure> {
+        let api_key = anthropic_api_key_header(credential.expose_secret())?;
         let body = json!({
             "model": request.model,
             "system": request.system_text,
@@ -78,7 +81,7 @@ impl AnthropicProvider {
         let response = self
             .client
             .post(self.messages_endpoint())
-            .header("x-api-key", credential.expose_secret())
+            .header("x-api-key", api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .timeout(request.timeout)
             .json(&body)
@@ -164,23 +167,6 @@ fn http_status_attempt_failure(response: &Response) -> RetryAttemptFailure {
     )
 }
 
-fn transport_attempt_failure(error: reqwest::Error) -> RetryAttemptFailure {
-    let (kind, charge_status) = if error.is_timeout() {
-        (
-            ProviderFailureKind::Timeout,
-            RequestChargeStatus::PossiblySent,
-        )
-    } else if error.is_connect() {
-        (ProviderFailureKind::Transport, RequestChargeStatus::NotSent)
-    } else {
-        (
-            ProviderFailureKind::Transport,
-            RequestChargeStatus::PossiblySent,
-        )
-    };
-    RetryAttemptFailure::new(ProviderFailure::new(kind, charge_status), None)
-}
-
 fn malformed_attempt() -> RetryAttemptFailure {
     RetryAttemptFailure::new(sent(ProviderFailureKind::MalformedOutput), None)
 }
@@ -191,4 +177,28 @@ fn sent(kind: ProviderFailureKind) -> ProviderFailure {
 
 fn not_sent(kind: ProviderFailureKind) -> ProviderFailure {
     ProviderFailure::new(kind, RequestChargeStatus::NotSent)
+}
+
+fn anthropic_api_key_header(secret: &str) -> Result<HeaderValue, RetryAttemptFailure> {
+    let mut value = HeaderValue::from_str(secret)
+        .map_err(|_| RetryAttemptFailure::new(not_sent(ProviderFailureKind::Transport), None))?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::anthropic_api_key_header;
+
+    #[test]
+    fn request_construction_retains_a_sensitive_api_key_header() {
+        let api_key = anthropic_api_key_header("opaque-test-key").unwrap();
+        let request = reqwest::Client::new()
+            .post("https://example.com/v1/messages")
+            .header("x-api-key", api_key)
+            .build()
+            .unwrap();
+
+        assert!(request.headers()["x-api-key"].is_sensitive());
+    }
 }

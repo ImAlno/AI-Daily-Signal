@@ -192,6 +192,23 @@ async fn authentication_failure_is_not_retried_and_never_exposes_the_provider_bo
     assert!(!rendered.contains(SENTINEL_SECRET));
 }
 
+#[tokio::test]
+async fn malformed_api_key_is_a_not_sent_builder_failure() {
+    let server = MockServer::start().await;
+    let failure = AnthropicProvider::official_for_test(server.uri())
+        .unwrap()
+        .generate(
+            &request_with_retries(3),
+            &ResolvedCredential::new("invalid\ncredential".to_owned()),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.kind(), ProviderFailureKind::Transport);
+    assert_eq!(failure.charge_status(), RequestChargeStatus::NotSent);
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
 #[derive(Clone)]
 struct TransientThenSuccess {
     status: u16,

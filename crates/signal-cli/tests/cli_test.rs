@@ -1,8 +1,10 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use signal_core::{AppPaths, ConfigRepository, Source, SourceKind, Store};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 fn assert_tree_does_not_contain(root: &std::path::Path, sentinel: &str) {
     for entry in std::fs::read_dir(root).unwrap() {
@@ -16,7 +18,7 @@ fn assert_tree_does_not_contain(root: &std::path::Path, sentinel: &str) {
                 !bytes
                     .windows(sentinel.len())
                     .any(|window| window == sentinel.as_bytes()),
-                "credential sentinel leaked to {}",
+                "sensitive sentinel leaked to {}",
                 path.display()
             );
         }
@@ -234,6 +236,23 @@ fn successful_chat_response(label: &str) -> serde_json::Value {
         }],
         "usage": {"prompt_tokens": 51, "completion_tokens": 19, "total_tokens": 70}
     })
+}
+
+#[derive(Clone)]
+struct SuccessThenProviderFailure {
+    attempts: Arc<AtomicUsize>,
+    provider_body: &'static str,
+}
+
+impl Respond for SuccessThenProviderFailure {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            ResponseTemplate::new(200)
+                .set_body_json(successful_chat_response("Persistence acceptance"))
+        } else {
+            ResponseTemplate::new(503).set_body_string(self.provider_body)
+        }
+    }
 }
 
 #[test]
@@ -526,18 +545,43 @@ async fn refresh_selects_ai_fields_and_no_ai_makes_zero_provider_requests() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn automatic_provider_failure_keeps_refresh_successful_with_smart_fallback() {
+async fn credential_success_and_provider_failure_leave_outputs_and_persisted_tree_redacted() {
     const PROVIDER_BODY: &str = "SENTINEL_AUTOMATIC_PROVIDER_BODY";
     const CREDENTIAL: &str = "SENTINEL_AUTOMATIC_CREDENTIAL";
     let home = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
     configure_wiremock_feed(home.path(), &server).await;
+    let attempts = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/api/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(503).set_body_string(PROVIDER_BODY))
+        .respond_with(SuccessThenProviderFailure {
+            attempts: Arc::clone(&attempts),
+            provider_body: PROVIDER_BODY,
+        })
         .mount(&server)
         .await;
     add_custom_model(home.path(), &server, "Fallback", "FALLBACK_MODEL_KEY");
+
+    let success = Command::cargo_bin("signal")
+        .unwrap()
+        .env("SIGNAL_HOME", home.path())
+        .env("FALLBACK_MODEL_KEY", CREDENTIAL)
+        .args(["--json", "models", "test", "Fallback"])
+        .output()
+        .unwrap();
+    assert!(success.status.success(), "{success:?}");
+    for output in [&success.stdout, &success.stderr] {
+        assert!(
+            !output
+                .windows(CREDENTIAL.len())
+                .any(|value| value == CREDENTIAL.as_bytes())
+        );
+        assert!(
+            !output
+                .windows(PROVIDER_BODY.len())
+                .any(|value| value == PROVIDER_BODY.as_bytes())
+        );
+    }
 
     let output = Command::cargo_bin("signal")
         .unwrap()
@@ -579,6 +623,9 @@ async fn automatic_provider_failure_keeps_refresh_successful_with_smart_fallback
         value["data"]["briefing"]["items"][0]["story"]["smart_summary"],
         "A complete local AI fixture sentence."
     );
+    assert!(attempts.load(Ordering::SeqCst) >= 2);
+    assert_tree_does_not_contain(home.path(), CREDENTIAL);
+    assert_tree_does_not_contain(home.path(), PROVIDER_BODY);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -601,7 +648,7 @@ async fn summarize_uses_cache_force_regenerates_and_remove_retains_variants() {
             "--json",
             "summarize",
             "story-1",
-            "--model",
+            "--profile",
             "manual PROFILE",
         ];
         args.extend(extra);

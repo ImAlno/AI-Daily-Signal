@@ -90,15 +90,59 @@ fn two_connections_cannot_reserve_past_the_daily_budget() {
 #[test]
 fn milestone_one_database_migrates_without_losing_briefings_or_saved_state() {
     let fixture = signal_core::test_support::version_two_database();
+    let source_config_bytes_before = std::fs::read(&fixture.source_config_path).unwrap();
+    let source_config_before: signal_core::AppConfig =
+        toml::from_str(std::str::from_utf8(&source_config_bytes_before).unwrap()).unwrap();
+    assert_eq!(source_config_before, fixture.source_config);
+
     let store = Store::open(&fixture.path).unwrap();
+    let briefing = store.load_latest_briefing().unwrap().unwrap();
     assert_eq!(
-        store.load_latest_briefing().unwrap().unwrap().items[0]
-            .story
-            .id,
-        "story-1"
+        briefing.date,
+        signal_core::test_support::fixed_now().date_naive()
     );
-    assert!(store.find_story("story-1").unwrap().unwrap().is_saved);
+    assert_eq!(
+        briefing.generated_at,
+        signal_core::test_support::fixed_now()
+    );
+    assert_eq!(briefing.items.len(), 1);
+    assert_eq!(briefing.items[0].position, 1);
+    assert_eq!(briefing.items[0].section, "top_signals");
+    assert!(!briefing.items[0].is_stale);
+    assert_eq!(briefing.items[0].story.id, "story-1");
+
+    let selected_story = store.find_story("story-1").unwrap().unwrap();
+    assert!(selected_story.is_read);
+    assert!(selected_story.is_saved);
+    let story_ids = store
+        .list_latest()
+        .unwrap()
+        .into_iter()
+        .map(|story| story.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        story_ids,
+        ["story-1".to_owned(), "story-2".to_owned()].into()
+    );
+
+    let refresh = store.latest_refresh_run().unwrap().unwrap();
+    assert_eq!(
+        refresh.started_at,
+        signal_core::test_support::fixed_now() - chrono::Duration::minutes(5)
+    );
+    assert_eq!(
+        refresh.finished_at,
+        Some(signal_core::test_support::fixed_now() - chrono::Duration::minutes(4))
+    );
+    assert_eq!(refresh.successful_sources, 3);
+    assert_eq!(refresh.failed_sources, 1);
     assert!(store.list_model_profiles().unwrap().is_empty());
+
+    let source_config_bytes_after = std::fs::read(&fixture.source_config_path).unwrap();
+    assert_eq!(source_config_bytes_after, source_config_bytes_before);
+    let source_config_after: signal_core::AppConfig =
+        toml::from_str(std::str::from_utf8(&source_config_bytes_after).unwrap()).unwrap();
+    assert_eq!(source_config_after, fixture.source_config);
 }
 
 #[test]

@@ -44,8 +44,8 @@ pub enum Command {
     },
     Summarize {
         story_id: String,
-        #[arg(long)]
-        model: Option<String>,
+        #[arg(long, alias = "model")]
+        profile: Option<String>,
         #[arg(long)]
         force: bool,
     },

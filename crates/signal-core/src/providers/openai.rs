@@ -10,6 +10,7 @@ use super::{
     ProviderFailure, ProviderFailureKind, ProviderRequest, ProviderResponse, ProviderUsage,
     RequestChargeStatus, RetryAttemptFailure, RetryPolicy, SummaryProvider, TokioRetrySleeper,
     parse_ai_summary, read_json_response, retry_provider_operation, shared_http_client,
+    transport_attempt_failure,
 };
 
 const OFFICIAL_OPENAI_ORIGIN: &str = "https://api.openai.com";
@@ -337,23 +338,6 @@ fn http_status_attempt_failure(response: &Response) -> RetryAttemptFailure {
         sent(ProviderFailureKind::from_http_status(response.status())),
         retry_after,
     )
-}
-
-fn transport_attempt_failure(error: reqwest::Error) -> RetryAttemptFailure {
-    let (kind, charge_status) = if error.is_timeout() {
-        (
-            ProviderFailureKind::Timeout,
-            RequestChargeStatus::PossiblySent,
-        )
-    } else if error.is_connect() {
-        (ProviderFailureKind::Transport, RequestChargeStatus::NotSent)
-    } else {
-        (
-            ProviderFailureKind::Transport,
-            RequestChargeStatus::PossiblySent,
-        )
-    };
-    RetryAttemptFailure::new(ProviderFailure::new(kind, charge_status), None)
 }
 
 fn malformed_attempt() -> RetryAttemptFailure {

@@ -287,11 +287,30 @@ pub mod test_support {
 
     pub struct VersionTwoDatabase {
         pub path: PathBuf,
+        pub source_config_path: PathBuf,
+        pub source_config: AppConfig,
+        _root: TemporaryRoot,
     }
 
     pub fn version_two_database() -> VersionTwoDatabase {
-        let path =
-            std::env::temp_dir().join(format!("signal-core-v2-{}.sqlite3", uuid::Uuid::new_v4()));
+        let root_path = std::env::temp_dir().join(format!(
+            "signal-core-v2-{}",
+            uuid::Uuid::new_v4().hyphenated()
+        ));
+        std::fs::create_dir_all(&root_path).unwrap();
+        let root = TemporaryRoot(root_path.clone());
+        let paths = AppPaths::for_root(&root_path);
+        let mut source_config = config_fixture();
+        source_config.briefing.max_items = 7;
+        source_config.briefing.stale_after_minutes = 321;
+        source_config.sources[0].enabled = false;
+        source_config.sources[0].weight = 0.37;
+        ConfigRepository::new(paths.clone())
+            .save(&source_config)
+            .unwrap();
+        let source_config_path = paths.config_dir.join("config.toml");
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let path = paths.data_dir.join("signal.sqlite3");
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
             .execute_batch(include_str!("../migrations/001_initial.sql"))
@@ -313,7 +332,7 @@ pub mod test_support {
                 "INSERT INTO stories (
                      id, title, canonical_url, excerpt, category, published_at, source_ids_json,
                      score_json, smart_summary, is_read, is_saved, updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, ?10)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1, ?10)",
                 rusqlite::params![
                     story.id,
                     story.title,
@@ -324,6 +343,27 @@ pub mod test_support {
                     serde_json::to_string(&story.source_ids).unwrap(),
                     serde_json::to_string(&story.score).unwrap(),
                     story.smart_summary,
+                    fixed_now().to_rfc3339(),
+                ],
+            )
+            .unwrap();
+        let second_story = story_fixture("story-2");
+        connection
+            .execute(
+                "INSERT INTO stories (
+                     id, title, canonical_url, excerpt, category, published_at, source_ids_json,
+                     score_json, smart_summary, is_read, is_saved, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 0, ?10)",
+                rusqlite::params![
+                    second_story.id,
+                    second_story.title,
+                    second_story.canonical_url,
+                    second_story.excerpt,
+                    second_story.category,
+                    second_story.published_at.map(|value| value.to_rfc3339()),
+                    serde_json::to_string(&second_story.source_ids).unwrap(),
+                    serde_json::to_string(&second_story.score).unwrap(),
+                    second_story.smart_summary,
                     fixed_now().to_rfc3339(),
                 ],
             )
@@ -345,8 +385,24 @@ pub mod test_support {
                 [fixed_now().date_naive().to_string()],
             )
             .unwrap();
+        connection
+            .execute(
+                "INSERT INTO refresh_runs (
+                     started_at, finished_at, successful_sources, failed_sources, error_json
+                 ) VALUES (?1, ?2, 3, 1, NULL)",
+                rusqlite::params![
+                    (fixed_now() - chrono::Duration::minutes(5)).to_rfc3339(),
+                    (fixed_now() - chrono::Duration::minutes(4)).to_rfc3339(),
+                ],
+            )
+            .unwrap();
         drop(connection);
-        VersionTwoDatabase { path }
+        VersionTwoDatabase {
+            path,
+            source_config_path,
+            source_config,
+            _root: root,
+        }
     }
 
     pub fn config_fixture() -> AppConfig {
@@ -694,7 +750,7 @@ pub mod test_support {
         pub fn with_budget_for_one_request(self) -> Self {
             self.provider.report_usage(None);
             self.update_profile(|profile| {
-                profile.limits.max_daily_cost_microusd = Some(1_000);
+                profile.limits.max_daily_cost_microusd = Some(3_000);
             })
         }
 

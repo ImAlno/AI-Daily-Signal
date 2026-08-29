@@ -290,3 +290,42 @@ pub(crate) async fn read_json_response<T: DeserializeOwned>(
 fn response_failure(kind: ProviderFailureKind) -> ProviderFailure {
     ProviderFailure::new(kind, RequestChargeStatus::PossiblySent)
 }
+
+pub(super) fn transport_attempt_failure(error: reqwest::Error) -> RetryAttemptFailure {
+    let (kind, charge_status) =
+        classify_transport_failure(error.is_builder(), error.is_connect(), error.is_timeout());
+    RetryAttemptFailure::new(ProviderFailure::new(kind, charge_status), None)
+}
+
+fn classify_transport_failure(
+    is_builder: bool,
+    is_connect: bool,
+    is_timeout: bool,
+) -> (ProviderFailureKind, RequestChargeStatus) {
+    if is_builder || is_connect {
+        (ProviderFailureKind::Transport, RequestChargeStatus::NotSent)
+    } else if is_timeout {
+        (
+            ProviderFailureKind::Timeout,
+            RequestChargeStatus::PossiblySent,
+        )
+    } else {
+        (
+            ProviderFailureKind::Transport,
+            RequestChargeStatus::PossiblySent,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProviderFailureKind, RequestChargeStatus, classify_transport_failure};
+
+    #[test]
+    fn connect_timeout_is_classified_as_not_sent_before_timeout() {
+        assert_eq!(
+            classify_transport_failure(false, true, true),
+            (ProviderFailureKind::Transport, RequestChargeStatus::NotSent,)
+        );
+    }
+}

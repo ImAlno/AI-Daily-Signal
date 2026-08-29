@@ -1,10 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use secrecy::SecretString;
 use serde_json::{Value, json};
 use signal_core::{
-    ApiDialect, OpenAiProvider, ProviderFailureKind, ProviderRequest, ProviderUsage,
-    RequestChargeStatus, ResolvedCredential, SummaryProvider,
+    AiGenerationCoordinator, ApiDialect, CredentialStore, NewModelProfile, OpenAiProvider,
+    ProviderFailureKind, ProviderRegistry, ProviderRequest, ProviderUsage, RequestChargeStatus,
+    ResolvedCredential, SummaryProvider, SummarySettings,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -156,6 +158,107 @@ async fn official_responses_maps_the_wire_contract_and_collects_all_output_text(
     assert_eq!(body["store"], false);
     assert!(body.get("response_format").is_none());
     assert_sentinel_only_in_authorization(request);
+}
+
+#[tokio::test]
+async fn persisted_opaque_model_reaches_cache_report_and_provider_unchanged() {
+    const OPAQUE_MODEL: &str = "  vendor/opaque:model\t";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": "{\"what_happened\":\"The opaque model round trip completed.\",\"why_it_matters\":\"Identity bytes stayed stable.\",\"caveat\":null}"
+                }]
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let store = signal_core::test_support::temporary_store();
+    let fixture = signal_core::test_support::model_profile(
+        "persisted-opaque",
+        signal_core::ProviderKind::OpenAi,
+    );
+    let profile = NewModelProfile {
+        name: fixture.name,
+        provider: fixture.provider,
+        model: OPAQUE_MODEL.to_owned(),
+        endpoint: fixture.endpoint,
+        dialect: fixture.dialect,
+        credential: fixture.credential,
+        consented_at: fixture.consented_at,
+        enabled: fixture.enabled,
+        limits: fixture.limits,
+    }
+    .into_model_profile(fixture.id, fixture.created_at, fixture.updated_at)
+    .unwrap();
+    assert_eq!(profile.model, OPAQUE_MODEL);
+    store.create_model_profile(&profile).unwrap();
+    let persisted = store.find_model_profile(profile.id).unwrap().unwrap();
+    assert_eq!(persisted.model, OPAQUE_MODEL);
+
+    let story = signal_core::test_support::story_fixture("story-1");
+    let settings = SummarySettings::default();
+    let expected_cache_key = signal_core::summary_cache_key(
+        &story,
+        &persisted,
+        signal_core::AI_SUMMARY_PROMPT_VERSION,
+        &settings,
+    )
+    .unwrap();
+    let mut trimmed = persisted.clone();
+    trimmed.model = OPAQUE_MODEL.trim().to_owned();
+    assert_ne!(
+        expected_cache_key,
+        signal_core::summary_cache_key(
+            &story,
+            &trimmed,
+            signal_core::AI_SUMMARY_PROMPT_VERSION,
+            &settings,
+        )
+        .unwrap()
+    );
+
+    let credential_store = signal_core::test_support::MemoryCredentialStore::default();
+    credential_store
+        .set(
+            &persisted.credential,
+            SecretString::from(SENTINEL_SECRET.to_owned()),
+        )
+        .unwrap();
+    let environment = signal_core::test_support::MemoryEnvironmentReader::default();
+    let mut providers = ProviderRegistry::new();
+    providers.register(
+        signal_core::ProviderKind::OpenAi,
+        Arc::new(OpenAiProvider::official_for_test(server.uri()).unwrap()),
+    );
+    let report = AiGenerationCoordinator::new(&store, &credential_store, &environment, &providers)
+        .summarize(
+            &story,
+            &persisted,
+            true,
+            signal_core::test_support::fixed_now(),
+        )
+        .await
+        .unwrap();
+    let summary = report.summary.unwrap();
+    assert_eq!(summary.model, OPAQUE_MODEL);
+    assert_eq!(summary.cache_key, expected_cache_key);
+    assert_eq!(
+        store.list_summary_variants(&story.id).unwrap()[0].model,
+        OPAQUE_MODEL
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], OPAQUE_MODEL);
+    assert_sentinel_only_in_authorization(&requests[0]);
 }
 
 #[test]
@@ -339,6 +442,23 @@ async fn connection_failure_is_uncharged_and_not_retried() {
 
     assert_eq!(failure.kind(), ProviderFailureKind::Transport);
     assert_eq!(failure.charge_status(), RequestChargeStatus::NotSent);
+}
+
+#[tokio::test]
+async fn malformed_bearer_credential_is_a_not_sent_builder_failure() {
+    let server = MockServer::start().await;
+    let failure = OpenAiProvider::official_for_test(server.uri())
+        .unwrap()
+        .generate(
+            &official_request_with_retries(3),
+            &ResolvedCredential::new("invalid\ncredential".to_owned()),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(failure.kind(), ProviderFailureKind::Transport);
+    assert_eq!(failure.charge_status(), RequestChargeStatus::NotSent);
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[derive(Clone)]
