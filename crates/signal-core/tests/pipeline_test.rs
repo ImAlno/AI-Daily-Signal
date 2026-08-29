@@ -229,3 +229,40 @@ fn equal_score_and_timestamp_items_are_ordered_by_story_id() {
     assert_eq!(output.briefing.items[0].position, 1);
     assert_eq!(output.briefing.items[1].position, 2);
 }
+
+#[test]
+fn score_components_clamp_source_weight_and_cap_corroboration() {
+    let now = signal_core::test_support::fixed_now();
+    let mut config = signal_core::test_support::config_fixture();
+    let mut story = signal_core::test_support::story_fixture("bounded-score");
+    story.published_at = None;
+    story.source_ids = vec!["primary".to_owned()];
+
+    config.sources[0].weight = -0.5;
+    assert_eq!(
+        signal_core::score_story(&story, &config, now).source_weight,
+        0.0
+    );
+
+    config.sources[0].weight = 1.5;
+    assert_eq!(
+        signal_core::score_story(&story, &config, now).source_weight,
+        30.0
+    );
+
+    for source in &mut config.sources {
+        source.weight = 0.0;
+    }
+    for (source_ids, expected_corroboration) in [
+        (vec!["primary"], 0.0),
+        (vec!["primary", "syndicated"], 5.0),
+        (vec!["primary", "syndicated", "official"], 10.0),
+        (vec!["primary", "syndicated", "official", "low"], 10.0),
+    ] {
+        story.source_ids = source_ids.into_iter().map(str::to_owned).collect();
+        assert_eq!(
+            signal_core::score_story(&story, &config, now).corroboration,
+            expected_corroboration
+        );
+    }
+}
