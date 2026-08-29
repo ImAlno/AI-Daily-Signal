@@ -16,7 +16,7 @@ Install the [Rust 1.98 toolchain](https://www.rust-lang.org/tools/install), then
 cargo build --release -p signal-cli
 ```
 
-The resulting executable is `target/release/signal` on macOS and Linux, and `target\\release\\signal.exe` on Windows. Run it from the repository, add its directory to your `PATH`, or copy it to a directory already on your `PATH`.
+The resulting executable is `target/release/signal` on macOS and Linux, and `target\release\signal.exe` on Windows. Run it from the repository, add its directory to your `PATH`, or copy it to a directory already on your `PATH`.
 
 Start with:
 
@@ -38,7 +38,7 @@ Signal follows each operating system's standard application-directory convention
 | --- | --- | --- |
 | macOS | `~/Library/Application Support/com.AIDailySignal.AI-Daily-Signal` | `~/Library/Application Support/com.AIDailySignal.AI-Daily-Signal` |
 | Linux | `${XDG_CONFIG_HOME:-~/.config}/aidailysignal` | `${XDG_DATA_HOME:-~/.local/share}/aidailysignal` |
-| Windows | `%APPDATA%\\AIDailySignal\\AI Daily Signal\\config` | `%APPDATA%\\AIDailySignal\\AI Daily Signal\\data` |
+| Windows | `%APPDATA%\AIDailySignal\AI Daily Signal\config` | `%APPDATA%\AIDailySignal\AI Daily Signal\data` |
 
 For isolated testing or a portable local workspace, set `SIGNAL_HOME` to a directory. Signal then creates `config/`, `data/`, and `cache/` beneath it instead of using platform directories.
 

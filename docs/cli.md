@@ -10,7 +10,7 @@ Build with Rust 1.98 or newer within the 1.98 toolchain line:
 cargo build --release -p signal-cli
 ```
 
-Use `target/release/signal` on macOS/Linux or `target\\release\\signal.exe` on Windows. See the [README](../README.md#local-data) for normal platform locations.
+Use `target/release/signal` on macOS/Linux or `target\release\signal.exe` on Windows. See the [README](../README.md#local-data) for normal platform locations.
 
 ## Global options and output
 
@@ -47,7 +47,7 @@ signal --json refresh
 
 ### `today`
 
-Prints today's cached briefing only. It does not refresh or make a network request. It exits with code 4 when no briefing for the current date is stored.
+Prints the newest cached briefing only, even if that briefing was generated on an earlier date. It does not refresh or make a network request. The human output begins with `Status: fresh` or `Status: stale`, based on the configured `stale_after_minutes` interval; a stale briefing remains readable rather than being discarded. It exits with code 4 when no briefing is stored.
 
 ```sh
 signal today
@@ -60,6 +60,8 @@ Use `--refresh` for the explicit refresh path, which fetches sources before prin
 ```sh
 signal today --refresh
 ```
+
+With `--json`, the `data` object includes a top-level `is_stale` boolean for the briefing and an `is_stale` boolean for each item. A partial refresh may carry forward items from failed sources; those carried items are marked stale while newly collected items remain fresh.
 
 ### `latest`
 
@@ -139,7 +141,7 @@ The directory contains `config/config.toml`, `data/signal.sqlite3`, and `cache/`
 In PowerShell, use:
 
 ```powershell
-$env:SIGNAL_HOME = "$PWD\\.signal-demo"
+$env:SIGNAL_HOME = "$PWD\.signal-demo"
 signal init
 ```
 
