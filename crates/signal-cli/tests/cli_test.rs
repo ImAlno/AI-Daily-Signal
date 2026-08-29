@@ -502,3 +502,170 @@ fn failed_refresh_bookkeeping_is_a_redacted_storage_error() {
     );
     assert!(store.latest_refresh_run().unwrap().is_none());
 }
+
+#[test]
+fn today_loads_yesterdays_latest_briefing_and_reports_stale_status() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = AppPaths::for_root(home.path());
+    let repository = ConfigRepository::new(paths.clone());
+    let mut config = repository.load_or_create().unwrap();
+    config.briefing.stale_after_minutes = 60;
+    repository.save(&config).unwrap();
+    let mut briefing = signal_core::test_support::briefing_fixture();
+    briefing.date = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+    briefing.generated_at = chrono::Utc::now() - chrono::Duration::days(1);
+    let stories = briefing
+        .items
+        .iter()
+        .map(|item| item.story.clone())
+        .collect::<Vec<_>>();
+    Store::open(paths.data_dir.join("signal.sqlite3"))
+        .unwrap()
+        .commit_refresh(&stories, &briefing)
+        .unwrap();
+
+    let output = Command::cargo_bin("signal")
+        .unwrap()
+        .env("SIGNAL_HOME", home.path())
+        .args(["--json", "today"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["data"]["date"], briefing.date.to_string());
+    assert_eq!(value["data"]["is_stale"], true);
+    assert_eq!(value["data"]["items"][0]["story"]["id"], "story-1");
+    assert_eq!(value["data"]["items"][0]["is_stale"], false);
+
+    Command::cargo_bin("signal")
+        .unwrap()
+        .env("SIGNAL_HOME", home.path())
+        .arg("today")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: stale"));
+}
+
+#[test]
+fn today_refresh_returns_a_fresh_versioned_view() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = AppPaths::for_root(home.path());
+    let repository = ConfigRepository::new(paths);
+    let mut config = repository.load_or_create().unwrap();
+    let (feed_url, server) = local_feed_once();
+    config.sources = vec![Source {
+        id: "local-fixture".to_owned(),
+        name: "Local fixture".to_owned(),
+        category: "research".to_owned(),
+        enabled: true,
+        weight: 1.0,
+        kind: SourceKind::Feed { url: feed_url },
+    }];
+    repository.save(&config).unwrap();
+
+    let output = Command::cargo_bin("signal")
+        .unwrap()
+        .env("SIGNAL_HOME", home.path())
+        .args(["--json", "today", "--refresh"])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+
+    assert!(output.status.success(), "{:?}", output);
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["data"]["is_stale"], false);
+    assert_eq!(
+        value["data"]["items"][0]["story"]["title"],
+        "Local fixture signal"
+    );
+    assert_eq!(value["data"]["items"][0]["is_stale"], false);
+}
+
+#[test]
+fn partial_refresh_carries_and_persists_failed_source_item_as_stale() {
+    let home = tempfile::tempdir().unwrap();
+    let paths = AppPaths::for_root(home.path());
+    let repository = ConfigRepository::new(paths.clone());
+    let mut config = repository.load_or_create().unwrap();
+    config.briefing.max_items = 2;
+    let (feed_url, server) = local_feed_once();
+    config.sources = vec![
+        Source {
+            id: "local-fixture".to_owned(),
+            name: "Local fixture".to_owned(),
+            category: "research".to_owned(),
+            enabled: true,
+            weight: 1.0,
+            kind: SourceKind::Feed { url: feed_url },
+        },
+        Source {
+            id: "failed-fixture".to_owned(),
+            name: "Failed fixture".to_owned(),
+            category: "research".to_owned(),
+            enabled: true,
+            weight: 1.0,
+            kind: SourceKind::Feed {
+                url: "http://127.0.0.1:9/unreachable.xml".to_owned(),
+            },
+        },
+    ];
+    repository.save(&config).unwrap();
+    let mut previous = signal_core::test_support::briefing_fixture();
+    previous.date = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+    previous.generated_at = chrono::Utc::now() - chrono::Duration::days(1);
+    previous.items[0].story.source_ids = vec!["failed-fixture".to_owned()];
+    previous.items[0].story.title = "Carried source signal".to_owned();
+    let previous_stories = previous
+        .items
+        .iter()
+        .map(|item| item.story.clone())
+        .collect::<Vec<_>>();
+    Store::open(paths.data_dir.join("signal.sqlite3"))
+        .unwrap()
+        .commit_refresh(&previous_stories, &previous)
+        .unwrap();
+
+    let refresh = Command::cargo_bin("signal")
+        .unwrap()
+        .env("SIGNAL_HOME", home.path())
+        .args(["--json", "refresh"])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(refresh.status.success(), "{:?}", refresh);
+    let refresh_json: serde_json::Value = serde_json::from_slice(&refresh.stdout).unwrap();
+    let items = refresh_json["data"]["briefing"]["items"]
+        .as_array()
+        .unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["position"], 1);
+    assert_eq!(items[0]["story"]["title"], "Local fixture signal");
+    assert_eq!(items[0]["is_stale"], false);
+    assert_eq!(items[1]["position"], 2);
+    assert_eq!(items[1]["story"]["title"], "Carried source signal");
+    assert_eq!(items[1]["is_stale"], true);
+
+    let cached = Command::cargo_bin("signal")
+        .unwrap()
+        .env("SIGNAL_HOME", home.path())
+        .args(["--json", "today"])
+        .output()
+        .unwrap();
+    assert!(cached.status.success(), "{:?}", cached);
+    let cached_json: serde_json::Value = serde_json::from_slice(&cached.stdout).unwrap();
+    assert_eq!(cached_json["data"]["is_stale"], false);
+    assert_eq!(cached_json["data"]["items"][1]["is_stale"], true);
+    assert_eq!(
+        cached_json["data"]["items"][1]["story"]["title"],
+        "Carried source signal"
+    );
+    Command::cargo_bin("signal")
+        .unwrap()
+        .env("SIGNAL_HOME", home.path())
+        .arg("today")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Carried source signal [stale]"));
+}

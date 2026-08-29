@@ -191,6 +191,7 @@ pub fn assemble_briefing(stories: &[Story], config: &AppConfig, now: DateTime<Ut
         .map(|(index, story)| BriefingItem {
             position: u32::try_from(index + 1).unwrap_or(u32::MAX),
             section: "top_signals".to_owned(),
+            is_stale: false,
             story: story.clone(),
         })
         .collect();

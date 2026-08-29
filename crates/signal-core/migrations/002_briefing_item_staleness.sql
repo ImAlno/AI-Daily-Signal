@@ -1,0 +1,2 @@
+ALTER TABLE briefing_items
+ADD COLUMN is_stale INTEGER NOT NULL DEFAULT 0;

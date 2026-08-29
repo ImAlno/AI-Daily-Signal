@@ -55,6 +55,8 @@ pub struct Story {
 pub struct BriefingItem {
     pub position: u32,
     pub section: String,
+    #[serde(default)]
+    pub is_stale: bool,
     pub story: Story,
 }
 

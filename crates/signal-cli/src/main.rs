@@ -4,7 +4,7 @@ mod output;
 use chrono::Utc;
 use clap::Parser;
 use cli::{Cli, Command, SourceCommand};
-use signal_core::{SignalApp, SignalError};
+use signal_core::{SignalApp, SignalError, TodayView};
 
 #[tokio::main]
 async fn main() {
@@ -33,12 +33,12 @@ async fn run(cli: Cli) -> signal_core::Result<()> {
         }
         Command::Today { refresh } => {
             let now = Utc::now();
-            let briefing = if refresh {
-                app.refresh(now).await?.briefing
+            let view = if refresh {
+                TodayView::fresh(app.refresh(now).await?.briefing)
             } else {
-                app.today(now.date_naive())?
+                app.today(now)?
             };
-            print_value(json, output::briefing(&briefing), &briefing)?;
+            print_value(json, output::today(&view), &view)?;
         }
         Command::Latest { limit } => {
             let stories = app.latest(limit)?;

@@ -7,7 +7,7 @@ mod paths;
 mod pipeline;
 mod storage;
 
-pub use app::{RefreshReport, SignalApp};
+pub use app::{RefreshReport, SignalApp, TodayView};
 pub use collector::{CollectionReport, FeedCollector, SourceFailure};
 pub use config::{AppConfig, BriefingConfig, ConfigRepository};
 pub use domain::{Briefing, BriefingItem, Candidate, ScoreBreakdown, Source, SourceKind, Story};
@@ -69,6 +69,7 @@ pub mod test_support {
             items: vec![BriefingItem {
                 position: 1,
                 section: "top_signals".to_owned(),
+                is_stale: false,
                 story: story_fixture("story-1"),
             }],
         }

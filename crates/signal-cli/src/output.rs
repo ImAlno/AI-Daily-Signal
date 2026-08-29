@@ -1,4 +1,4 @@
-use signal_core::{Briefing, RefreshReport, Source, StoreStatus, Story};
+use signal_core::{Briefing, RefreshReport, Source, StoreStatus, Story, TodayView};
 
 #[derive(serde::Serialize)]
 pub struct JsonEnvelope<T> {
@@ -39,16 +39,23 @@ pub fn briefing(briefing: &Briefing) -> String {
     );
     for item in &briefing.items {
         let saved = if item.story.is_saved { " [saved]" } else { "" };
+        let stale = if item.is_stale { " [stale]" } else { "" };
         rendered.push_str(&format!(
-            "\n{}. {}{}\n{}\n{}\n",
+            "\n{}. {}{}{}\n{}\n{}\n",
             item.position,
             item.story.title,
             saved,
+            stale,
             item.story.smart_summary,
             item.story.canonical_url
         ));
     }
     rendered
+}
+
+pub fn today(view: &TodayView) -> String {
+    let status = if view.is_stale { "stale" } else { "fresh" };
+    format!("Status: {status}\n{}", briefing(&view.briefing))
 }
 
 pub fn refresh(report: &RefreshReport) -> String {

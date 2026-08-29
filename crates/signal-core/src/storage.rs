@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{Briefing, BriefingItem, Result, ScoreBreakdown, SignalError, Story};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/001_initial.sql");
+const ITEM_STALENESS_MIGRATION: &str =
+    include_str!("../migrations/002_briefing_item_staleness.sql");
 
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -95,13 +97,15 @@ impl Store {
         )?;
         for item in &briefing.items {
             transaction.execute(
-                "INSERT INTO briefing_items (briefing_date, story_id, position, section)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO briefing_items (
+                     briefing_date, story_id, position, section, is_stale
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     briefing.date.to_string(),
                     item.story.id,
                     i64::from(item.position),
-                    item.section
+                    item.section,
+                    item.is_stale
                 ],
             )?;
         }
@@ -194,7 +198,7 @@ impl Store {
         };
 
         let mut statement = connection.prepare(
-            "SELECT bi.position, bi.section,
+            "SELECT bi.position, bi.section, bi.is_stale,
                     s.id, s.title, s.canonical_url, s.excerpt, s.category, s.published_at,
                     s.source_ids_json, s.score_json, s.smart_summary, s.is_read, s.is_saved
              FROM briefing_items bi
@@ -213,6 +217,26 @@ impl Store {
             generated_at: parse_datetime(&generated_at)?,
             items,
         }))
+    }
+
+    pub fn load_latest_briefing(&self) -> Result<Option<Briefing>> {
+        let connection = self.connect()?;
+        let date = connection
+            .query_row(
+                "SELECT date FROM briefings
+                 ORDER BY generated_at DESC, date DESC
+                 LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(date) = date else {
+            return Ok(None);
+        };
+        let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+            .map_err(|error| SignalError::Serialization(error.to_string()))?;
+        drop(connection);
+        self.load_briefing(date)
     }
 
     pub fn list_latest(&self) -> Result<Vec<Story>> {
@@ -315,6 +339,19 @@ impl Store {
              VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             [],
         )?;
+        let has_item_staleness = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 2)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !has_item_staleness {
+            transaction.execute_batch(ITEM_STALENESS_MIGRATION)?;
+            transaction.execute(
+                "INSERT INTO schema_migrations (version, applied_at)
+                 VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                [],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -429,18 +466,19 @@ fn briefing_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredBriefing
     Ok(StoredBriefingItem {
         position: row.get(0)?,
         section: row.get(1)?,
+        is_stale: row.get(2)?,
         story: StoredStory {
-            id: row.get(2)?,
-            title: row.get(3)?,
-            canonical_url: row.get(4)?,
-            excerpt: row.get(5)?,
-            category: row.get(6)?,
-            published_at: row.get(7)?,
-            source_ids_json: row.get(8)?,
-            score_json: row.get(9)?,
-            smart_summary: row.get(10)?,
-            is_read: row.get(11)?,
-            is_saved: row.get(12)?,
+            id: row.get(3)?,
+            title: row.get(4)?,
+            canonical_url: row.get(5)?,
+            excerpt: row.get(6)?,
+            category: row.get(7)?,
+            published_at: row.get(8)?,
+            source_ids_json: row.get(9)?,
+            score_json: row.get(10)?,
+            smart_summary: row.get(11)?,
+            is_read: row.get(12)?,
+            is_saved: row.get(13)?,
         },
     })
 }
@@ -483,6 +521,7 @@ impl StoredStory {
 struct StoredBriefingItem {
     position: u32,
     section: String,
+    is_stale: bool,
     story: StoredStory,
 }
 
@@ -491,6 +530,7 @@ impl StoredBriefingItem {
         Ok(BriefingItem {
             position: self.position,
             section: self.section,
+            is_stale: self.is_stale,
             story: self.story.into_story()?,
         })
     }

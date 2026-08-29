@@ -166,3 +166,60 @@ fn refresh_bookkeeping_failure_rolls_back_the_briefing_commit() {
     assert!(store.find_story("story-1").unwrap().is_none());
     assert!(store.latest_refresh_run().unwrap().is_none());
 }
+
+#[test]
+fn latest_briefing_uses_newest_date_and_round_trips_item_staleness() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = signal_core::Store::open(temp.path().join("signal.sqlite3")).unwrap();
+    let mut older = signal_core::test_support::briefing_fixture();
+    older.date -= chrono::Duration::days(1);
+    older.generated_at -= chrono::Duration::days(1);
+    let mut latest = signal_core::test_support::briefing_fixture();
+    latest.items[0].is_stale = true;
+    let latest_stories = latest
+        .items
+        .iter()
+        .map(|item| item.story.clone())
+        .collect::<Vec<_>>();
+    let older_stories = older
+        .items
+        .iter()
+        .map(|item| item.story.clone())
+        .collect::<Vec<_>>();
+    store.commit_refresh(&latest_stories, &latest).unwrap();
+    store.commit_refresh(&older_stories, &older).unwrap();
+
+    let loaded = store.load_latest_briefing().unwrap().unwrap();
+
+    assert_eq!(loaded.date, latest.date);
+    assert!(loaded.items[0].is_stale);
+}
+
+#[test]
+fn opening_a_version_one_database_adds_persisted_item_staleness() {
+    let temp = tempfile::tempdir().unwrap();
+    let database_path = temp.path().join("signal.sqlite3");
+    let connection = rusqlite::Connection::open(&database_path).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/001_initial.sql"))
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (1, '2026-08-29T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = signal_core::Store::open(&database_path).unwrap();
+    let mut briefing = signal_core::test_support::briefing_fixture();
+    briefing.items[0].is_stale = true;
+    let stories = briefing
+        .items
+        .iter()
+        .map(|item| item.story.clone())
+        .collect::<Vec<_>>();
+    store.commit_refresh(&stories, &briefing).unwrap();
+
+    assert!(store.load_latest_briefing().unwrap().unwrap().items[0].is_stale);
+}
