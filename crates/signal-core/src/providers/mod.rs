@@ -46,13 +46,9 @@ impl ProviderRequest {
         profile: &ModelProfile,
         prompt: AiSummaryPrompt,
     ) -> crate::Result<Self> {
-        if profile.endpoint.as_ref().is_some_and(|endpoint| {
-            !endpoint.username().is_empty() || endpoint.password().is_some()
-        }) {
-            return Err(SignalError::InvalidConfiguration(
-                "provider request endpoint is invalid".to_owned(),
-            ));
-        }
+        profile.validate().map_err(|_| {
+            SignalError::InvalidConfiguration("provider request profile is invalid".to_owned())
+        })?;
 
         Ok(Self {
             story_id: story_id.into(),

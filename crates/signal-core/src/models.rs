@@ -1,5 +1,3 @@
-use std::net::IpAddr;
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -363,21 +361,20 @@ fn validate_endpoint(endpoint: &Url) -> Result<()> {
     let Some(host) = endpoint.host_str() else {
         return invalid("custom endpoint must have a host");
     };
-    if endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && is_loopback(host)) {
+    if endpoint.scheme() != "https"
+        && !(endpoint.scheme() == "http" && is_literal_loopback_host(host))
+    {
         return invalid("custom endpoint must use HTTPS unless it is loopback HTTP");
     }
     Ok(())
 }
 
-fn is_loopback(host: &str) -> bool {
+pub(crate) fn is_literal_loopback_host(host: &str) -> bool {
     let host = host
         .strip_prefix('[')
         .and_then(|host| host.strip_suffix(']'))
         .unwrap_or(host);
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
 fn valid_environment_variable(value: &str) -> bool {

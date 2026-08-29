@@ -153,6 +153,7 @@ fn provider_request_debug_redacts_story_prompt_model_and_endpoint() {
     );
     profile.model = "SENTINEL-MODEL".to_owned();
     profile.endpoint = Some("https://example.com/SENTINEL-ENDPOINT".parse().unwrap());
+    profile.dialect = Some(signal_core::ApiDialect::Responses);
     let prompt = AiSummaryPrompt {
         system_text: "SENTINEL-SYSTEM".to_owned(),
         user_text: "SENTINEL-USER-TEXT".to_owned(),
@@ -176,6 +177,7 @@ fn provider_request_rejects_url_user_info_without_echoing_it() {
             .parse()
             .unwrap(),
     );
+    profile.dialect = Some(signal_core::ApiDialect::Responses);
     let prompt = AiSummaryPrompt {
         system_text: "system".to_owned(),
         user_text: "user".to_owned(),
@@ -187,6 +189,27 @@ fn provider_request_rejects_url_user_info_without_echoing_it() {
     assert!(matches!(error, SignalError::InvalidConfiguration(_)));
     assert!(!rendered.contains("SENTINEL"));
     assert!(!rendered.contains("example.com"));
+}
+
+#[test]
+fn provider_request_revalidates_a_mutated_nonloopback_http_profile() {
+    let mut profile = signal_core::test_support::model_profile(
+        "unsafe-request-endpoint",
+        signal_core::ProviderKind::OpenAiCompatible,
+    );
+    profile.endpoint = Some("http://SENTINEL-UNSAFE.example/v1".parse().unwrap());
+    profile.dialect = Some(signal_core::ApiDialect::Responses);
+    let prompt = AiSummaryPrompt {
+        system_text: "system".to_owned(),
+        user_text: "user".to_owned(),
+    };
+
+    let error = ProviderRequest::from_profile("story", &profile, prompt).unwrap_err();
+    let rendered = format!("{error:?} {error}");
+
+    assert!(matches!(error, SignalError::InvalidConfiguration(_)));
+    assert!(!rendered.contains("SENTINEL"));
+    assert!(!rendered.contains("example"));
 }
 
 #[test]

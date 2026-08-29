@@ -32,7 +32,21 @@ impl OpenAiProvider {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn official_for_test(origin: impl AsRef<str>) -> Result<Self, ProviderFailure> {
-        Self::with_official_origin(origin.as_ref())
+        let origin = reqwest::Url::parse(origin.as_ref())
+            .map_err(|_| not_sent(ProviderFailureKind::Transport))?;
+        let valid_origin = matches!(origin.scheme(), "http" | "https")
+            && origin
+                .host_str()
+                .is_some_and(crate::models::is_literal_loopback_host)
+            && origin.username().is_empty()
+            && origin.password().is_none()
+            && origin.path() == "/"
+            && origin.query().is_none()
+            && origin.fragment().is_none();
+        if !valid_origin {
+            return Err(not_sent(ProviderFailureKind::Transport));
+        }
+        Self::with_official_origin(origin.as_str())
     }
 
     fn with_official_origin(origin: &str) -> Result<Self, ProviderFailure> {

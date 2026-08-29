@@ -53,6 +53,11 @@ fn custom_http_endpoint_is_allowed_only_for_loopback() {
             .is_ok()
     );
     assert!(
+        new_profile_with_endpoint("http://127.0.0.2:8080/v1")
+            .validate()
+            .is_err()
+    );
+    assert!(
         new_profile_with_endpoint("http://provider.example/v1")
             .validate()
             .is_err()

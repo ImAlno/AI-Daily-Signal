@@ -12,7 +12,7 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 const SENTINEL_SECRET: &str = "SENTINEL-OPENAI-SECRET";
 
 fn official_request() -> ProviderRequest {
-    official_request_with_retries(0)
+    official_request_with_retries(1)
 }
 
 fn official_request_with_retries(max_retries: u32) -> ProviderRequest {
@@ -39,7 +39,7 @@ fn compatible_request(endpoint: &str, dialect: ApiDialect) -> ProviderRequest {
     profile.endpoint = Some(endpoint.parse().unwrap());
     profile.dialect = Some(dialect);
     profile.limits.max_output_tokens = 222;
-    profile.limits.max_retries = 0;
+    profile.limits.max_retries = 1;
     let prompt = signal_core::AiSummaryPrompt {
         system_text: "System summary instructions.".to_owned(),
         user_text: "User story JSON.".to_owned(),
@@ -125,17 +125,48 @@ async fn official_responses_maps_the_wire_contract_and_collects_all_output_text(
         body["input"],
         r#"{"normalized_title":"a deterministic signal"}"#
     );
+    assert_eq!(
+        body["text"]["format"],
+        json!({
+            "type": "json_schema",
+            "name": "ai_summary",
+            "strict": true,
+            "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "what_happened": {
+                        "type": "string",
+                        "maxLength": 600
+                    },
+                    "why_it_matters": {
+                        "type": "string",
+                        "maxLength": 600
+                    },
+                    "caveat": {
+                        "type": ["string", "null"],
+                        "maxLength": 300
+                    }
+                },
+                "required": ["what_happened", "why_it_matters", "caveat"]
+            }
+        })
+    );
     assert_eq!(body["max_output_tokens"], 321);
     assert_eq!(body["store"], false);
-    assert_eq!(body["text"]["format"]["type"], "json_schema");
-    assert_eq!(body["text"]["format"]["name"], "ai_summary");
-    assert_eq!(body["text"]["format"]["strict"], true);
-    assert_eq!(
-        body["text"]["format"]["schema"]["additionalProperties"],
-        false
-    );
     assert!(body.get("response_format").is_none());
     assert_sentinel_only_in_authorization(request);
+}
+
+#[test]
+fn official_test_origin_rejects_a_nonloopback_host_before_any_request() {
+    let failure = OpenAiProvider::official_for_test("https://SENTINEL-EXTERNAL.example")
+        .err()
+        .expect("external test origins must be rejected");
+
+    assert_eq!(failure.kind(), ProviderFailureKind::Transport);
+    assert_eq!(failure.charge_status(), RequestChargeStatus::NotSent);
+    assert!(!format!("{failure:?} {failure}").contains("SENTINEL"));
 }
 
 #[tokio::test]
