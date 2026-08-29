@@ -22,6 +22,7 @@
 - Never write secrets to SQLite, TOML configuration, logs, or command output.
 - Return stable JSON envelopes with `schema_version: 1` when `--json` is supplied.
 - Use fixtures for tests; the test suite must not depend on live network services.
+- Use UV for every Python environment, dependency, or script introduced by development tooling; do not use `pip`, `python -m venv`, Poetry, or Conda. This milestone currently requires no Python runtime.
 - Run `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `cargo test --workspace --all-features` before every task commit.
 
 ## Milestone sequence
