@@ -1,3 +1,4 @@
+mod anthropic;
 mod openai;
 mod parse;
 mod retry;
@@ -15,6 +16,7 @@ use crate::{
     ResolvedCredential, SignalError,
 };
 
+pub use anthropic::AnthropicProvider;
 pub use openai::OpenAiProvider;
 pub use parse::{
     AI_SUMMARY_PROMPT_VERSION, AiSummaryPrompt, build_ai_summary_prompt, parse_ai_summary,

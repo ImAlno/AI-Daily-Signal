@@ -30,7 +30,7 @@ pub use pipeline::{
     score_story, smart_summary,
 };
 pub use providers::{
-    AI_SUMMARY_PROMPT_VERSION, AiSummaryPrompt, OpenAiProvider, ProviderFailure,
+    AI_SUMMARY_PROMPT_VERSION, AiSummaryPrompt, AnthropicProvider, OpenAiProvider, ProviderFailure,
     ProviderFailureKind, ProviderRegistry, ProviderRequest, ProviderResponse, ProviderUsage,
     RequestChargeStatus, RetryAttemptFailure, RetryPolicy, RetrySleeper, SummaryProvider,
     TokioRetrySleeper, build_ai_summary_prompt, parse_ai_summary, retry_provider_operation,
