@@ -104,3 +104,128 @@ fn smart_summary_uses_the_title_when_the_excerpt_is_empty() {
         "Fallback title"
     );
 }
+
+#[test]
+fn title_similarity_chain_never_merges_nonmatching_endpoints() {
+    let now = signal_core::test_support::fixed_now();
+    let mut first = signal_core::test_support::candidate_fixture("chain-a");
+    first.source_id = "primary".to_owned();
+    first.title = "a b c d e f g h i j".to_owned();
+    first.canonical_url = "https://example.com/chain-a".to_owned();
+
+    let mut middle = signal_core::test_support::candidate_fixture("chain-b");
+    middle.source_id = "syndicated".to_owned();
+    middle.title = "a b c d e f g h i j k".to_owned();
+    middle.canonical_url = "https://example.com/chain-b".to_owned();
+
+    let mut last = signal_core::test_support::candidate_fixture("chain-c");
+    last.source_id = "official".to_owned();
+    last.title = "a b c d e f g h i j k l".to_owned();
+    last.canonical_url = "https://example.com/chain-c".to_owned();
+
+    let output = signal_core::Pipeline::build(
+        vec![first, middle, last],
+        &signal_core::test_support::config_fixture(),
+        now,
+    );
+
+    assert_eq!(output.stories.len(), 2);
+    assert!(
+        output
+            .stories
+            .iter()
+            .all(|story| story.source_ids.len() < 3)
+    );
+    assert!(output.stories.iter().all(|story| {
+        !(story.source_ids.contains(&"primary".to_owned())
+            && story.source_ids.contains(&"official".to_owned()))
+    }));
+}
+
+#[test]
+fn canonical_url_duplicates_merge_even_when_titles_and_dates_differ() {
+    let now = signal_core::test_support::fixed_now();
+    let mut first = signal_core::test_support::candidate_fixture("canonical-a");
+    first.title = "Original announcement".to_owned();
+    first.canonical_url = "https://example.com/same".to_owned();
+
+    let mut duplicate = signal_core::test_support::candidate_fixture("canonical-b");
+    duplicate.source_id = "official".to_owned();
+    duplicate.title = "Completely unrelated syndication title".to_owned();
+    duplicate.canonical_url = "https://example.com/same#fragment".to_owned();
+    duplicate.published_at = Some(now - Duration::days(10));
+
+    let output = signal_core::Pipeline::build(
+        vec![first, duplicate],
+        &signal_core::test_support::config_fixture(),
+        now,
+    );
+
+    assert_eq!(output.stories.len(), 1);
+    assert_eq!(output.stories[0].source_ids, vec!["official", "primary"]);
+}
+
+#[test]
+fn smart_summary_falls_back_to_title_when_a_short_excerpt_has_no_complete_sentence() {
+    assert_eq!(
+        signal_core::smart_summary("Unfinished source text", "Fallback title"),
+        "Fallback title"
+    );
+}
+
+#[test]
+fn smart_summary_falls_back_to_title_when_an_over_limit_excerpt_has_no_complete_sentence() {
+    assert_eq!(
+        signal_core::smart_summary(&"x".repeat(361), "Fallback title"),
+        "Fallback title"
+    );
+}
+
+#[test]
+fn future_dated_stories_cap_the_recency_component_at_sixty() {
+    let now = signal_core::test_support::fixed_now();
+    let mut story = signal_core::test_support::story_fixture("future");
+    story.source_ids = vec!["primary".to_owned()];
+    story.published_at = Some(now + Duration::hours(2));
+
+    let score = signal_core::score_story(&story, &signal_core::test_support::config_fixture(), now);
+
+    assert_eq!(score.recency, 60.0);
+    assert!((0.0..=100.0).contains(&score.total));
+}
+
+#[test]
+fn output_is_identical_for_reversed_candidates_and_uses_the_supplied_timestamp() {
+    let config = signal_core::test_support::config_fixture();
+    let now = signal_core::test_support::fixed_now();
+    let candidates = signal_core::test_support::duplicate_candidates();
+    let normal = signal_core::Pipeline::build(candidates.clone(), &config, now);
+    let reversed =
+        signal_core::Pipeline::build(candidates.into_iter().rev().collect(), &config, now);
+
+    assert_eq!(normal, reversed);
+    assert_eq!(normal.briefing.date, now.date_naive());
+    assert_eq!(normal.briefing.generated_at, now);
+    assert_eq!(
+        normal.stories[0].id,
+        "04fbec20771ca513f59ad0c30b5e5650b7784a9e3d6668c32a14d638f1d562ad"
+    );
+}
+
+#[test]
+fn equal_score_and_timestamp_items_are_ordered_by_story_id() {
+    let now = signal_core::test_support::fixed_now();
+    let first = signal_core::test_support::candidate_fixture("first-tie");
+    let second = signal_core::test_support::candidate_fixture("second-tie");
+
+    let output = signal_core::Pipeline::build(
+        vec![second, first],
+        &signal_core::test_support::config_fixture(),
+        now,
+    );
+
+    assert_eq!(output.briefing.items.len(), 2);
+    assert!(output.briefing.items[0].story.id < output.briefing.items[1].story.id);
+    assert_eq!(output.briefing.items[0].position, 1);
+    assert_eq!(output.briefing.items[1].position, 2);
+}

@@ -95,23 +95,28 @@ pub fn deduplicate(candidates: Vec<Candidate>, config: &AppConfig) -> Vec<Story>
         .collect::<Vec<_>>();
     candidates.sort_by(candidate_order);
 
-    let mut parents = (0..candidates.len()).collect::<Vec<_>>();
-    for left in 0..candidates.len() {
-        for right in (left + 1)..candidates.len() {
-            if candidates_match(&candidates[left], &candidates[right]) {
-                union(&mut parents, left, right);
-            }
+    let mut url_groups = BTreeMap::<String, Vec<NormalizedCandidate>>::new();
+    for candidate in candidates {
+        url_groups
+            .entry(candidate.canonical_url.clone())
+            .or_default()
+            .push(candidate);
+    }
+
+    let mut groups = Vec::<Vec<NormalizedCandidate>>::new();
+    for url_group in url_groups.into_values() {
+        if let Some(index) = groups
+            .iter()
+            .position(|group| groups_can_merge(group, &url_group))
+        {
+            groups[index].extend(url_group);
+        } else {
+            groups.push(url_group);
         }
     }
 
-    let mut groups = BTreeMap::<usize, Vec<NormalizedCandidate>>::new();
-    for (index, candidate) in candidates.into_iter().enumerate() {
-        let root = find(&mut parents, index);
-        groups.entry(root).or_default().push(candidate);
-    }
-
     groups
-        .into_values()
+        .into_iter()
         .map(|group| merge_group(group, config))
         .collect()
 }
@@ -119,7 +124,7 @@ pub fn deduplicate(candidates: Vec<Candidate>, config: &AppConfig) -> Vec<Story>
 pub fn score_story(story: &Story, config: &AppConfig, now: DateTime<Utc>) -> ScoreBreakdown {
     let recency = story.published_at.map_or(10.0, |published_at| {
         let age_hours = now.signed_duration_since(published_at).num_seconds() as f64 / 3_600.0;
-        (60.0 - (age_hours * 1.25)).max(0.0)
+        (60.0 - (age_hours * 1.25)).clamp(0.0, 60.0)
     });
     let source_weight = story
         .source_ids
@@ -162,10 +167,6 @@ pub fn smart_summary(excerpt: &str, title: &str) -> String {
     if let Some(end) = last_complete_sentence {
         return plain_text[..end].to_owned();
     }
-    if plain_text.chars().count() <= SMART_SUMMARY_LIMIT {
-        return plain_text;
-    }
-
     collapse_whitespace(title)
 }
 
@@ -220,14 +221,20 @@ fn candidate_order(left: &NormalizedCandidate, right: &NormalizedCandidate) -> s
         .then_with(|| left.candidate.external_id.cmp(&right.candidate.external_id))
 }
 
-fn candidates_match(left: &NormalizedCandidate, right: &NormalizedCandidate) -> bool {
-    left.canonical_url == right.canonical_url
-        || (title_similarity(&left.normalized_title, &right.normalized_title) >= 0.9
-            && published_within_window(
-                left.candidate.published_at,
-                right.candidate.published_at,
-                TITLE_DUPLICATE_WINDOW,
-            ))
+fn groups_can_merge(left: &[NormalizedCandidate], right: &[NormalizedCandidate]) -> bool {
+    left.iter().all(|left_candidate| {
+        right.iter().all(|right_candidate| {
+            title_similarity(
+                &left_candidate.normalized_title,
+                &right_candidate.normalized_title,
+            ) >= 0.9
+                && published_within_window(
+                    left_candidate.candidate.published_at,
+                    right_candidate.candidate.published_at,
+                    TITLE_DUPLICATE_WINDOW,
+                )
+        })
+    })
 }
 
 fn title_similarity(left: &str, right: &str) -> f64 {
@@ -336,19 +343,4 @@ fn is_tracking_parameter(key: &str) -> bool {
 
 fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn find(parents: &mut [usize], index: usize) -> usize {
-    if parents[index] != index {
-        parents[index] = find(parents, parents[index]);
-    }
-    parents[index]
-}
-
-fn union(parents: &mut [usize], left: usize, right: usize) {
-    let left_root = find(parents, left);
-    let right_root = find(parents, right);
-    if left_root != right_root {
-        parents[right_root] = left_root;
-    }
 }
