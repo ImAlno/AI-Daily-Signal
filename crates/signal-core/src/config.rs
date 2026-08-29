@@ -1,6 +1,7 @@
 use std::{fs, io::Write};
 
 use crate::{AppPaths, Result, SignalError, Source};
+use atomic_write_file::AtomicWriteFile;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct BriefingConfig {
@@ -38,14 +39,12 @@ impl ConfigRepository {
         fs::create_dir_all(&self.paths.config_dir)?;
 
         let config_path = self.paths.config_dir.join("config.toml");
-        let temp_path = self.paths.config_dir.join("config.toml.tmp");
         let serialized = toml::to_string_pretty(config)
             .map_err(|error| SignalError::Serialization(error.to_string()))?;
-        let mut temp_file = fs::File::create(&temp_path)?;
-        temp_file.write_all(serialized.as_bytes())?;
-        temp_file.flush()?;
-        drop(temp_file);
-        fs::rename(temp_path, config_path)?;
+        let mut config_file = AtomicWriteFile::open(config_path)?;
+        config_file.write_all(serialized.as_bytes())?;
+        config_file.flush()?;
+        config_file.commit()?;
         Ok(())
     }
 

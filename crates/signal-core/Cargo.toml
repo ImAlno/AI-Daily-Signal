@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+atomic-write-file.workspace = true
 chrono.workspace = true
 directories.workspace = true
 feed-rs.workspace = true

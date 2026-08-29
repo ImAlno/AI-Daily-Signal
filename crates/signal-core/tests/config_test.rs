@@ -22,3 +22,17 @@ fn saved_source_overrides_survive_reload() {
 
     assert!(!repo.load_or_create().unwrap().sources[0].enabled);
 }
+
+#[cfg(windows)]
+#[test]
+fn overwriting_an_existing_config_succeeds_on_windows() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = AppPaths::for_root(temp.path());
+    let repo = ConfigRepository::new(paths);
+    let mut config = repo.load_or_create().unwrap();
+    config.sources[0].enabled = false;
+
+    repo.save(&config).unwrap();
+
+    assert!(!repo.load_or_create().unwrap().sources[0].enabled);
+}
