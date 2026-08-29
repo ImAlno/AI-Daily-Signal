@@ -119,6 +119,16 @@ async fn configure_wiremock_feed(home: &std::path::Path, server: &MockServer) {
 }
 
 fn add_custom_model(home: &std::path::Path, server: &MockServer, name: &str, variable: &str) {
+    add_custom_model_at_path(home, server, name, variable, "/api/v1/");
+}
+
+fn add_custom_model_at_path(
+    home: &std::path::Path,
+    server: &MockServer,
+    name: &str,
+    variable: &str,
+    base_path: &str,
+) {
     Command::cargo_bin("signal")
         .unwrap()
         .env("SIGNAL_HOME", home)
@@ -132,7 +142,7 @@ fn add_custom_model(home: &std::path::Path, server: &MockServer, name: &str, var
             "--model",
             "vendor/opaque:model",
             "--endpoint",
-            &format!("{}/api/v1/", server.uri()),
+            &format!("{}{base_path}", server.uri()),
             "--dialect",
             "chat-completions",
             "--credential-env",
@@ -149,6 +159,62 @@ fn add_custom_model(home: &std::path::Path, server: &MockServer, name: &str, var
         .args(["models", "use", name])
         .assert()
         .success();
+}
+
+fn assert_safe_ai_briefing(value: &serde_json::Value) {
+    assert!(value["date"].is_string());
+    assert!(value["generated_at"].is_string());
+    let item = &value["items"][0];
+    assert_eq!(item["position"], 1);
+    assert_eq!(item["section"], "top_signals");
+    assert_eq!(item["is_stale"], false);
+    assert!(item["story"]["id"].is_string());
+    assert_eq!(item["story"]["title"], "Local AI fixture signal");
+    assert_eq!(
+        item["story"]["canonical_url"],
+        "https://example.com/local-ai-signal"
+    );
+    assert_eq!(
+        item["story"]["excerpt"],
+        "A complete local AI fixture sentence."
+    );
+    assert_eq!(item["story"]["category"], "research");
+    assert!(item["story"]["published_at"].is_string());
+    assert_eq!(item["story"]["source_ids"][0], "wiremock-feed");
+    for score_field in ["recency", "source_weight", "corroboration", "total"] {
+        assert!(item["story"]["score"][score_field].is_number());
+    }
+    assert_eq!(
+        item["story"]["smart_summary"],
+        "A complete local AI fixture sentence."
+    );
+    assert_eq!(item["story"]["is_read"], false);
+    assert_eq!(item["story"]["is_saved"], false);
+
+    let summary = item["selected_summary"].as_object().unwrap();
+    assert_eq!(summary["provider"], "open-ai-compatible");
+    assert_eq!(summary["model"], "vendor/opaque:model");
+    assert_eq!(summary["endpoint_host"], "127.0.0.1");
+    assert_eq!(summary["dialect"], "chat-completions");
+    assert_eq!(summary["fields"]["what_happened"], "CLI AI happened.");
+    assert_eq!(summary["fields"]["why_it_matters"], "CLI AI matters.");
+    assert!(summary["generated_at"].is_string());
+    assert_eq!(summary["input_tokens"], 51);
+    assert_eq!(summary["output_tokens"], 19);
+    assert_eq!(summary["cost_microusd"], 0);
+    for forbidden in [
+        "id",
+        "story_id",
+        "profile_id",
+        "endpoint",
+        "prompt_version",
+        "cache_key",
+    ] {
+        assert!(
+            !summary.contains_key(forbidden),
+            "selected summary exposed {forbidden}"
+        );
+    }
 }
 
 fn successful_chat_response(label: &str) -> serde_json::Value {
@@ -366,11 +432,19 @@ async fn refresh_selects_ai_fields_and_no_ai_makes_zero_provider_requests() {
     let server = MockServer::start().await;
     configure_wiremock_feed(home.path(), &server).await;
     Mock::given(method("POST"))
-        .and(path("/api/v1/chat/completions"))
+        .and(path(
+            "/SENTINEL-CUSTOM-ENDPOINT-PATH/api/v1/chat/completions",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(successful_chat_response("CLI AI")))
         .mount(&server)
         .await;
-    add_custom_model(home.path(), &server, "Local custom", "LOCAL_CUSTOM_KEY");
+    add_custom_model_at_path(
+        home.path(),
+        &server,
+        "Local custom",
+        "LOCAL_CUSTOM_KEY",
+        "/SENTINEL-CUSTOM-ENDPOINT-PATH/api/v1/",
+    );
 
     let generated = Command::cargo_bin("signal")
         .unwrap()
@@ -383,13 +457,48 @@ async fn refresh_selects_ai_fields_and_no_ai_makes_zero_provider_requests() {
     let generated_json: serde_json::Value = serde_json::from_slice(&generated.stdout).unwrap();
     assert_eq!(generated_json["schema_version"], 1);
     assert_eq!(generated_json["data"]["successful_sources"], 1);
+    assert!(generated_json["data"]["failures"].is_array());
     assert_eq!(generated_json["data"]["generation"]["generated"], 1);
     assert_eq!(generated_json["data"]["generation"]["smart_fallbacks"], 0);
-    let selected = &generated_json["data"]["briefing"]["items"][0]["selected_summary"];
-    assert_eq!(selected["fields"]["what_happened"], "CLI AI happened.");
-    assert_eq!(selected["fields"]["why_it_matters"], "CLI AI matters.");
-    assert_eq!(selected["provider"], "open_ai_compatible");
-    assert_eq!(selected["model"], "vendor/opaque:model");
+    assert_safe_ai_briefing(&generated_json["data"]["briefing"]);
+    let generated_stdout = String::from_utf8(generated.stdout).unwrap();
+    for forbidden in [
+        "SENTINEL-CUSTOM-ENDPOINT-PATH",
+        "cache_key",
+        "prompt_version",
+        "profile_id",
+        "story_id",
+    ] {
+        assert!(
+            !generated_stdout.contains(forbidden),
+            "refresh JSON exposed {forbidden}"
+        );
+    }
+
+    let today = Command::cargo_bin("signal")
+        .unwrap()
+        .env("SIGNAL_HOME", home.path())
+        .args(["--json", "today"])
+        .output()
+        .unwrap();
+    assert!(today.status.success(), "{today:?}");
+    let today_json: serde_json::Value = serde_json::from_slice(&today.stdout).unwrap();
+    assert_eq!(today_json["schema_version"], 1);
+    assert_eq!(today_json["data"]["is_stale"], false);
+    assert_safe_ai_briefing(&today_json["data"]);
+    let today_stdout = String::from_utf8(today.stdout).unwrap();
+    for forbidden in [
+        "SENTINEL-CUSTOM-ENDPOINT-PATH",
+        "cache_key",
+        "prompt_version",
+        "profile_id",
+        "story_id",
+    ] {
+        assert!(
+            !today_stdout.contains(forbidden),
+            "today JSON exposed {forbidden}"
+        );
+    }
 
     let without_ai = Command::cargo_bin("signal")
         .unwrap()
@@ -408,7 +517,9 @@ async fn refresh_selects_ai_fields_and_no_ai_makes_zero_provider_requests() {
     assert_eq!(
         requests
             .iter()
-            .filter(|request| request.url.path() == "/api/v1/chat/completions")
+            .filter(|request| {
+                request.url.path() == "/SENTINEL-CUSTOM-ENDPOINT-PATH/api/v1/chat/completions"
+            })
             .count(),
         1
     );
@@ -584,10 +695,9 @@ async fn explicit_model_test_failure_uses_exit_six_with_redacted_report() {
             .windows(CREDENTIAL.len())
             .any(|value| value == CREDENTIAL.as_bytes())
     );
-    assert!(
-        String::from_utf8(output.stderr)
-            .unwrap()
-            .contains("AI generation failed")
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Warning: this model test may incur provider cost.\nAI generation failed\n"
     );
 }
 

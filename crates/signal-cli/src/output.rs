@@ -65,8 +65,68 @@ pub struct TestModelData {
 #[derive(serde::Serialize)]
 pub struct StoryData<'a> {
     #[serde(flatten)]
-    pub story: &'a Story,
+    pub story: StoryFieldsData<'a>,
     pub selected_summary: Option<SummaryVariantData>,
+}
+
+#[derive(serde::Serialize)]
+pub struct StoryFieldsData<'a> {
+    pub id: &'a str,
+    pub title: &'a str,
+    pub canonical_url: &'a str,
+    pub excerpt: &'a str,
+    pub category: &'a str,
+    pub published_at: Option<String>,
+    pub source_ids: &'a [String],
+    pub score: ScoreData,
+    pub smart_summary: &'a str,
+    pub is_read: bool,
+    pub is_saved: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct ScoreData {
+    pub recency: f64,
+    pub source_weight: f64,
+    pub corroboration: f64,
+    pub total: f64,
+}
+
+#[derive(serde::Serialize)]
+pub struct BriefingItemData<'a> {
+    pub position: u32,
+    pub section: &'a str,
+    pub is_stale: bool,
+    pub story: StoryFieldsData<'a>,
+    pub selected_summary: Option<SummaryVariantData>,
+}
+
+#[derive(serde::Serialize)]
+pub struct BriefingData<'a> {
+    pub date: String,
+    pub generated_at: String,
+    pub items: Vec<BriefingItemData<'a>>,
+}
+
+#[derive(serde::Serialize)]
+pub struct TodayData<'a> {
+    #[serde(flatten)]
+    pub briefing: BriefingData<'a>,
+    pub is_stale: bool,
+}
+
+#[derive(serde::Serialize)]
+pub struct RefreshData<'a> {
+    pub briefing: BriefingData<'a>,
+    pub successful_sources: usize,
+    pub failures: Vec<SourceFailureData<'a>>,
+    pub generation: &'a GenerationReport,
+}
+
+#[derive(serde::Serialize)]
+pub struct SourceFailureData<'a> {
+    pub source_id: &'a str,
+    pub message: &'a str,
 }
 
 #[derive(serde::Serialize)]
@@ -100,11 +160,28 @@ pub fn status(status: &StoreStatus) -> String {
     )
 }
 
-pub fn briefing(briefing: &Briefing) -> String {
+pub fn briefing_data(briefing: &Briefing) -> BriefingData<'_> {
+    BriefingData {
+        date: briefing.date.to_string(),
+        generated_at: briefing.generated_at.to_rfc3339(),
+        items: briefing
+            .items
+            .iter()
+            .map(|item| BriefingItemData {
+                position: item.position,
+                section: &item.section,
+                is_stale: item.is_stale,
+                story: story_fields_data(&item.story),
+                selected_summary: item.selected_summary.as_ref().map(summary_variant_data),
+            })
+            .collect(),
+    }
+}
+
+pub fn briefing(briefing: &BriefingData<'_>) -> String {
     let mut rendered = format!(
         "Briefing for {}\nGenerated: {}\n",
-        briefing.date,
-        briefing.generated_at.to_rfc3339()
+        briefing.date, briefing.generated_at
     );
     for item in &briefing.items {
         let saved = if item.story.is_saved { " [saved]" } else { "" };
@@ -125,17 +202,40 @@ pub fn briefing(briefing: &Briefing) -> String {
     rendered
 }
 
-pub fn today(view: &TodayView) -> String {
+pub fn today_data(view: &TodayView) -> TodayData<'_> {
+    TodayData {
+        briefing: briefing_data(&view.briefing),
+        is_stale: view.is_stale,
+    }
+}
+
+pub fn today(view: &TodayData<'_>) -> String {
     let status = if view.is_stale { "stale" } else { "fresh" };
     format!("Status: {status}\n{}", briefing(&view.briefing))
 }
 
-pub fn refresh(report: &RefreshReport) -> String {
+pub fn refresh_data(report: &RefreshReport) -> RefreshData<'_> {
+    RefreshData {
+        briefing: briefing_data(&report.briefing),
+        successful_sources: report.successful_sources,
+        failures: report
+            .failures
+            .iter()
+            .map(|failure| SourceFailureData {
+                source_id: &failure.source_id,
+                message: &failure.message,
+            })
+            .collect(),
+        generation: &report.generation,
+    }
+}
+
+pub fn refresh(report: &RefreshData<'_>) -> String {
     format!(
         "Refreshed from {} source(s); {} failed\n{}\n{}",
         report.successful_sources,
         report.failures.len(),
-        generation(&report.generation),
+        generation(report.generation),
         briefing(&report.briefing)
     )
 }
@@ -145,8 +245,29 @@ pub fn story_data<'a>(
     selected_summary: Option<&SummaryVariant>,
 ) -> StoryData<'a> {
     StoryData {
-        story,
+        story: story_fields_data(story),
         selected_summary: selected_summary.map(summary_variant_data),
+    }
+}
+
+fn story_fields_data(story: &Story) -> StoryFieldsData<'_> {
+    StoryFieldsData {
+        id: &story.id,
+        title: &story.title,
+        canonical_url: &story.canonical_url,
+        excerpt: &story.excerpt,
+        category: &story.category,
+        published_at: story.published_at.map(|value| value.to_rfc3339()),
+        source_ids: &story.source_ids,
+        score: ScoreData {
+            recency: story.score.recency,
+            source_weight: story.score.source_weight,
+            corroboration: story.score.corroboration,
+            total: story.score.total,
+        },
+        smart_summary: &story.smart_summary,
+        is_read: story.is_read,
+        is_saved: story.is_saved,
     }
 }
 
@@ -393,10 +514,10 @@ fn generation_attempt_data(attempt: &GenerationAttempt) -> GenerationAttemptData
     }
 }
 
-fn summary_variant(summary: &SummaryVariant) -> String {
+fn summary_variant(summary: &SummaryVariantData) -> String {
     let mut rendered = format!(
         "Summary mode: AI\nProvider: {}\nModel: {}\nWhat happened: {}\nWhy it matters: {}\n",
-        provider(summary.provider),
+        summary.provider,
         summary.model,
         summary.fields.what_happened,
         summary.fields.why_it_matters

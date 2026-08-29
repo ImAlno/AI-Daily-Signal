@@ -49,7 +49,8 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             let report = app
                 .refresh_with_options(Utc::now(), RefreshOptions { ai: !no_ai })
                 .await?;
-            print_value(json, output::refresh(&report), &report)?;
+            let safe = output::refresh_data(&report);
+            print_value(json, output::refresh(&safe), &safe)?;
         }
         Command::Today { refresh } => {
             let now = Utc::now();
@@ -58,7 +59,8 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             } else {
                 app.today(now)?
             };
-            print_value(json, output::today(&view), &view)?;
+            let safe = output::today_data(&view);
+            print_value(json, output::today(&safe), &safe)?;
         }
         Command::Latest { limit } => {
             let stories = app.latest(limit)?;
@@ -124,11 +126,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 print_value(json, output::model_profile(&safe), &safe)?;
             }
             ModelCommand::Test { profile } => {
-                if std::io::stdin().is_terminal() {
-                    eprintln!(
-                        "Warning: this model test sends a paid provider request and may incur cost."
-                    );
-                }
+                eprintln!("Warning: this model test may incur provider cost.");
                 let report = app
                     .test_model(TestModelOptions { profile }, Utc::now())
                     .await?;
@@ -307,28 +305,41 @@ fn confirm_provider_data_sharing(
     consented: bool,
     interactive: bool,
 ) -> signal_core::Result<chrono::DateTime<Utc>> {
-    if consented {
-        return Ok(Utc::now());
-    }
+    confirm_provider_data_sharing_with(consented, interactive, || {
+        eprintln!(
+            "Provider data-sharing disclosure\nAI summary generation sends the selected story's title, excerpt, canonical URL, publication time, category, and source IDs to the configured provider."
+        );
+        eprint!("Consent to this provider data sharing? [y/N] ");
+        std::io::stderr().flush()?;
+        let mut response = String::new();
+        std::io::stdin().read_line(&mut response)?;
+        Ok(response)
+    })
+}
+
+fn confirm_provider_data_sharing_with(
+    consented: bool,
+    interactive: bool,
+    disclose_and_read: impl FnOnce() -> signal_core::Result<String>,
+) -> signal_core::Result<chrono::DateTime<Utc>> {
     if !interactive {
-        return Err(SignalError::InvalidConfiguration(
-            "explicit provider data-sharing consent is required".to_owned(),
-        ));
+        return if consented {
+            Ok(Utc::now())
+        } else {
+            Err(SignalError::InvalidConfiguration(
+                "explicit provider data-sharing consent is required".to_owned(),
+            ))
+        };
     }
 
-    eprintln!(
-        "Provider data-sharing disclosure\nAI summary generation sends the selected story's title, excerpt, canonical URL, publication time, category, and source IDs to the configured provider."
-    );
-    eprint!("Consent to this provider data sharing? [y/N] ");
-    std::io::stderr().flush()?;
-    let mut response = String::new();
-    std::io::stdin().read_line(&mut response)?;
-    if !matches!(response.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        return Err(SignalError::InvalidConfiguration(
+    let response = disclose_and_read()?;
+    if matches!(response.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(Utc::now())
+    } else {
+        Err(SignalError::InvalidConfiguration(
             "provider data-sharing consent was declined".to_owned(),
-        ));
+        ))
     }
-    Ok(Utc::now())
 }
 
 impl From<ProviderArg> for ProviderKind {
@@ -407,5 +418,42 @@ fn display_error(error: &CliError) -> String {
             }
             SignalError::Credential(_) => "Credential operation failed".to_owned(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn interactive_consent_flag_still_requires_disclosure_and_yes() {
+        let disclosures = Cell::new(0);
+
+        let consent = confirm_provider_data_sharing_with(true, true, || {
+            disclosures.set(disclosures.get() + 1);
+            Ok("yes".to_owned())
+        });
+
+        assert!(consent.is_ok());
+        assert_eq!(disclosures.get(), 1);
+    }
+
+    #[test]
+    fn interactive_consent_refusal_is_rejected_after_disclosure() {
+        let disclosures = Cell::new(0);
+
+        let consent = confirm_provider_data_sharing_with(true, true, || {
+            disclosures.set(disclosures.get() + 1);
+            Ok("no".to_owned())
+        });
+
+        assert!(matches!(
+            consent,
+            Err(SignalError::InvalidConfiguration(message))
+                if message == "provider data-sharing consent was declined"
+        ));
+        assert_eq!(disclosures.get(), 1);
     }
 }
