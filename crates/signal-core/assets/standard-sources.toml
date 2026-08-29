@@ -1,0 +1,59 @@
+[briefing]
+max_items = 7
+stale_after_minutes = 180
+
+[[sources]]
+id = "openai-news"
+name = "OpenAI News"
+category = "models_products"
+enabled = true
+weight = 1.0
+kind = { type = "feed", url = "https://openai.com/news/rss.xml" }
+
+[[sources]]
+id = "deepmind-blog"
+name = "Google DeepMind"
+category = "research"
+enabled = true
+weight = 1.0
+kind = { type = "feed", url = "https://deepmind.google/blog/rss.xml" }
+
+[[sources]]
+id = "google-ai"
+name = "Google AI"
+category = "models_products"
+enabled = true
+weight = 1.0
+kind = { type = "feed", url = "https://blog.google/innovation-and-ai/technology/ai/rss/" }
+
+[[sources]]
+id = "hugging-face"
+name = "Hugging Face"
+category = "open_source"
+enabled = true
+weight = 0.9
+kind = { type = "feed", url = "https://huggingface.co/blog/feed.xml" }
+
+[[sources]]
+id = "arxiv-ai"
+name = "arXiv Artificial Intelligence"
+category = "research"
+enabled = true
+weight = 0.8
+kind = { type = "feed", url = "https://export.arxiv.org/rss/cs.AI" }
+
+[[sources]]
+id = "eu-digital"
+name = "European Commission Digital Strategy"
+category = "policy"
+enabled = true
+weight = 0.9
+kind = { type = "feed", url = "https://digital-strategy.ec.europa.eu/en/rss.xml" }
+
+[[sources]]
+id = "github-blog"
+name = "GitHub Blog"
+category = "developer_tools"
+enabled = true
+weight = 0.8
+kind = { type = "feed", url = "https://github.blog/feed/" }
