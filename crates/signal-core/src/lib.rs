@@ -3,6 +3,7 @@ mod collector;
 mod config;
 mod domain;
 mod error;
+mod models;
 mod paths;
 mod pipeline;
 mod storage;
@@ -12,6 +13,10 @@ pub use collector::{CollectionReport, FeedCollector, SourceFailure};
 pub use config::{AppConfig, BriefingConfig, ConfigRepository};
 pub use domain::{Briefing, BriefingItem, Candidate, ScoreBreakdown, Source, SourceKind, Story};
 pub use error::{Result, SignalError};
+pub use models::{
+    ApiDialect, CredentialRef, ModelProfile, MoneyMicros, NewModelProfile, ProfileLimits,
+    ProviderKind,
+};
 pub use paths::AppPaths;
 pub use pipeline::{
     Pipeline, PipelineOutput, assemble_briefing, deduplicate, normalize_title, normalize_url,
@@ -22,10 +27,11 @@ pub use storage::{RefreshRun, Store, StoreStatus};
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
     use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+    use sha2::Digest;
 
     use crate::{
-        AppConfig, Briefing, BriefingConfig, BriefingItem, Candidate, ScoreBreakdown, Source,
-        SourceKind, Story,
+        AppConfig, Briefing, BriefingConfig, BriefingItem, Candidate, CredentialRef, ModelProfile,
+        ProfileLimits, ProviderKind, ScoreBreakdown, Source, SourceKind, Store, Story,
     };
 
     pub fn feed_source(id: &str) -> Source {
@@ -77,6 +83,33 @@ pub mod test_support {
 
     pub fn fixed_now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 8, 29, 12, 0, 0).unwrap()
+    }
+
+    pub fn temporary_store() -> Store {
+        let path =
+            std::env::temp_dir().join(format!("signal-core-{}.sqlite3", uuid::Uuid::new_v4()));
+        Store::open(path).unwrap()
+    }
+
+    pub fn model_profile(name: &str, provider: ProviderKind) -> ModelProfile {
+        let mut digest = sha2::Sha256::digest(name.as_bytes());
+        digest[6] = (digest[6] & 0x0f) | 0x50;
+        digest[8] = (digest[8] & 0x3f) | 0x80;
+        let id = uuid::Uuid::from_slice(&digest[..16]).unwrap();
+        ModelProfile {
+            id,
+            name: name.to_owned(),
+            provider,
+            model: format!("{name}-model"),
+            endpoint: None,
+            dialect: None,
+            credential: CredentialRef::for_profile(id),
+            consented_at: Some(fixed_now()),
+            enabled: true,
+            limits: ProfileLimits::default(),
+            created_at: fixed_now(),
+            updated_at: fixed_now(),
+        }
     }
 
     pub fn config_fixture() -> AppConfig {

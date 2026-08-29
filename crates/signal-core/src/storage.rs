@@ -4,11 +4,26 @@ use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-use crate::{Briefing, BriefingItem, Result, ScoreBreakdown, SignalError, Story};
+use crate::{
+    ApiDialect, Briefing, BriefingItem, CredentialRef, ModelProfile, ProfileLimits, ProviderKind,
+    Result, ScoreBreakdown, SignalError, Story,
+};
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/001_initial.sql");
-const ITEM_STALENESS_MIGRATION: &str =
-    include_str!("../migrations/002_briefing_item_staleness.sql");
+const MIGRATIONS: &[(i64, &str)] = &[
+    (
+        2,
+        include_str!("../migrations/002_briefing_item_staleness.sql"),
+    ),
+    (3, include_str!("../migrations/003_model_profiles.sql")),
+];
+
+const MODEL_PROFILE_COLUMNS: &str = "
+    id, name, provider, model, endpoint, dialect, credential_kind, credential_service,
+    credential_account, credential_variable, consented_at, enabled, max_summaries_per_refresh,
+    max_daily_cost_microusd, input_cost_microusd_per_million,
+    output_cost_microusd_per_million, max_output_tokens, timeout_seconds, max_retries,
+    created_at, updated_at";
 
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -142,6 +157,117 @@ impl Store {
             0,
             failed_sources,
             Some(r#"{"kind":"all_sources_failed"}"#),
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn create_model_profile(&self, profile: &ModelProfile) -> Result<()> {
+        profile.validate()?;
+        let profile = profile.normalized();
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_model_profile(&transaction, &profile)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn list_model_profiles(&self) -> Result<Vec<ModelProfile>> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT {MODEL_PROFILE_COLUMNS} FROM model_profiles ORDER BY lower(name), id"
+        ))?;
+        collect_model_profiles(statement.query_map([], model_profile_row)?)
+    }
+
+    pub fn find_model_profile(&self, id: uuid::Uuid) -> Result<Option<ModelProfile>> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                &format!("SELECT {MODEL_PROFILE_COLUMNS} FROM model_profiles WHERE id = ?1"),
+                [id.hyphenated().to_string()],
+                model_profile_row,
+            )
+            .optional()?
+            .map(StoredModelProfile::into_model_profile)
+            .transpose()
+    }
+
+    pub fn find_model_profile_by_name(&self, name: &str) -> Result<Option<ModelProfile>> {
+        let connection = self.connect()?;
+        connection
+            .query_row(
+                &format!(
+                    "SELECT {MODEL_PROFILE_COLUMNS} FROM model_profiles WHERE lower(name) = lower(?1)"
+                ),
+                [name.trim()],
+                model_profile_row,
+            )
+            .optional()?
+            .map(StoredModelProfile::into_model_profile)
+            .transpose()
+    }
+
+    pub fn set_default_model_profile(&self, profile_id: Option<uuid::Uuid>) -> Result<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        match profile_id {
+            Some(profile_id) => {
+                let exists = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM model_profiles WHERE id = ?1)",
+                    [profile_id.hyphenated().to_string()],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !exists {
+                    return Err(SignalError::NotFound(format!("model profile {profile_id}")));
+                }
+                transaction.execute(
+                    "INSERT INTO app_settings (key, value) VALUES ('default_model_profile_id', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [profile_id.hyphenated().to_string()],
+                )?;
+            }
+            None => {
+                transaction.execute(
+                    "DELETE FROM app_settings WHERE key = 'default_model_profile_id'",
+                    [],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn default_model_profile(&self) -> Result<Option<ModelProfile>> {
+        let connection = self.connect()?;
+        let profile_id = connection
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'default_model_profile_id'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(profile_id) = profile_id else {
+            return Ok(None);
+        };
+        let profile_id = uuid::Uuid::parse_str(&profile_id)
+            .map_err(|error| SignalError::Serialization(error.to_string()))?;
+        drop(connection);
+        self.find_model_profile(profile_id)
+    }
+
+    pub fn remove_model_profile(&self, profile_id: uuid::Uuid) -> Result<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let profile_id = profile_id.hyphenated().to_string();
+        let removed =
+            transaction.execute("DELETE FROM model_profiles WHERE id = ?1", [&profile_id])?;
+        if removed == 0 {
+            return Err(SignalError::NotFound(format!("model profile {profile_id}")));
+        }
+        transaction.execute(
+            "DELETE FROM app_settings WHERE key = 'default_model_profile_id' AND value = ?1",
+            [&profile_id],
         )?;
         transaction.commit()?;
         Ok(())
@@ -339,18 +465,20 @@ impl Store {
              VALUES (1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
             [],
         )?;
-        let has_item_staleness = transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 2)",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if !has_item_staleness {
-            transaction.execute_batch(ITEM_STALENESS_MIGRATION)?;
-            transaction.execute(
-                "INSERT INTO schema_migrations (version, applied_at)
-                 VALUES (2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                [],
+        for (version, migration) in MIGRATIONS {
+            let applied = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+                [version],
+                |row| row.get::<_, bool>(0),
             )?;
+            if !applied {
+                transaction.execute_batch(migration)?;
+                transaction.execute(
+                    "INSERT INTO schema_migrations (version, applied_at)
+                     VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                    [version],
+                )?;
+            }
         }
         transaction.commit()?;
         Ok(())
@@ -374,12 +502,113 @@ fn insert_refresh_run(
     Ok(())
 }
 
+fn insert_model_profile(transaction: &Transaction<'_>, profile: &ModelProfile) -> Result<()> {
+    let (credential_kind, credential_service, credential_account, credential_variable) =
+        match &profile.credential {
+            CredentialRef::SystemStore { service, account } => {
+                ("system_store", Some(service), Some(account), None)
+            }
+            CredentialRef::Environment { variable } => ("environment", None, None, Some(variable)),
+        };
+    transaction.execute(
+        "INSERT INTO model_profiles (
+             id, name, provider, model, endpoint, dialect, credential_kind, credential_service,
+             credential_account, credential_variable, consented_at, enabled,
+             max_summaries_per_refresh, max_daily_cost_microusd,
+             input_cost_microusd_per_million, output_cost_microusd_per_million,
+             max_output_tokens, timeout_seconds, max_retries, created_at, updated_at
+         ) VALUES (
+             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+             ?18, ?19, ?20, ?21
+         )",
+        params![
+            profile.id.hyphenated().to_string(),
+            profile.name,
+            profile.provider.as_storage(),
+            profile.model,
+            profile.endpoint.as_ref().map(url::Url::as_str),
+            profile.dialect.map(ApiDialect::as_storage),
+            credential_kind,
+            credential_service,
+            credential_account,
+            credential_variable,
+            profile.consented_at.map(|value| value.to_rfc3339()),
+            profile.enabled,
+            i64::from(profile.limits.max_summaries_per_refresh),
+            profile
+                .limits
+                .max_daily_cost_microusd
+                .map(integer_as_i64)
+                .transpose()?,
+            profile
+                .limits
+                .input_cost_microusd_per_million
+                .map(integer_as_i64)
+                .transpose()?,
+            profile
+                .limits
+                .output_cost_microusd_per_million
+                .map(integer_as_i64)
+                .transpose()?,
+            i64::from(profile.limits.max_output_tokens),
+            integer_as_i64(profile.limits.timeout_seconds)?,
+            i64::from(profile.limits.max_retries),
+            profile.created_at.to_rfc3339(),
+            profile.updated_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn integer_as_i64(value: u64) -> Result<i64> {
+    i64::try_from(value).map_err(|error| SignalError::Serialization(error.to_string()))
+}
+
 fn count_as_i64(count: usize) -> Result<i64> {
     i64::try_from(count).map_err(|error| SignalError::Serialization(error.to_string()))
 }
 
 fn count_as_u64(count: i64) -> Result<u64> {
     u64::try_from(count).map_err(|error| SignalError::Serialization(error.to_string()))
+}
+
+fn collect_model_profiles(
+    rows: rusqlite::MappedRows<
+        '_,
+        impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<StoredModelProfile>,
+    >,
+) -> Result<Vec<ModelProfile>> {
+    let mut profiles = Vec::new();
+    for row in rows {
+        profiles.push(row?.into_model_profile()?);
+    }
+    Ok(profiles)
+}
+
+fn model_profile_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredModelProfile> {
+    Ok(StoredModelProfile {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        provider: row.get(2)?,
+        model: row.get(3)?,
+        endpoint: row.get(4)?,
+        dialect: row.get(5)?,
+        credential_kind: row.get(6)?,
+        credential_service: row.get(7)?,
+        credential_account: row.get(8)?,
+        credential_variable: row.get(9)?,
+        consented_at: row.get(10)?,
+        enabled: row.get(11)?,
+        max_summaries_per_refresh: row.get(12)?,
+        max_daily_cost_microusd: row.get(13)?,
+        input_cost_microusd_per_million: row.get(14)?,
+        output_cost_microusd_per_million: row.get(15)?,
+        max_output_tokens: row.get(16)?,
+        timeout_seconds: row.get(17)?,
+        max_retries: row.get(18)?,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
+    })
 }
 
 fn upsert_stories_in_transaction(transaction: &Transaction<'_>, stories: &[Story]) -> Result<()> {
@@ -495,6 +724,111 @@ struct StoredStory {
     smart_summary: String,
     is_read: bool,
     is_saved: bool,
+}
+
+struct StoredModelProfile {
+    id: String,
+    name: String,
+    provider: String,
+    model: String,
+    endpoint: Option<String>,
+    dialect: Option<String>,
+    credential_kind: String,
+    credential_service: Option<String>,
+    credential_account: Option<String>,
+    credential_variable: Option<String>,
+    consented_at: Option<String>,
+    enabled: bool,
+    max_summaries_per_refresh: i64,
+    max_daily_cost_microusd: Option<i64>,
+    input_cost_microusd_per_million: Option<i64>,
+    output_cost_microusd_per_million: Option<i64>,
+    max_output_tokens: i64,
+    timeout_seconds: i64,
+    max_retries: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+impl StoredModelProfile {
+    fn into_model_profile(self) -> Result<ModelProfile> {
+        let credential = match self.credential_kind.as_str() {
+            "system_store" => CredentialRef::SystemStore {
+                service: required_database_value(self.credential_service, "credential service")?,
+                account: required_database_value(self.credential_account, "credential account")?,
+            },
+            "environment" => CredentialRef::Environment {
+                variable: required_database_value(self.credential_variable, "credential variable")?,
+            },
+            value => {
+                return Err(SignalError::Serialization(format!(
+                    "invalid credential kind {value:?}"
+                )));
+            }
+        };
+        let profile = ModelProfile {
+            id: uuid::Uuid::parse_str(&self.id)
+                .map_err(|error| SignalError::Serialization(error.to_string()))?,
+            name: self.name,
+            provider: ProviderKind::from_storage(&self.provider)?,
+            model: self.model,
+            endpoint: self
+                .endpoint
+                .map(|value| value.parse())
+                .transpose()
+                .map_err(|error: url::ParseError| SignalError::Serialization(error.to_string()))?,
+            dialect: self
+                .dialect
+                .as_deref()
+                .map(ApiDialect::from_storage)
+                .transpose()?,
+            credential,
+            consented_at: self
+                .consented_at
+                .map(|value| parse_datetime(&value))
+                .transpose()?,
+            enabled: self.enabled,
+            limits: ProfileLimits {
+                max_summaries_per_refresh: integer_as_u32(
+                    self.max_summaries_per_refresh,
+                    "max summaries per refresh",
+                )?,
+                max_daily_cost_microusd: self
+                    .max_daily_cost_microusd
+                    .map(|value| integer_as_u64(value, "daily cost"))
+                    .transpose()?,
+                input_cost_microusd_per_million: self
+                    .input_cost_microusd_per_million
+                    .map(|value| integer_as_u64(value, "input cost"))
+                    .transpose()?,
+                output_cost_microusd_per_million: self
+                    .output_cost_microusd_per_million
+                    .map(|value| integer_as_u64(value, "output cost"))
+                    .transpose()?,
+                max_output_tokens: integer_as_u32(self.max_output_tokens, "max output tokens")?,
+                timeout_seconds: integer_as_u64(self.timeout_seconds, "timeout seconds")?,
+                max_retries: integer_as_u32(self.max_retries, "max retries")?,
+            },
+            created_at: parse_datetime(&self.created_at)?,
+            updated_at: parse_datetime(&self.updated_at)?,
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+}
+
+fn required_database_value(value: Option<String>, field: &str) -> Result<String> {
+    value.ok_or_else(|| SignalError::Serialization(format!("missing {field}")))
+}
+
+fn integer_as_u64(value: i64, field: &str) -> Result<u64> {
+    u64::try_from(value)
+        .map_err(|error| SignalError::Serialization(format!("invalid {field}: {error}")))
+}
+
+fn integer_as_u32(value: i64, field: &str) -> Result<u32> {
+    u32::try_from(value)
+        .map_err(|error| SignalError::Serialization(format!("invalid {field}: {error}")))
 }
 
 impl StoredStory {
