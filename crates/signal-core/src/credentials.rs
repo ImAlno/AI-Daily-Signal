@@ -188,6 +188,7 @@ fn unavailable() -> SignalError {
 #[derive(Default)]
 pub struct MemoryCredentialStore {
     credentials: std::sync::Mutex<std::collections::HashMap<(String, String), SecretString>>,
+    fail_deletes: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -197,6 +198,18 @@ impl MemoryCredentialStore {
             .expect("test credential should be present")
             .expose_secret()
             .to_owned()
+    }
+
+    pub fn fail_deletes_for_test(&self, fail: bool) {
+        self.fail_deletes
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn credential_count_for_test(&self) -> usize {
+        self.credentials
+            .lock()
+            .expect("memory credential store mutex")
+            .len()
     }
 
     fn key(reference: &CredentialRef) -> Result<(String, String)> {
@@ -225,6 +238,11 @@ impl CredentialStore for MemoryCredentialStore {
     }
 
     fn delete(&self, reference: &CredentialRef) -> Result<()> {
+        if self.fail_deletes.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(SignalError::Credential(
+                "credential store operation failed".to_owned(),
+            ));
+        }
         self.credentials
             .lock()
             .expect("memory credential store mutex")

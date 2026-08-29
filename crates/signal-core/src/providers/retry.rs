@@ -40,6 +40,10 @@ impl RetryPolicy {
             .saturating_mul(self.max_retries.saturating_add(1))
     }
 
+    pub fn maximum_total_delay(self) -> Duration {
+        self.full_horizon()
+    }
+
     pub fn parse_retry_after(value: &str, now: SystemTime) -> Option<Duration> {
         if let Ok(seconds) = value.trim().parse::<u64>() {
             return Some(Duration::from_secs(seconds));

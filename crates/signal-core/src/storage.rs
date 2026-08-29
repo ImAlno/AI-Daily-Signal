@@ -389,11 +389,39 @@ impl Store {
         Ok(attempt)
     }
 
+    pub fn list_generation_attempts(&self) -> Result<Vec<GenerationAttempt>> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT {GENERATION_ATTEMPT_COLUMNS} FROM generation_attempts
+             ORDER BY reserved_at ASC, id ASC"
+        ))?;
+        let rows = statement.query_map([], generation_attempt_row)?;
+        let mut attempts = Vec::new();
+        for row in rows {
+            attempts.push(row?.into_generation_attempt()?);
+        }
+        Ok(attempts)
+    }
+
     pub fn select_story_summary(
         &self,
         story_id: &str,
         summary_variant_id: uuid::Uuid,
     ) -> Result<()> {
+        if self.select_story_summary_if_present(story_id, summary_variant_id)? {
+            Ok(())
+        } else {
+            Err(SignalError::NotFound(format!(
+                "briefing item for story {story_id}"
+            )))
+        }
+    }
+
+    pub fn select_story_summary_if_present(
+        &self,
+        story_id: &str,
+        summary_variant_id: uuid::Uuid,
+    ) -> Result<bool> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let variant_story_id = transaction
@@ -422,13 +450,8 @@ impl Store {
              ) AND story_id = ?2",
             params![summary_variant_id.hyphenated().to_string(), story_id],
         )?;
-        if changed == 0 {
-            return Err(SignalError::NotFound(format!(
-                "briefing item for story {story_id}"
-            )));
-        }
         transaction.commit()?;
-        Ok(())
+        Ok(changed > 0)
     }
 
     pub fn list_model_profiles(&self) -> Result<Vec<ModelProfile>> {

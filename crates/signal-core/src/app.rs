@@ -1,17 +1,72 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use chrono::{DateTime, Utc};
+use secrecy::SecretString;
+use url::Url;
+use uuid::Uuid;
 
 use crate::{
-    AppConfig, AppPaths, Briefing, ConfigRepository, FeedCollector, Pipeline, Result, SignalError,
-    Source, SourceFailure, Store, StoreStatus, Story,
+    AiGenerationCoordinator, AnthropicProvider, ApiDialect, AppConfig, AppPaths, Briefing,
+    ConfigRepository, CredentialRef, CredentialStore, EnvironmentReader, FeedCollector,
+    GeminiProvider, GenerationReport, ModelProfile, NewModelProfile, OpenAiProvider, Pipeline,
+    ProcessEnvironmentReader, ProfileLimits, ProviderKind, ProviderRegistry, Result, SignalError,
+    Source, SourceFailure, Store, StoreStatus, Story, SummarizeOptions, SummarizeReport,
+    SystemCredentialStore, TestModelOptions, TestModelReport, persist_system_credential_then,
 };
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RefreshOptions {
+    pub ai: bool,
+}
+
+impl Default for RefreshOptions {
+    fn default() -> Self {
+        Self { ai: true }
+    }
+}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct RefreshReport {
     pub briefing: Briefing,
     pub successful_sources: usize,
     pub failures: Vec<SourceFailure>,
+    #[serde(default)]
+    pub generation: GenerationReport,
+}
+
+pub enum AddModelCredential {
+    SystemStore { secret: SecretString },
+    Environment { variable: String },
+}
+
+pub struct AddModelInput {
+    pub name: String,
+    pub provider: ProviderKind,
+    pub model: String,
+    pub endpoint: Option<Url>,
+    pub dialect: Option<ApiDialect>,
+    pub credential: AddModelCredential,
+    pub consented_at: Option<DateTime<Utc>>,
+    pub enabled: bool,
+    pub limits: ProfileLimits,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct AddModelReport {
+    pub profile: ModelProfile,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialWarningKind {
+    DeleteFailed,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct RemoveModelReport {
+    pub removed_profile_id: Uuid,
+    pub credential_deleted: bool,
+    pub warning: Option<CredentialWarningKind>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -34,6 +89,9 @@ pub struct SignalApp {
     paths: AppPaths,
     config: AppConfig,
     store: Store,
+    credential_store: Arc<dyn CredentialStore>,
+    environment_reader: Arc<dyn EnvironmentReader>,
+    provider_registry: Arc<ProviderRegistry>,
 }
 
 impl SignalApp {
@@ -51,13 +109,55 @@ impl SignalApp {
                 )
             })?,
         };
+        let mut registry = ProviderRegistry::new();
+        registry.register(ProviderKind::OpenAi, Arc::new(OpenAiProvider::official()?));
+        registry.register(
+            ProviderKind::OpenAiCompatible,
+            Arc::new(OpenAiProvider::compatible()?),
+        );
+        registry.register(
+            ProviderKind::Anthropic,
+            Arc::new(AnthropicProvider::official()?),
+        );
+        registry.register(ProviderKind::Gemini, Arc::new(GeminiProvider::official()?));
+        Self::open_at_paths(
+            paths,
+            Arc::new(SystemCredentialStore),
+            Arc::new(ProcessEnvironmentReader),
+            Arc::new(registry),
+        )
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_with_services(
+        paths: AppPaths,
+        credential_store: Arc<dyn CredentialStore>,
+        environment_reader: Arc<dyn EnvironmentReader>,
+        provider_registry: Arc<ProviderRegistry>,
+    ) -> Result<Self> {
+        Self::open_at_paths(
+            paths,
+            credential_store,
+            environment_reader,
+            provider_registry,
+        )
+    }
+
+    fn open_at_paths(
+        paths: AppPaths,
+        credential_store: Arc<dyn CredentialStore>,
+        environment_reader: Arc<dyn EnvironmentReader>,
+        provider_registry: Arc<ProviderRegistry>,
+    ) -> Result<Self> {
         let config = ConfigRepository::new(paths.clone()).load_or_create()?;
         let store = storage_result(Store::open(paths.data_dir.join("signal.sqlite3")))?;
-
         Ok(Self {
             paths,
             config,
             store,
+            credential_store,
+            environment_reader,
+            provider_registry,
         })
     }
 
@@ -66,6 +166,15 @@ impl SignalApp {
     }
 
     pub async fn refresh(&self, now: DateTime<Utc>) -> Result<RefreshReport> {
+        self.refresh_with_options(now, RefreshOptions::default())
+            .await
+    }
+
+    pub async fn refresh_with_options(
+        &self,
+        now: DateTime<Utc>,
+        options: RefreshOptions,
+    ) -> Result<RefreshReport> {
         if !self.config.sources.iter().any(|source| source.enabled) {
             return Err(SignalError::InvalidConfiguration(
                 "at least one source must be enabled".to_owned(),
@@ -97,6 +206,15 @@ impl SignalApp {
             &failures,
             self.config.briefing.max_items,
         );
+        let generation = if options.ai {
+            storage_result(self.store.upsert_stories(&output.stories))?;
+            let profile = storage_result(self.store.default_model_profile())?;
+            self.coordinator()
+                .generate_briefing(&mut output.briefing, profile.as_ref(), now)
+                .await?
+        } else {
+            GenerationReport::default()
+        };
         storage_result(self.store.commit_refresh_with_counts(
             &output.stories,
             &output.briefing,
@@ -108,7 +226,123 @@ impl SignalApp {
             briefing: output.briefing,
             successful_sources,
             failures,
+            generation,
         })
+    }
+
+    pub fn list_models(&self) -> Result<Vec<ModelProfile>> {
+        storage_result(self.store.list_model_profiles())
+    }
+
+    pub fn add_model(&self, input: AddModelInput, now: DateTime<Utc>) -> Result<AddModelReport> {
+        if input.consented_at.is_none() {
+            return Err(SignalError::InvalidConfiguration(
+                "model provider data sharing consent is required".to_owned(),
+            ));
+        }
+        let id = Uuid::new_v4();
+        let (credential, system_secret) = match input.credential {
+            AddModelCredential::SystemStore { secret } => {
+                (CredentialRef::for_profile(id), Some(secret))
+            }
+            AddModelCredential::Environment { variable } => {
+                (CredentialRef::Environment { variable }, None)
+            }
+        };
+        let profile = NewModelProfile {
+            name: input.name,
+            provider: input.provider,
+            model: input.model,
+            endpoint: input.endpoint,
+            dialect: input.dialect,
+            credential,
+            consented_at: input.consented_at,
+            enabled: input.enabled,
+            limits: input.limits,
+        }
+        .into_model_profile(id, now, now)?;
+        match system_secret {
+            Some(secret) => persist_system_credential_then(
+                self.credential_store.as_ref(),
+                &profile.credential,
+                secret,
+                || storage_result(self.store.create_model_profile(&profile)),
+            )?,
+            None => storage_result(self.store.create_model_profile(&profile))?,
+        }
+        Ok(AddModelReport { profile })
+    }
+
+    pub fn use_model(&self, profile: &str) -> Result<ModelProfile> {
+        let profile = self.find_model_selector(profile)?;
+        if !profile.enabled || profile.consented_at.is_none() {
+            return Err(SignalError::InvalidConfiguration(
+                "default model profile must be enabled and consented".to_owned(),
+            ));
+        }
+        storage_result(self.store.set_default_model_profile(Some(profile.id)))?;
+        Ok(profile)
+    }
+
+    pub async fn test_model(
+        &self,
+        options: TestModelOptions,
+        now: DateTime<Utc>,
+    ) -> Result<TestModelReport> {
+        let profile = self.find_model_selector(&options.profile)?;
+        self.coordinator().test_model(&profile, now).await
+    }
+
+    pub fn remove_model(&self, profile: &str) -> Result<RemoveModelReport> {
+        let profile = self.find_model_selector(profile)?;
+        storage_result(self.store.remove_model_profile(profile.id))?;
+        match &profile.credential {
+            CredentialRef::Environment { .. } => Ok(RemoveModelReport {
+                removed_profile_id: profile.id,
+                credential_deleted: false,
+                warning: None,
+            }),
+            CredentialRef::SystemStore { .. } => {
+                match self.credential_store.delete(&profile.credential) {
+                    Ok(()) => Ok(RemoveModelReport {
+                        removed_profile_id: profile.id,
+                        credential_deleted: true,
+                        warning: None,
+                    }),
+                    Err(_) => Ok(RemoveModelReport {
+                        removed_profile_id: profile.id,
+                        credential_deleted: false,
+                        warning: Some(CredentialWarningKind::DeleteFailed),
+                    }),
+                }
+            }
+        }
+    }
+
+    pub async fn summarize_story(
+        &self,
+        story_id: &str,
+        options: SummarizeOptions,
+        now: DateTime<Utc>,
+    ) -> Result<SummarizeReport> {
+        let story = self.show(story_id)?;
+        let profile = match options.profile {
+            Some(selector) => self.find_model_selector(&selector)?,
+            None => storage_result(self.store.default_model_profile())?.ok_or_else(|| {
+                SignalError::NotFound("No default model profile is configured".to_owned())
+            })?,
+        };
+        let report = self
+            .coordinator()
+            .summarize(&story, &profile, options.force, now)
+            .await?;
+        if let Some(summary) = &report.summary {
+            storage_result(
+                self.store
+                    .select_story_summary_if_present(story_id, summary.id),
+            )?;
+        }
+        Ok(report)
     }
 
     pub fn today(&self, now: DateTime<Utc>) -> Result<TodayView> {
@@ -162,6 +396,29 @@ impl SignalApp {
         let updated = source.clone();
         ConfigRepository::new(self.paths.clone()).save(&self.config)?;
         Ok(updated)
+    }
+
+    fn coordinator(&self) -> AiGenerationCoordinator<'_> {
+        AiGenerationCoordinator::new(
+            &self.store,
+            self.credential_store.as_ref(),
+            self.environment_reader.as_ref(),
+            self.provider_registry.as_ref(),
+        )
+    }
+
+    fn find_model_selector(&self, selector: &str) -> Result<ModelProfile> {
+        let selector = selector.trim();
+        let by_id = Uuid::parse_str(selector)
+            .ok()
+            .map(|id| self.store.find_model_profile(id))
+            .transpose()?
+            .flatten();
+        by_id
+            .or(storage_result(
+                self.store.find_model_profile_by_name(selector),
+            )?)
+            .ok_or_else(|| SignalError::NotFound("Model profile was not found".to_owned()))
     }
 }
 
@@ -257,6 +514,9 @@ mod tests {
             paths,
             config,
             store,
+            credential_store: Arc::new(test_support::MemoryCredentialStore::default()),
+            environment_reader: Arc::new(test_support::MemoryEnvironmentReader::default()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
         };
 
         let view = app.today(now).unwrap();
