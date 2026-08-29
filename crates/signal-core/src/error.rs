@@ -18,6 +18,8 @@ pub enum SignalError {
     Storage(String),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("{0}")]
+    Credential(String),
 }
 
 pub type Result<T> = std::result::Result<T, SignalError>;

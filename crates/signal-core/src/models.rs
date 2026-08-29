@@ -82,6 +82,14 @@ impl CredentialRef {
         }
     }
 
+    pub(crate) fn system_store_parts(&self) -> Result<(&str, &str)> {
+        self.validate(None)?;
+        match self {
+            Self::SystemStore { service, account } => Ok((service, account)),
+            Self::Environment { .. } => invalid("credential must use the system store"),
+        }
+    }
+
     fn validate(&self, profile_id: Option<Uuid>) -> Result<()> {
         match self {
             Self::SystemStore { service, account } => {

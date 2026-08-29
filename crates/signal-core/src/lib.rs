@@ -1,6 +1,7 @@
 mod app;
 mod collector;
 mod config;
+mod credentials;
 mod domain;
 mod error;
 mod models;
@@ -11,6 +12,10 @@ mod storage;
 pub use app::{RefreshReport, SignalApp, TodayView};
 pub use collector::{CollectionReport, FeedCollector, SourceFailure};
 pub use config::{AppConfig, BriefingConfig, ConfigRepository};
+pub use credentials::{
+    CredentialResolver, CredentialStore, EnvironmentReader, ProcessEnvironmentReader,
+    ResolvedCredential, SystemCredentialStore, persist_system_credential_then,
+};
 pub use domain::{Briefing, BriefingItem, Candidate, ScoreBreakdown, Source, SourceKind, Story};
 pub use error::{Result, SignalError};
 pub use models::{
@@ -33,6 +38,8 @@ pub mod test_support {
         AppConfig, Briefing, BriefingConfig, BriefingItem, Candidate, CredentialRef, ModelProfile,
         ProfileLimits, ProviderKind, ScoreBreakdown, Source, SourceKind, Store, Story,
     };
+
+    pub use crate::credentials::MemoryCredentialStore;
 
     pub fn feed_source(id: &str) -> Source {
         Source {

@@ -106,7 +106,7 @@ fn exit_code(error: &SignalError) -> i32 {
         | SignalError::Serialization(_) => 2,
         SignalError::Network(_) | SignalError::Feed(_) | SignalError::Refresh(_) => 3,
         SignalError::NotFound(_) => 4,
-        SignalError::Database(_) | SignalError::Storage(_) => 5,
+        SignalError::Database(_) | SignalError::Storage(_) | SignalError::Credential(_) => 5,
     }
 }
 
@@ -121,5 +121,6 @@ fn display_error(error: &SignalError) -> String {
         }
         SignalError::NotFound(message) => message.clone(),
         SignalError::Database(_) | SignalError::Storage(_) => "Storage operation failed".to_owned(),
+        SignalError::Credential(_) => "Credential operation failed".to_owned(),
     }
 }
