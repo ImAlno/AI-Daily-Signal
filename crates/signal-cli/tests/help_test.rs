@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 #[test]
 fn documented_primary_commands_exist_in_help() {
     let output = assert_cmd::Command::cargo_bin("signal")
@@ -41,7 +43,7 @@ fn nested_generation_help_exposes_every_supported_flag() {
     let cases = [
         (
             &["models", "add", "--help"][..],
-            &[
+            [
                 "--name",
                 "--provider",
                 "--model",
@@ -56,10 +58,14 @@ fn nested_generation_help_exposes_every_supported_flag() {
                 "--timeout-seconds",
                 "--max-retries",
                 "--consent-provider-data-sharing",
-            ][..],
+            ]
+            .as_slice(),
         ),
-        (&["summarize", "--help"][..], &["--model", "--force"][..]),
-        (&["refresh", "--help"][..], &["--no-ai"][..]),
+        (
+            &["summarize", "--help"][..],
+            ["--model", "--force"].as_slice(),
+        ),
+        (&["refresh", "--help"][..], ["--no-ai"].as_slice()),
     ];
 
     for (arguments, expected_flags) in cases {
@@ -70,11 +76,28 @@ fn nested_generation_help_exposes_every_supported_flag() {
             .unwrap();
         assert!(output.status.success(), "help failed for {arguments:?}");
         let help = String::from_utf8(output.stdout).unwrap();
-        for flag in expected_flags {
+        let actual = command_specific_long_options(&help);
+        let expected = expected_flags
+            .iter()
+            .map(|flag| (*flag).to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected, "wrong option set for {arguments:?}");
+        for lookalike in ["--model-id", "--forceful", "--no-ai-mode"] {
             assert!(
-                help.contains(flag),
-                "missing {flag} from help for {arguments:?}"
+                !actual.contains(lookalike),
+                "lookalike {lookalike} appeared in help for {arguments:?}"
             );
         }
     }
+}
+
+fn command_specific_long_options(help: &str) -> BTreeSet<String> {
+    help.split_whitespace()
+        .filter_map(|token| {
+            let token = token.trim_matches(|character| matches!(character, ',' | '[' | ']'));
+            let option = token.split(['=', '<']).next().unwrap_or(token);
+            option.starts_with("--").then(|| option.to_owned())
+        })
+        .filter(|option| !matches!(option.as_str(), "--json" | "--plain" | "--help"))
+        .collect()
 }

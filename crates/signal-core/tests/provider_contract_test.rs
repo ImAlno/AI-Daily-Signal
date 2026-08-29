@@ -536,17 +536,41 @@ async fn response_body_is_rejected_above_256_kib_before_json_parsing() {
 #[tokio::test]
 async fn decoded_gzip_response_body_is_rejected_above_256_kib() {
     let server = MockServer::start().await;
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    std::io::Write::write_all(&mut encoder, &vec![b'x'; 256 * 1024 + 1]).unwrap();
-    let compressed = encoder.finish().unwrap();
-    assert!(compressed.len() < 256 * 1024);
+    let small_value = json!({"status": "decoded"});
+    let small_compressed = gzip_json(&small_value);
+    Mock::given(method("GET"))
+        .and(path("/compressed-small"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Encoding", "gzip")
+                .set_body_bytes(small_compressed),
+        )
+        .mount(&server)
+        .await;
+
+    let small_response = provider_http_client()
+        .unwrap()
+        .get(format!("{}/compressed-small", server.uri()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        read_provider_json(small_response).await.unwrap(),
+        small_value
+    );
+
+    let large_value = json!({"payload": "x".repeat(256 * 1024)});
+    let decoded = serde_json::to_vec(&large_value).unwrap();
+    assert!(decoded.len() > 256 * 1024);
+    let large_compressed = gzip_json(&large_value);
+    assert!(large_compressed.len() < 256 * 1024);
 
     Mock::given(method("GET"))
         .and(path("/compressed-large"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("Content-Encoding", "gzip")
-                .set_body_bytes(compressed),
+                .set_body_bytes(large_compressed),
         )
         .mount(&server)
         .await;
@@ -557,8 +581,17 @@ async fn decoded_gzip_response_body_is_rejected_above_256_kib() {
         .send()
         .await
         .unwrap();
-    let failure = read_provider_json(response).await.unwrap_err();
+    let failure = match read_provider_json(response).await {
+        Err(failure) => failure,
+        Ok(_) => panic!("oversized decoded JSON response was accepted"),
+    };
 
     assert_eq!(failure.kind(), ProviderFailureKind::MalformedOutput);
     assert_eq!(failure.charge_status(), RequestChargeStatus::PossiblySent);
+}
+
+fn gzip_json(value: &serde_json::Value) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    std::io::Write::write_all(&mut encoder, &serde_json::to_vec(value).unwrap()).unwrap();
+    encoder.finish().unwrap()
 }
