@@ -120,6 +120,16 @@ fn limits_require_nonzero_values_complete_rates_and_budget_rates() {
 }
 
 #[test]
+fn zero_daily_cost_cap_is_rejected_even_when_rates_are_configured() {
+    let mut profile = new_profile_with_endpoint("https://provider.example/v1");
+    profile.limits.max_daily_cost_microusd = Some(0);
+    profile.limits.input_cost_microusd_per_million = Some(1);
+    profile.limits.output_cost_microusd_per_million = Some(1);
+
+    assert!(profile.validate().is_err());
+}
+
+#[test]
 fn usd_values_parse_without_floating_point() {
     assert_eq!(
         MoneyMicros::parse_usd("1.234567").unwrap().as_micros(),

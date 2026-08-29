@@ -140,6 +140,7 @@ impl ProfileLimits {
             || self.max_output_tokens == 0
             || self.timeout_seconds == 0
             || self.max_retries == 0
+            || self.max_daily_cost_microusd == Some(0)
         {
             return invalid("profile limits must be nonzero");
         }
