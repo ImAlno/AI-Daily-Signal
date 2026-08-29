@@ -2,6 +2,8 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use chrono::{TimeZone, Utc};
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use reqwest::StatusCode;
 use serde_json::json;
 use signal_core::test_support::{provider_http_client, read_provider_json, story_fixture};
@@ -422,6 +424,33 @@ async fn permanent_failures_are_not_retried() {
     assert!(sleeper.delays.lock().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn possibly_sent_survives_a_later_not_sent_retry_failure() {
+    let sleeper = RecordingSleeper::default();
+    let policy = RetryPolicy::new(Duration::from_secs(2), 1);
+    let mut attempts = 0;
+
+    let failure = retry_provider_operation(&policy, &sleeper, || {
+        attempts += 1;
+        async move {
+            let charge_status = if attempts == 1 {
+                RequestChargeStatus::PossiblySent
+            } else {
+                RequestChargeStatus::NotSent
+            };
+            Err::<(), _>(RetryAttemptFailure::new(
+                ProviderFailure::new(ProviderFailureKind::Timeout, charge_status),
+                Some(Duration::ZERO),
+            ))
+        }
+    })
+    .await
+    .unwrap_err();
+
+    assert_eq!(attempts, 2);
+    assert_eq!(failure.charge_status(), RequestChargeStatus::PossiblySent);
+}
+
 #[test]
 fn retry_after_parsing_accepts_delta_or_http_date_without_echoing_input() {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
@@ -434,6 +463,16 @@ fn retry_after_parsing_accepts_delta_or_http_date_without_echoing_input() {
         Some(Duration::from_secs(10))
     );
     assert_eq!(RetryPolicy::parse_retry_after("SENTINEL-SECRET", now), None);
+}
+
+#[test]
+fn past_valid_retry_after_http_date_requests_immediate_retry() {
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+
+    assert_eq!(
+        RetryPolicy::parse_retry_after("Mon, 12 Jan 1970 13:46:39 GMT", now),
+        Some(Duration::ZERO)
+    );
 }
 
 #[tokio::test]
@@ -492,4 +531,34 @@ async fn response_body_is_rejected_above_256_kib_before_json_parsing() {
     assert_eq!(failure.kind(), ProviderFailureKind::MalformedOutput);
     assert_eq!(failure.charge_status(), RequestChargeStatus::PossiblySent);
     assert!(!format!("{failure:?} {failure}").contains('x'));
+}
+
+#[tokio::test]
+async fn decoded_gzip_response_body_is_rejected_above_256_kib() {
+    let server = MockServer::start().await;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    std::io::Write::write_all(&mut encoder, &vec![b'x'; 256 * 1024 + 1]).unwrap();
+    let compressed = encoder.finish().unwrap();
+    assert!(compressed.len() < 256 * 1024);
+
+    Mock::given(method("GET"))
+        .and(path("/compressed-large"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Encoding", "gzip")
+                .set_body_bytes(compressed),
+        )
+        .mount(&server)
+        .await;
+
+    let response = provider_http_client()
+        .unwrap()
+        .get(format!("{}/compressed-large", server.uri()))
+        .send()
+        .await
+        .unwrap();
+    let failure = read_provider_json(response).await.unwrap_err();
+
+    assert_eq!(failure.kind(), ProviderFailureKind::MalformedOutput);
+    assert_eq!(failure.charge_status(), RequestChargeStatus::PossiblySent);
 }

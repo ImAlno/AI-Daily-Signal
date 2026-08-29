@@ -12,7 +12,7 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.98.0
@@ -21,3 +21,32 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
+
+  credential-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux credential-store prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus-x11 gnome-keyring
+      - name: Run macOS or Windows credential contract
+        if: runner.os != 'Linux'
+        run: cargo test -p signal-core --test system_credential_contract -- --ignored
+      - name: Run Linux credential contract in an isolated Secret Service session
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          dbus-run-session -- bash -lc '
+            printf "\n" | gnome-keyring-daemon --unlock >/dev/null
+            cargo test -p signal-core --test system_credential_contract -- --ignored
+          '

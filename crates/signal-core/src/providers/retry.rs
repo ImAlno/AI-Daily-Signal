@@ -52,9 +52,7 @@ impl RetryPolicy {
             .ok()?
             .with_timezone(&Utc);
         let now = DateTime::<Utc>::from(now);
-        (requested > now)
-            .then(|| (requested - now).to_std().ok())
-            .flatten()
+        Some((requested - now).to_std().unwrap_or(Duration::ZERO))
     }
 
     fn delay(self, retry_index: u32, retry_after: Option<Duration>) -> Duration {

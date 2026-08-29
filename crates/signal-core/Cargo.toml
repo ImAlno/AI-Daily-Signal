@@ -30,5 +30,6 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+flate2 = "1"
 tempfile.workspace = true
 wiremock.workspace = true

@@ -377,6 +377,7 @@ pub(crate) fn is_literal_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn is_literal_loopback_ip_host(host: &str) -> bool {
     let host = host
         .strip_prefix('[')
