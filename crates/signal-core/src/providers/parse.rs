@@ -1,6 +1,7 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::{AiSummaryFields, Story, SummarySettings, normalize_title, normalize_url};
+use crate::summaries::canonical_summary_story;
+use crate::{AiSummaryFields, Story, SummarySettings};
 
 use super::{ProviderFailure, ProviderFailureKind, RequestChargeStatus};
 
@@ -12,36 +13,11 @@ pub struct AiSummaryPrompt {
     pub user_text: String,
 }
 
-#[derive(Serialize)]
-struct PromptStory {
-    normalized_title: String,
-    excerpt: String,
-    canonical_url: String,
-    published_at: Option<String>,
-    category: String,
-    source_ids: Vec<String>,
-}
-
 pub fn build_ai_summary_prompt(
     story: &Story,
     settings: &SummarySettings,
 ) -> Result<AiSummaryPrompt, ProviderFailure> {
-    let mut source_ids = story
-        .source_ids
-        .iter()
-        .map(|source_id| collapse_whitespace(source_id))
-        .collect::<Vec<_>>();
-    source_ids.sort();
-
-    let prompt_story = PromptStory {
-        normalized_title: normalize_title(&story.title),
-        excerpt: clean_excerpt(&story.excerpt),
-        canonical_url: canonical_prompt_url(&story.canonical_url),
-        published_at: story.published_at.map(|value| value.to_rfc3339()),
-        category: collapse_whitespace(&story.category),
-        source_ids,
-    };
-    let user_text = serde_json::to_string(&prompt_story).map_err(|_| {
+    let user_text = serde_json::to_string(&canonical_summary_story(story)).map_err(|_| {
         ProviderFailure::new(
             ProviderFailureKind::MalformedOutput,
             RequestChargeStatus::NotSent,
@@ -81,32 +57,4 @@ fn malformed_output() -> ProviderFailure {
         ProviderFailureKind::MalformedOutput,
         RequestChargeStatus::PossiblySent,
     )
-}
-
-fn clean_excerpt(value: &str) -> String {
-    let mut plain_text = String::new();
-    let mut inside_tag = false;
-    for character in value.chars() {
-        match character {
-            '<' => inside_tag = true,
-            '>' => inside_tag = false,
-            _ if !inside_tag => plain_text.push(character),
-            _ => {}
-        }
-    }
-    collapse_whitespace(&html_escape::decode_html_entities(&plain_text))
-}
-
-fn canonical_prompt_url(value: &str) -> String {
-    let normalized = normalize_url(value);
-    let Ok(mut url) = url::Url::parse(&normalized) else {
-        return normalized;
-    };
-    let _ = url.set_username("");
-    let _ = url.set_password(None);
-    url.into()
-}
-
-fn collapse_whitespace(value: &str) -> String {
-    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }

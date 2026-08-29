@@ -242,7 +242,7 @@ pub struct GenerationReport {
 
 #[derive(Serialize)]
 struct CacheIdentity<'a> {
-    story: CacheStoryIdentity,
+    story: CanonicalSummaryStory,
     provider: &'static str,
     endpoint: Option<String>,
     model: &'a str,
@@ -253,7 +253,7 @@ struct CacheIdentity<'a> {
 }
 
 #[derive(Serialize)]
-struct CacheStoryIdentity {
+pub(crate) struct CanonicalSummaryStory {
     normalized_title: String,
     excerpt: String,
     canonical_url: String,
@@ -268,21 +268,9 @@ pub fn summary_cache_key(
     prompt_version: &str,
     settings: &SummarySettings,
 ) -> Result<String> {
-    let mut source_ids = story
-        .source_ids
-        .iter()
-        .map(|value| collapse_whitespace(value))
-        .collect::<Vec<_>>();
-    source_ids.sort();
+    let story = canonical_summary_story(story);
     let identity = CacheIdentity {
-        story: CacheStoryIdentity {
-            normalized_title: normalize_title(&story.title),
-            excerpt: collapse_whitespace(&story.excerpt),
-            canonical_url: normalize_url(&story.canonical_url),
-            published_at: story.published_at.map(|value| value.to_rfc3339()),
-            category: collapse_whitespace(&story.category),
-            source_ids,
-        },
+        story,
         provider: profile.provider.as_storage(),
         endpoint: profile.endpoint.as_ref().map(normalized_endpoint),
         model: &profile.model,
@@ -294,6 +282,47 @@ pub fn summary_cache_key(
     let canonical = serde_json::to_vec(&identity)
         .map_err(|error| SignalError::Serialization(error.to_string()))?;
     Ok(format!("{:x}", Sha256::digest(canonical)))
+}
+
+pub(crate) fn canonical_summary_story(story: &Story) -> CanonicalSummaryStory {
+    let mut source_ids = story
+        .source_ids
+        .iter()
+        .map(|value| collapse_whitespace(value))
+        .collect::<Vec<_>>();
+    source_ids.sort();
+    CanonicalSummaryStory {
+        normalized_title: normalize_title(&story.title),
+        excerpt: clean_summary_excerpt(&story.excerpt),
+        canonical_url: canonical_summary_url(&story.canonical_url),
+        published_at: story.published_at.map(|value| value.to_rfc3339()),
+        category: collapse_whitespace(&story.category),
+        source_ids,
+    }
+}
+
+fn clean_summary_excerpt(value: &str) -> String {
+    let mut plain_text = String::new();
+    let mut inside_tag = false;
+    for character in value.chars() {
+        match character {
+            '<' => inside_tag = true,
+            '>' => inside_tag = false,
+            _ if !inside_tag => plain_text.push(character),
+            _ => {}
+        }
+    }
+    collapse_whitespace(&html_escape::decode_html_entities(&plain_text))
+}
+
+fn canonical_summary_url(value: &str) -> String {
+    let normalized = normalize_url(value);
+    let Ok(mut url) = url::Url::parse(&normalized) else {
+        return normalized;
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.into()
 }
 
 fn normalized_endpoint(endpoint: &url::Url) -> String {

@@ -6,9 +6,10 @@ use reqwest::StatusCode;
 use serde_json::json;
 use signal_core::test_support::{provider_http_client, read_provider_json, story_fixture};
 use signal_core::{
-    AI_SUMMARY_PROMPT_VERSION, GenerationFailureKind, ProviderFailure, ProviderFailureKind,
-    RequestChargeStatus, RetryAttemptFailure, RetryPolicy, RetrySleeper, SummarySettings,
-    build_ai_summary_prompt, parse_ai_summary, retry_provider_operation,
+    AI_SUMMARY_PROMPT_VERSION, AiSummaryPrompt, GenerationFailureKind, ProviderFailure,
+    ProviderFailureKind, ProviderRequest, RequestChargeStatus, RetryAttemptFailure, RetryPolicy,
+    RetrySleeper, SignalError, SummarySettings, build_ai_summary_prompt, parse_ai_summary,
+    retry_provider_operation, summary_cache_key,
 };
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -72,6 +73,120 @@ fn prompt_canonical_url_never_contains_url_user_info() {
 
     assert!(!prompt.user_text.contains("SENTINEL"));
     assert!(prompt.user_text.contains("https://example.com/article"));
+}
+
+#[test]
+fn excerpt_canonicalization_is_identical_for_prompt_and_cache() {
+    let encoded = signal_core::test_support::cache_identity_fixture();
+    let mut plain = encoded.clone();
+    let mut encoded_story = encoded.story.clone();
+    encoded_story.excerpt = "<p>A &amp; <strong>B</strong></p>".to_owned();
+    plain.story.excerpt = "A & B".to_owned();
+
+    assert_eq!(
+        build_ai_summary_prompt(&encoded_story, &encoded.settings)
+            .unwrap()
+            .user_text,
+        build_ai_summary_prompt(&plain.story, &plain.settings)
+            .unwrap()
+            .user_text
+    );
+    assert_eq!(
+        summary_cache_key(
+            &encoded_story,
+            &encoded.profile,
+            &encoded.prompt_version,
+            &encoded.settings,
+        )
+        .unwrap(),
+        summary_cache_key(
+            &plain.story,
+            &plain.profile,
+            &plain.prompt_version,
+            &plain.settings,
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn url_canonicalization_is_identical_for_prompt_and_cache() {
+    let with_user_info = signal_core::test_support::cache_identity_fixture();
+    let mut canonical = with_user_info.clone();
+    let mut protected_story = with_user_info.story.clone();
+    protected_story.canonical_url =
+        "https://SENTINEL-USER:SENTINEL-PASSWORD@EXAMPLE.com:443/item?utm_source=x&b=2&a=1#part"
+            .to_owned();
+    canonical.story.canonical_url = "https://example.com/item?a=1&b=2".to_owned();
+
+    assert_eq!(
+        build_ai_summary_prompt(&protected_story, &with_user_info.settings)
+            .unwrap()
+            .user_text,
+        build_ai_summary_prompt(&canonical.story, &canonical.settings)
+            .unwrap()
+            .user_text
+    );
+    assert_eq!(
+        summary_cache_key(
+            &protected_story,
+            &with_user_info.profile,
+            &with_user_info.prompt_version,
+            &with_user_info.settings,
+        )
+        .unwrap(),
+        summary_cache_key(
+            &canonical.story,
+            &canonical.profile,
+            &canonical.prompt_version,
+            &canonical.settings,
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn provider_request_debug_redacts_story_prompt_model_and_endpoint() {
+    let mut profile = signal_core::test_support::model_profile(
+        "request-debug",
+        signal_core::ProviderKind::OpenAiCompatible,
+    );
+    profile.model = "SENTINEL-MODEL".to_owned();
+    profile.endpoint = Some("https://example.com/SENTINEL-ENDPOINT".parse().unwrap());
+    let prompt = AiSummaryPrompt {
+        system_text: "SENTINEL-SYSTEM".to_owned(),
+        user_text: "SENTINEL-USER-TEXT".to_owned(),
+    };
+
+    let request = ProviderRequest::from_profile("SENTINEL-STORY-ID", &profile, prompt).unwrap();
+    let rendered = format!("{request:?}");
+
+    assert!(!rendered.contains("SENTINEL"));
+    assert!(!rendered.contains("example.com"));
+}
+
+#[test]
+fn provider_request_rejects_url_user_info_without_echoing_it() {
+    let mut profile = signal_core::test_support::model_profile(
+        "request-user-info",
+        signal_core::ProviderKind::OpenAiCompatible,
+    );
+    profile.endpoint = Some(
+        "https://SENTINEL-USER:SENTINEL-PASSWORD@example.com/v1"
+            .parse()
+            .unwrap(),
+    );
+    let prompt = AiSummaryPrompt {
+        system_text: "system".to_owned(),
+        user_text: "user".to_owned(),
+    };
+
+    let error = ProviderRequest::from_profile("story", &profile, prompt).unwrap_err();
+    let rendered = format!("{error:?} {error}");
+
+    assert!(matches!(error, SignalError::InvalidConfiguration(_)));
+    assert!(!rendered.contains("SENTINEL"));
+    assert!(!rendered.contains("example.com"));
 }
 
 #[test]

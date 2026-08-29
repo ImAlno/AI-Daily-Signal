@@ -11,6 +11,7 @@ use url::Url;
 
 use crate::{
     AiSummaryFields, GenerationFailureKind, ModelProfile, ProviderKind, ResolvedCredential,
+    SignalError,
 };
 
 pub use parse::{
@@ -24,15 +25,15 @@ const PROVIDER_USER_AGENT: &str = "ai-daily-signal/0.1.0";
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 static PROVIDER_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProviderRequest {
-    pub story_id: String,
-    pub model: String,
-    pub endpoint: Option<Url>,
-    pub system_text: String,
-    pub user_text: String,
-    pub timeout: Duration,
-    pub max_output_tokens: u32,
+    pub(crate) story_id: String,
+    pub(crate) model: String,
+    pub(crate) endpoint: Option<Url>,
+    pub(crate) system_text: String,
+    pub(crate) user_text: String,
+    pub(crate) timeout: Duration,
+    pub(crate) max_output_tokens: u32,
 }
 
 impl ProviderRequest {
@@ -40,8 +41,16 @@ impl ProviderRequest {
         story_id: impl Into<String>,
         profile: &ModelProfile,
         prompt: AiSummaryPrompt,
-    ) -> Self {
-        Self {
+    ) -> crate::Result<Self> {
+        if profile.endpoint.as_ref().is_some_and(|endpoint| {
+            !endpoint.username().is_empty() || endpoint.password().is_some()
+        }) {
+            return Err(SignalError::InvalidConfiguration(
+                "provider request endpoint is invalid".to_owned(),
+            ));
+        }
+
+        Ok(Self {
             story_id: story_id.into(),
             model: profile.model.trim().to_owned(),
             endpoint: profile.endpoint.clone(),
@@ -49,7 +58,17 @@ impl ProviderRequest {
             user_text: prompt.user_text,
             timeout: Duration::from_secs(profile.limits.timeout_seconds),
             max_output_tokens: profile.limits.max_output_tokens,
-        }
+        })
+    }
+}
+
+impl fmt::Debug for ProviderRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderRequest")
+            .field("timeout", &self.timeout)
+            .field("max_output_tokens", &self.max_output_tokens)
+            .finish_non_exhaustive()
     }
 }
 
