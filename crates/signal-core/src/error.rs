@@ -1,0 +1,19 @@
+#[derive(Debug, thiserror::Error)]
+pub enum SignalError {
+    #[error("invalid configuration: {0}")]
+    InvalidConfiguration(String),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("database error: {0}")]
+    Database(#[from] rusqlite::Error),
+    #[error("network error: {0}")]
+    Network(#[from] reqwest::Error),
+    #[error("feed parse error: {0}")]
+    Feed(String),
+    #[error("serialization error: {0}")]
+    Serialization(String),
+    #[error("not found: {0}")]
+    NotFound(String),
+}
+
+pub type Result<T> = std::result::Result<T, SignalError>;

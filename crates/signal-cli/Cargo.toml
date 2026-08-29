@@ -1,0 +1,16 @@
+[package]
+name = "signal-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "signal"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+signal-core = { path = "../signal-core" }
+tokio.workspace = true
