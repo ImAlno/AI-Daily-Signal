@@ -7,14 +7,17 @@ let repositoryRoot = packageRoot.deletingLastPathComponent().deletingLastPathCom
 let rustReleaseDirectory = repositoryRoot.appendingPathComponent("target/release").path
 let commandLineToolsFrameworks = "/Library/Developer/CommandLineTools/Library/Developer/Frameworks"
 let commandLineToolsLibraries = "/Library/Developer/CommandLineTools/Library/Developer/usr/lib"
-let testingSwiftSettings: [SwiftSetting] =
-  FileManager.default.fileExists(
-    atPath: commandLineToolsFrameworks + "/Testing.framework"
-  ) ? [.unsafeFlags(["-F", commandLineToolsFrameworks])] : []
-let testingLinkerSettings: [LinkerSetting] =
-  FileManager.default.fileExists(
+let useCommandLineToolsTesting =
+  ProcessInfo.processInfo.environment["SIGNAL_SWIFT_CLT_TESTING"] == "1"
+let commandLineToolsTestingAvailable =
+  useCommandLineToolsTesting
+  && FileManager.default.fileExists(
     atPath: commandLineToolsFrameworks + "/Testing.framework"
   )
+let testingSwiftSettings: [SwiftSetting] =
+  commandLineToolsTestingAvailable ? [.unsafeFlags(["-F", commandLineToolsFrameworks])] : []
+let testingLinkerSettings: [LinkerSetting] =
+  commandLineToolsTestingAvailable
   ? [
     .unsafeFlags([
       "-F", commandLineToolsFrameworks,

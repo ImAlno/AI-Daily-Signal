@@ -3,20 +3,46 @@ import Foundation
 @testable import SignalAppKit
 
 final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
+  private typealias SnapshotContinuation = CheckedContinuation<AppSnapshot, any Error>
+  private typealias RevisionContinuation = CheckedContinuation<StateRevision, any Error>
+  private typealias RefreshContinuation = CheckedContinuation<RefreshResult, any Error>
+
   private let lock = NSLock()
   private var snapshots: [AppSnapshot]
   private var revisions: [StateRevision]
   private var snapshotIndex = 0
   private var revisionIndex = 0
-  private var pendingRefreshes: [CheckedContinuation<RefreshResult, any Error>] = []
+  private var suspendedSnapshotCount = 0
+  private var suspendedRevisionCount = 0
+  private var pendingSnapshots: [(SnapshotContinuation, Result<AppSnapshot, any Error>)] = []
+  private var pendingRevisions: [(RevisionContinuation, Result<StateRevision, any Error>)] = []
+  private var pendingRefreshes: [String: RefreshContinuation] = [:]
+  private var cancellationRequests: Set<String> = []
   private var storedRefreshIdentifiers: [String] = []
   private var storedCancelledIdentifiers: [String] = []
   private var storedSnapshotCalls = 0
+  private var storedStateRevisionCalls = 0
   private var storedModelInputs: [ModelProfileInput] = []
+  private var storedSnapshotError: (any Error)?
+  private var storedRefreshError: (any Error)?
+  private var storedModelError: (any Error)?
+  private var activeBridgeCallCount = 0
+  private var storedMaximumConcurrentBridgeCalls = 0
 
-  var snapshotError: (any Error)?
-  var refreshError: (any Error)?
-  var modelError: (any Error)?
+  var snapshotError: (any Error)? {
+    get { lock.withLock { storedSnapshotError } }
+    set { lock.withLock { storedSnapshotError = newValue } }
+  }
+
+  var refreshError: (any Error)? {
+    get { lock.withLock { storedRefreshError } }
+    set { lock.withLock { storedRefreshError = newValue } }
+  }
+
+  var modelError: (any Error)? {
+    get { lock.withLock { storedModelError } }
+    set { lock.withLock { storedModelError = newValue } }
+  }
 
   init(snapshot: AppSnapshot, revisions: [StateRevision] = []) {
     snapshots = [snapshot]
@@ -35,6 +61,14 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     lock.withLock { storedSnapshotCalls }
   }
 
+  var stateRevisionCalls: Int {
+    lock.withLock { storedStateRevisionCalls }
+  }
+
+  var maximumConcurrentBridgeCalls: Int {
+    lock.withLock { storedMaximumConcurrentBridgeCalls }
+  }
+
   var modelInputs: [ModelProfileInput] {
     lock.withLock { storedModelInputs }
   }
@@ -43,40 +77,114 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     lock.withLock { snapshots.append(snapshot) }
   }
 
+  func suspendNextSnapshot() {
+    lock.withLock { suspendedSnapshotCount += 1 }
+  }
+
+  func suspendNextStateRevision() {
+    lock.withLock { suspendedRevisionCount += 1 }
+  }
+
+  func releaseSnapshots() {
+    let pending = lock.withLock {
+      let pending = pendingSnapshots
+      pendingSnapshots.removeAll()
+      for _ in pending { endBridgeCallLocked() }
+      return pending
+    }
+    for (continuation, result) in pending {
+      continuation.resume(with: result)
+    }
+  }
+
+  func releaseStateRevisions() {
+    let pending = lock.withLock {
+      let pending = pendingRevisions
+      pendingRevisions.removeAll()
+      for _ in pending { endBridgeCallLocked() }
+      return pending
+    }
+    for (continuation, result) in pending {
+      continuation.resume(with: result)
+    }
+  }
+
   func snapshot() async throws -> AppSnapshot {
-    try lock.withLock {
-      storedSnapshotCalls += 1
-      if let snapshotError { throw snapshotError }
-      let result = snapshots[min(snapshotIndex, snapshots.count - 1)]
-      snapshotIndex += 1
-      return result
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<AppSnapshot, any Error>? in
+        beginBridgeCallLocked()
+        storedSnapshotCalls += 1
+        let result: Result<AppSnapshot, any Error>
+        if let storedSnapshotError {
+          result = .failure(storedSnapshotError)
+        } else {
+          result = .success(snapshots[min(snapshotIndex, snapshots.count - 1)])
+          snapshotIndex += 1
+        }
+        if suspendedSnapshotCount > 0 {
+          suspendedSnapshotCount -= 1
+          pendingSnapshots.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate {
+        continuation.resume(with: immediate)
+      }
     }
   }
 
   func stateRevision() async throws -> StateRevision {
-    lock.withLock {
-      let result = revisions[min(revisionIndex, revisions.count - 1)]
-      revisionIndex += 1
-      return result
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<StateRevision, any Error>? in
+        beginBridgeCallLocked()
+        storedStateRevisionCalls += 1
+        let result = Result<StateRevision, any Error>.success(
+          revisions[min(revisionIndex, revisions.count - 1)])
+        revisionIndex += 1
+        if suspendedRevisionCount > 0 {
+          suspendedRevisionCount -= 1
+          pendingRevisions.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate {
+        continuation.resume(with: immediate)
+      }
     }
   }
 
   func refresh(operationID: String, ai: Bool) async throws -> RefreshResult {
-    if let error = lock.withLock({ () -> (any Error)? in
-      storedRefreshIdentifiers.append(operationID)
-      return refreshError
-    }) {
-      throw error
-    }
     return try await withCheckedThrowingContinuation { continuation in
-      lock.withLock { pendingRefreshes.append(continuation) }
+      let immediateError = lock.withLock { () -> (any Error)? in
+        beginBridgeCallLocked()
+        storedRefreshIdentifiers.append(operationID)
+        if let storedRefreshError {
+          endBridgeCallLocked()
+          return storedRefreshError
+        }
+        if cancellationRequests.contains(operationID) {
+          endBridgeCallLocked()
+          return BridgeError.cancelled
+        }
+        pendingRefreshes[operationID] = continuation
+        return nil
+      }
+      if let immediateError {
+        continuation.resume(throwing: immediateError)
+      }
     }
   }
 
   func finishRefresh(with result: RefreshResult) {
-    let continuations = lock.withLock { () -> [CheckedContinuation<RefreshResult, any Error>] in
-      defer { pendingRefreshes.removeAll() }
-      return pendingRefreshes
+    let continuations = lock.withLock { () -> [RefreshContinuation] in
+      let continuations = Array(pendingRefreshes.values)
+      pendingRefreshes.removeAll()
+      for _ in continuations { endBridgeCallLocked() }
+      return continuations
     }
     for continuation in continuations {
       continuation.resume(returning: result)
@@ -84,15 +192,16 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   }
 
   func cancelOperation(id: String) -> Bool {
-    let (matched, continuations) = lock.withLock {
-      () -> (Bool, [CheckedContinuation<RefreshResult, any Error>]) in
+    let (matched, continuation) = lock.withLock {
+      () -> (Bool, RefreshContinuation?) in
       storedCancelledIdentifiers.append(id)
+      cancellationRequests.insert(id)
       let matched = storedRefreshIdentifiers.contains(id)
-      guard matched else { return (false, []) }
-      defer { pendingRefreshes.removeAll() }
-      return (true, pendingRefreshes)
+      let continuation = pendingRefreshes.removeValue(forKey: id)
+      if continuation != nil { endBridgeCallLocked() }
+      return (matched, continuation)
     }
-    for continuation in continuations {
+    if let continuation {
       continuation.resume(throwing: BridgeError.cancelled)
     }
     return matched
@@ -111,7 +220,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   func addModel(_ input: ModelProfileInput) async throws -> ModelProfile {
     if let error = lock.withLock({ () -> (any Error)? in
       storedModelInputs.append(input)
-      return modelError
+      return storedModelError
     }) {
       throw error
     }
@@ -124,6 +233,18 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   }
   func removeModel(_ selector: String) async throws -> ModelRemovalResult {
     ModelRemovalResult(profile: .fixture, credentialDeletion: .deleted)
+  }
+
+  private func beginBridgeCallLocked() {
+    activeBridgeCallCount += 1
+    storedMaximumConcurrentBridgeCalls = max(
+      storedMaximumConcurrentBridgeCalls,
+      activeBridgeCallCount
+    )
+  }
+
+  private func endBridgeCallLocked() {
+    activeBridgeCallCount -= 1
   }
 }
 

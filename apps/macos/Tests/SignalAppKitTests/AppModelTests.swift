@@ -37,16 +37,23 @@ struct AppModelTests {
 
   @Test @MainActor
   func refreshIsSingleFlightAndCancellationUsesTheActiveIdentifier() async {
-    // Break caught: starting overlapping bridge refreshes or cancelling with a newly generated identifier.
+    // Break caught: losing an immediate cancellation before the fake registers its continuation.
     let bridge = FakeBridgeClient(snapshot: .fixture)
-    let model = AppModel(bridge: bridge, preferences: MemoryAppPreferences())
+    let model = AppModel(
+      bridge: bridge, preferences: MemoryAppPreferences(welcomeCompleted: true))
+    await model.start()
 
     await model.refresh()
     await model.refresh()
-    await eventually { bridge.refreshIdentifiers.count == 1 }
     model.cancelRefresh()
+    await eventually {
+      bridge.refreshIdentifiers.count == 1
+        && bridge.cancelledIdentifiers.count == 1
+        && model.activeOperationID == nil
+    }
 
     #expect(bridge.cancelledIdentifiers == bridge.refreshIdentifiers)
+    #expect(model.phase == .ready)
   }
 
   @Test @MainActor
@@ -86,12 +93,157 @@ struct AppModelTests {
     )
     await model.start()
 
-    model.setActive(true)
+    await model.pollRevisionWhileActive()
     await eventually { model.snapshot == changed }
     try? await Task.sleep(for: .milliseconds(25))
     model.setActive(false)
 
     #expect(bridge.snapshotCalls == 2)
+  }
+
+  @Test @MainActor
+  func lateRevisionAfterStoppingPollingDoesNotReload() async {
+    // Break caught: using a revision result after its polling task was cancelled.
+    let initial = AppSnapshot.fixture
+    let changedRevision = StateRevision(dataGeneration: 1, sourceConfigRevision: "source-b")
+    let changed = initial.with(
+      revision: changedRevision, sources: [Source.fixture.with(name: "Changed")])
+    let bridge = FakeBridgeClient(snapshot: initial, revisions: [changedRevision])
+    bridge.enqueueSnapshot(changed)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model.start()
+    bridge.suspendNextStateRevision()
+
+    model.setActive(true)
+    await eventually { bridge.stateRevisionCalls == 1 }
+    model.setActive(false)
+    bridge.releaseStateRevisions()
+    try? await Task.sleep(for: .milliseconds(20))
+
+    #expect(model.snapshot == initial)
+    #expect(bridge.snapshotCalls == 1)
+  }
+
+  @Test @MainActor
+  func refreshWaitsForAnInFlightPollingReload() async {
+    // Break caught: overlapping refresh with a polling snapshot and then skipping its final snapshot.
+    let initial = AppSnapshot.fixture
+    let changedRevision = StateRevision(dataGeneration: 2, sourceConfigRevision: "source-a")
+    let polled = initial.with(revision: changedRevision)
+    let refreshed = initial.with(
+      revision: StateRevision(dataGeneration: 3, sourceConfigRevision: "source-a"),
+      latest: [Story.fixture.with(title: "Fresh result")]
+    )
+    let bridge = FakeBridgeClient(snapshot: initial, revisions: [changedRevision])
+    bridge.enqueueSnapshot(polled)
+    bridge.enqueueSnapshot(refreshed)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model.start()
+    bridge.suspendNextSnapshot()
+    model.setActive(true)
+    await eventually { bridge.snapshotCalls == 2 }
+
+    await model.refresh()
+    try? await Task.sleep(for: .milliseconds(20))
+    #expect(bridge.refreshIdentifiers.isEmpty)
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
+
+    bridge.releaseSnapshots()
+    await eventually { bridge.refreshIdentifiers.count == 1 }
+    bridge.finishRefresh(with: .fixture)
+    await eventually {
+      model.snapshot == refreshed && model.activeOperationID == nil
+    }
+    model.setActive(false)
+
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
+  }
+
+  @Test @MainActor
+  func latePolledRevisionCannotReloadAfterRefreshStarts() async {
+    // Break caught: starting a stale polling reload after a refresh has claimed the bridge.
+    let initial = AppSnapshot.fixture
+    let changedRevision = StateRevision(dataGeneration: 2, sourceConfigRevision: "source-a")
+    let refreshed = initial.with(
+      revision: StateRevision(dataGeneration: 3, sourceConfigRevision: "source-a"),
+      latest: [Story.fixture.with(title: "Fresh result")]
+    )
+    let bridge = FakeBridgeClient(snapshot: initial, revisions: [changedRevision])
+    bridge.enqueueSnapshot(refreshed)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model.start()
+    bridge.suspendNextStateRevision()
+    model.setActive(true)
+    await eventually { bridge.stateRevisionCalls == 1 }
+
+    await model.refresh()
+    await eventually { bridge.refreshIdentifiers.count == 1 }
+    bridge.releaseStateRevisions()
+    try? await Task.sleep(for: .milliseconds(20))
+    #expect(bridge.snapshotCalls == 1)
+
+    bridge.finishRefresh(with: .fixture)
+    await eventually {
+      model.snapshot == refreshed && model.activeOperationID == nil
+    }
+    model.setActive(false)
+    #expect(bridge.snapshotCalls == 2)
+  }
+
+  @Test @MainActor
+  func stoppingPollingReleasesModelAndIgnoresLateRevision() async {
+    // Break caught: an owned polling task retaining its model across a suspended bridge call.
+    let bridge = FakeBridgeClient(snapshot: .fixture)
+    var model: AppModel? = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model?.start()
+    bridge.suspendNextStateRevision()
+    model?.setActive(true)
+    await eventually { bridge.stateRevisionCalls == 1 }
+
+    model?.stopPolling()
+    weak let weakModel = model
+    model = nil
+    await eventually { weakModel == nil }
+    bridge.releaseStateRevisions()
+
+    #expect(bridge.snapshotCalls == 1)
+  }
+
+  @Test @MainActor
+  func droppingModelCancelsPendingRefreshAndReleasesIt() async {
+    // Break caught: an owned refresh task retaining its model for an unbounded bridge call.
+    let bridge = FakeBridgeClient(snapshot: .fixture)
+    var model: AppModel? = AppModel(
+      bridge: bridge, preferences: MemoryAppPreferences(welcomeCompleted: true))
+    await model?.start()
+    await model?.refresh()
+    await eventually { bridge.refreshIdentifiers.count == 1 }
+
+    weak let weakModel = model
+    model = nil
+    await eventually { weakModel == nil }
+    if weakModel != nil, let operationID = bridge.refreshIdentifiers.first {
+      _ = bridge.cancelOperation(id: operationID)
+    }
+    await eventually { weakModel == nil }
+
+    #expect(bridge.cancelledIdentifiers == bridge.refreshIdentifiers)
   }
 
   @Test @MainActor

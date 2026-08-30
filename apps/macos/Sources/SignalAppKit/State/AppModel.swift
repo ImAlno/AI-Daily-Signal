@@ -12,6 +12,22 @@ public enum AppPhase: Sendable, Equatable {
   case failure(message: String)
 }
 
+private enum ReloadOrigin: Equatable {
+  case requested
+  case polling(generation: UInt64)
+}
+
+private enum BridgeActivity: Equatable {
+  case idle
+  case reloading(token: UUID, origin: ReloadOrigin)
+  case refreshing(operationID: String)
+}
+
+private struct PendingRefresh: Equatable {
+  let operationID: String
+  let ai: Bool
+}
+
 @MainActor
 @Observable
 public final class AppModel {
@@ -28,7 +44,11 @@ public final class AppModel {
   @ObservationIgnored private let pollInterval: Duration
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
   @ObservationIgnored private var pollTask: Task<Void, Never>?
-  @ObservationIgnored private var reloadInProgress = false
+  @ObservationIgnored private var reloadTask: Task<Void, Never>?
+  @ObservationIgnored private var bridgeActivity = BridgeActivity.idle
+  @ObservationIgnored private var pendingRefresh: PendingRefresh?
+  @ObservationIgnored private var isActive = false
+  @ObservationIgnored private var pollGeneration: UInt64 = 0
 
   public init(
     bridge: any BridgeClient,
@@ -39,6 +59,15 @@ public final class AppModel {
     self.preferences = preferences
     self.pollInterval = pollInterval
     destination = preferences.selectedDestination
+  }
+
+  isolated deinit {
+    pollTask?.cancel()
+    reloadTask?.cancel()
+    refreshTask?.cancel()
+    if let activeOperationID {
+      _ = bridge.cancelOperation(id: activeOperationID)
+    }
   }
 
   public var errorMessage: String? {
@@ -59,59 +88,59 @@ public final class AppModel {
   }
 
   public func refresh(ai: Bool = true) async {
-    guard refreshTask == nil else { return }
+    guard activeOperationID == nil else { return }
     let operationID = UUID().uuidString
     activeOperationID = operationID
     phase = .refreshing
-    refreshTask = Task { [weak self] in
-      await self?.performRefresh(operationID: operationID, ai: ai)
+    let request = PendingRefresh(operationID: operationID, ai: ai)
+    switch bridgeActivity {
+    case .idle:
+      beginRefresh(request)
+    case .reloading:
+      pendingRefresh = request
+    case .refreshing:
+      assertionFailure("An active refresh must own activeOperationID")
     }
     await Task.yield()
   }
 
   public func cancelRefresh() {
     guard let activeOperationID else { return }
+    if pendingRefresh?.operationID == activeOperationID {
+      pendingRefresh = nil
+      self.activeOperationID = nil
+      phase = snapshot.map(presentationPhase(for:)) ?? .empty
+      return
+    }
     _ = bridge.cancelOperation(id: activeOperationID)
   }
 
   public func setActive(_ active: Bool) {
     if active {
-      guard pollTask == nil else { return }
-      pollTask = Task { [weak self] in
-        await self?.pollRevisionWhileActive()
-      }
+      startPolling()
     } else {
-      pollTask?.cancel()
-      pollTask = nil
+      stopPolling()
     }
+  }
+
+  public func stopPolling() {
+    stopPollingOwnedTasks()
   }
 
   public func pollRevisionWhileActive() async {
-    while !Task.isCancelled {
-      do {
-        try await Task.sleep(for: pollInterval)
-        guard !Task.isCancelled else { break }
-        guard refreshTask == nil, !reloadInProgress else { continue }
-        let revision = try await bridge.stateRevision()
-        if revision != snapshot?.revision {
-          await reloadSnapshot()
-        }
-      } catch is CancellationError {
-        break
-      } catch {
-        apply(error)
-      }
-    }
+    startPolling()
+    await Task.yield()
   }
 
   public func reloadSnapshot() async {
-    guard !reloadInProgress else { return }
-    reloadInProgress = true
-    defer { reloadInProgress = false }
-    do {
-      replaceSnapshot(try await bridge.snapshot())
-    } catch {
-      apply(error)
+    switch bridgeActivity {
+    case .idle:
+      beginReload(origin: .requested)
+      await reloadTask?.value
+    case .reloading:
+      await reloadTask?.value
+    case .refreshing:
+      await refreshTask?.value
     }
   }
 
@@ -129,17 +158,176 @@ public final class AppModel {
     }
   }
 
-  private func performRefresh(operationID: String, ai: Bool) async {
-    defer {
-      if activeOperationID == operationID {
-        activeOperationID = nil
-        refreshTask = nil
+  private func startPolling() {
+    guard !isActive else { return }
+    isActive = true
+    pollGeneration &+= 1
+    let generation = pollGeneration
+    let interval = pollInterval
+    let bridge = bridge
+    pollTask = Task { [weak self, bridge] in
+      while !Task.isCancelled {
+        do {
+          try await Task.sleep(for: interval)
+        } catch is CancellationError {
+          return
+        } catch {
+          guard !Task.isCancelled else { return }
+          self?.receivePollingError(error, generation: generation)
+          continue
+        }
+        guard !Task.isCancelled else { return }
+        guard self?.pollMayReadRevision(generation: generation) == true else { continue }
+        do {
+          let revision = try await bridge.stateRevision()
+          guard !Task.isCancelled else { return }
+          self?.receivePolledRevision(revision, generation: generation)
+        } catch is CancellationError {
+          return
+        } catch {
+          guard !Task.isCancelled else { return }
+          self?.receivePollingError(error, generation: generation)
+        }
       }
     }
-    do {
-      _ = try await bridge.refresh(operationID: operationID, ai: ai)
-      await reloadSnapshot()
-    } catch {
+  }
+
+  private func stopPollingOwnedTasks() {
+    guard isActive || pollTask != nil else { return }
+    isActive = false
+    pollGeneration &+= 1
+    pollTask?.cancel()
+    pollTask = nil
+    if case .reloading(_, .polling) = bridgeActivity {
+      reloadTask?.cancel()
+    }
+  }
+
+  private func pollMayReadRevision(generation: UInt64) -> Bool {
+    isActive
+      && generation == pollGeneration
+      && activeOperationID == nil
+      && bridgeActivity == .idle
+  }
+
+  private func receivePolledRevision(_ revision: StateRevision, generation: UInt64) {
+    guard pollMayReadRevision(generation: generation) else { return }
+    guard revision != snapshot?.revision else { return }
+    beginReload(origin: .polling(generation: generation))
+  }
+
+  private func receivePollingError(_ error: any Error, generation: UInt64) {
+    guard pollMayReadRevision(generation: generation) else { return }
+    apply(error)
+  }
+
+  private func beginReload(origin: ReloadOrigin) {
+    guard bridgeActivity == .idle else { return }
+    let token = UUID()
+    bridgeActivity = .reloading(token: token, origin: origin)
+    let bridge = bridge
+    reloadTask = Task { [weak self, bridge] in
+      do {
+        let replacement = try await bridge.snapshot()
+        self?.finishReload(
+          token: token,
+          origin: origin,
+          replacement: replacement,
+          error: nil,
+          taskWasCancelled: Task.isCancelled
+        )
+      } catch {
+        self?.finishReload(
+          token: token,
+          origin: origin,
+          replacement: nil,
+          error: error,
+          taskWasCancelled: Task.isCancelled
+        )
+      }
+    }
+  }
+
+  private func finishReload(
+    token: UUID,
+    origin: ReloadOrigin,
+    replacement: AppSnapshot?,
+    error: (any Error)?,
+    taskWasCancelled: Bool
+  ) {
+    guard bridgeActivity == .reloading(token: token, origin: origin) else { return }
+    reloadTask = nil
+    bridgeActivity = .idle
+
+    let mayApply: Bool
+    switch origin {
+    case .requested:
+      mayApply = !taskWasCancelled
+    case .polling(let generation):
+      mayApply =
+        !taskWasCancelled
+        && isActive
+        && generation == pollGeneration
+        && activeOperationID == nil
+    }
+    if mayApply, let replacement {
+      replaceSnapshot(replacement)
+    } else if mayApply, let error {
+      apply(error)
+    }
+
+    if let pendingRefresh {
+      self.pendingRefresh = nil
+      beginRefresh(pendingRefresh)
+    }
+  }
+
+  private func beginRefresh(_ request: PendingRefresh) {
+    guard bridgeActivity == .idle,
+      activeOperationID == request.operationID
+    else { return }
+    bridgeActivity = .refreshing(operationID: request.operationID)
+    let bridge = bridge
+    refreshTask = Task { [weak self, bridge] in
+      do {
+        _ = try await bridge.refresh(operationID: request.operationID, ai: request.ai)
+        guard !Task.isCancelled,
+          self?.refreshMayLoadSnapshot(operationID: request.operationID) == true
+        else { return }
+        let replacement = try await bridge.snapshot()
+        guard !Task.isCancelled else { return }
+        self?.finishRefresh(
+          operationID: request.operationID,
+          replacement: replacement,
+          error: nil
+        )
+      } catch {
+        self?.finishRefresh(
+          operationID: request.operationID,
+          replacement: nil,
+          error: error
+        )
+      }
+    }
+  }
+
+  private func refreshMayLoadSnapshot(operationID: String) -> Bool {
+    activeOperationID == operationID
+      && bridgeActivity == .refreshing(operationID: operationID)
+  }
+
+  private func finishRefresh(
+    operationID: String,
+    replacement: AppSnapshot?,
+    error: (any Error)?
+  ) {
+    guard refreshMayLoadSnapshot(operationID: operationID) else { return }
+    bridgeActivity = .idle
+    refreshTask = nil
+    activeOperationID = nil
+    if let replacement {
+      replaceSnapshot(replacement)
+    } else if let error {
       apply(error)
     }
   }
