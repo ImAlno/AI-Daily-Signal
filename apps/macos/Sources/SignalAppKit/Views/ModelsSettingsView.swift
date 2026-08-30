@@ -62,12 +62,10 @@ public struct ModelsSettingsView: View {
   public var body: some View {
     VStack(spacing: 0) {
       if model.inlineEditorRoute == .addModel {
-        ScrollView {
-          ModelProfileEditorView(model: model)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 24)
-            .frame(maxWidth: .infinity)
-        }
+        ModelProfileEditorView(model: model)
+          .padding(.horizontal, 28)
+          .padding(.vertical, 24)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       } else {
         modelList
       }

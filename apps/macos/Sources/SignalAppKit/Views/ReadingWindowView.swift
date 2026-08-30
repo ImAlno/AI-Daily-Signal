@@ -87,7 +87,6 @@ public struct UnavailableContentPresentation: Sendable, Equatable {
 
 public struct ReadingWindowView: View {
   @Bindable private var model: AppModel
-  @State private var columnVisibility = NavigationSplitViewVisibility.all
 
   public init(model: AppModel) {
     self.model = model
@@ -111,34 +110,29 @@ public struct ReadingWindowView: View {
   private var readingShell: some View {
     GeometryReader { proxy in
       let mode = AppLayoutPolicy.mode(for: proxy.size.width)
-      let navigationPresentation = AppNavigationPresentation(mode: mode)
       let navigationWidth = AppLayoutPolicy.navigationWidth(for: mode) ?? 58
 
-      NavigationSplitView(columnVisibility: $columnVisibility) {
+      NavigationSplitView(columnVisibility: columnVisibility(for: mode)) {
         AppNavigationView(mode: mode, selection: destinationSelection)
           .navigationSplitViewColumnWidth(
             min: navigationWidth,
             ideal: navigationWidth,
             max: navigationWidth
           )
+          .toolbar(removing: .sidebarToggle)
       } detail: {
         destinationContent
           .navigationTitle(model.destination.title)
           .background(Color(nsColor: .textBackgroundColor))
-      }
-      .onAppear {
-        columnVisibility = navigationPresentation.persistentNavigationVisible ? .all : .detailOnly
-      }
-      .onChange(of: mode) { _, value in
-        columnVisibility =
-          AppNavigationPresentation(mode: value).persistentNavigationVisible ? .all : .detailOnly
       }
       .toolbar {
         toolbarContent(mode: mode)
       }
     }
     .safeAreaInset(edge: .top) {
-      if model.errorMessage == nil, model.activeOperationID == nil, let notice = model.refreshNotice {
+      if model.errorMessage == nil, model.activeOperationID == nil,
+        let notice = model.refreshNotice
+      {
         let presentation = RefreshNoticePresentation(notice: notice)
         Label(presentation.message, systemImage: presentation.status.symbolName)
           .font(.callout)
@@ -157,17 +151,7 @@ public struct ReadingWindowView: View {
   private func toolbarContent(mode: AppLayoutMode) -> some ToolbarContent {
     if AppNavigationPresentation(mode: mode).usesToolbarMenu {
       ToolbarItem(placement: .navigation) {
-        Menu {
-          ForEach(Destination.allCases, id: \.self) { destination in
-            Button(destination.title, systemImage: destination.systemImage) {
-              model.destination = destination
-            }
-          }
-        } label: {
-          Label(model.destination.title, systemImage: "sidebar.left")
-        }
-        .accessibilityLabel(IconControlDescriptor.compactNavigation.label)
-        .help(IconControlDescriptor.compactNavigation.help)
+        CompactNavigationPicker(selection: destinationPickerSelection)
       }
     }
 
@@ -246,6 +230,24 @@ public struct ReadingWindowView: View {
       set: { destination in
         if let destination { model.destination = destination }
       }
+    )
+  }
+
+  private var destinationPickerSelection: Binding<Destination> {
+    Binding(
+      get: { model.destination },
+      set: { model.destination = $0 }
+    )
+  }
+
+  private func columnVisibility(
+    for mode: AppLayoutMode
+  ) -> Binding<NavigationSplitViewVisibility> {
+    let visibility: NavigationSplitViewVisibility =
+      AppNavigationPresentation(mode: mode).persistentNavigationVisible ? .all : .detailOnly
+    return Binding(
+      get: { visibility },
+      set: { _ in }
     )
   }
 

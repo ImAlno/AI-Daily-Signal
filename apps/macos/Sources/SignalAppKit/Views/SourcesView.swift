@@ -53,12 +53,10 @@ public struct SourcesView: View {
 
     VStack(spacing: 0) {
       if model.inlineEditorRoute == .addSource {
-        ScrollView {
-          SourceEditorView(model: model)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 24)
-            .frame(maxWidth: .infinity)
-        }
+        SourceEditorView(model: model)
+          .padding(.horizontal, 28)
+          .padding(.vertical, 24)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       } else {
         List {
           Section("Standard Sources") {
