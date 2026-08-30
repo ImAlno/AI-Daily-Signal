@@ -449,11 +449,15 @@ struct ReadingFlowTests {
     await eventually { bridge.stateRevisionCalls == 1 }
 
     let saveTask = Task { await model.toggleSelectedStorySaved() }
+    await eventually {
+      model.storyActionState(for: .saving(storyID: "story")) == .queued
+    }
+    #expect(bridge.savedRequests.isEmpty)
+    bridge.releaseStateRevisions()
     await eventually { bridge.savedRequests.count == 1 }
     bridge.releaseSavedMutations()
     await saveTask.value
     model.stopPolling()
-    bridge.releaseStateRevisions()
     try? await Task.sleep(for: .milliseconds(20))
 
     #expect(model.selectedStory?.isSaved == true)
@@ -708,6 +712,246 @@ struct ReadingFlowTests {
     #expect(model.storyActionError == nil)
     #expect(model.storyActionError(for: .regenerating(storyID: "first")) != nil)
   }
+
+  @Test @MainActor
+  func equalGenerationSummaryConfirmationStillUpdatesTheConfirmedVariantAndVisibleMode() async {
+    // Break caught: treating a cache-hit confirmation as stale solely because generation is equal.
+    let initialStory = story(id: "story", title: "Signal")
+    let confirmedStory = copy(initialStory, selectedVariantID: "variant-new")
+    let initial = snapshot(todayStories: [initialStory], latest: [initialStory], saved: [])
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.summaryResult = StoryMutationResult(
+      story: confirmedStory,
+      revision: initial.revision
+    )
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+
+    await model.selectSummary(.ai(variantID: "variant-new"))
+
+    #expect(model.selectedStory?.selectedSummary?.id == "variant-new")
+    #expect(model.selectedSummarySelection == .ai(variantID: "variant-new"))
+    #expect(model.snapshot?.revision == initial.revision)
+  }
+
+  @Test @MainActor
+  func lowerGenerationConfirmationIsReconciledInsteadOfReplacingNewerSnapshotState() async {
+    // Break caught: allowing an older partial mutation record to overwrite a newer full snapshot.
+    let initialStory = story(id: "story", title: "Signal")
+    let initialRevision = StateRevision(dataGeneration: 5, sourceConfigRevision: "source-a")
+    let initial = snapshot(
+      revision: initialRevision,
+      todayStories: [initialStory],
+      latest: [initialStory],
+      saved: []
+    )
+    let reconciledStory = copy(initialStory, saved: true)
+    let reconciledRevision = StateRevision(dataGeneration: 6, sourceConfigRevision: "source-a")
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.savedResult = StoryMutationResult(
+      story: reconciledStory,
+      revision: StateRevision(dataGeneration: 4, sourceConfigRevision: "source-a")
+    )
+    bridge.enqueueSnapshot(
+      snapshot(
+        revision: reconciledRevision,
+        todayStories: [reconciledStory],
+        latest: [reconciledStory],
+        saved: [reconciledStory]
+      )
+    )
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+
+    await model.toggleSelectedStorySaved()
+
+    #expect(bridge.snapshotCalls == 2)
+    #expect(model.snapshot?.revision == reconciledRevision)
+    #expect(model.selectedStory?.isSaved == true)
+  }
+
+  @Test @MainActor
+  func lowerGenerationAIConfirmationCannotOverrideTheAuthoritativeReconciledSelection() async {
+    // Break caught: displaying a stale AI choice after the full reconciliation rejected it.
+    let initialStory = story(id: "story", title: "Signal")
+    let initialRevision = StateRevision(dataGeneration: 5, sourceConfigRevision: "source-a")
+    let initial = snapshot(
+      revision: initialRevision,
+      todayStories: [initialStory],
+      latest: [initialStory],
+      saved: []
+    )
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.summaryResult = StoryMutationResult(
+      story: copy(initialStory, selectedVariantID: "variant-new"),
+      revision: StateRevision(dataGeneration: 4, sourceConfigRevision: "source-a")
+    )
+    bridge.enqueueSnapshot(initial)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+
+    await model.selectSummary(.ai(variantID: "variant-new"))
+
+    #expect(bridge.snapshotCalls == 2)
+    #expect(model.selectedStory?.selectedSummary?.id == "variant-old")
+    #expect(model.selectedSummarySelection == .ai(variantID: "variant-old"))
+  }
+
+  @Test @MainActor
+  func changedSourceRevisionReconcilesTheWholeSnapshotBeforePublishingTheNewRevision() async {
+    // Break caught: pairing a new source revision with the old sources/models projection.
+    let initialStory = story(id: "story", title: "Signal")
+    let initial = snapshot(todayStories: [initialStory], latest: [initialStory], saved: [])
+    let confirmedStory = copy(initialStory, saved: true)
+    let compositeRevision = StateRevision(dataGeneration: 2, sourceConfigRevision: "source-b")
+    let updatedSources = [
+      Source(
+        id: "source-1",
+        name: "Updated Research",
+        category: "research",
+        enabled: true,
+        weight: 0.7,
+        feedURL: "https://updated.example.test/feed",
+        origin: .personal
+      )
+    ]
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.savedResult = StoryMutationResult(story: confirmedStory, revision: compositeRevision)
+    bridge.enqueueSnapshot(
+      snapshot(
+        revision: compositeRevision,
+        todayStories: [confirmedStory],
+        latest: [confirmedStory],
+        saved: [confirmedStory],
+        sources: updatedSources
+      )
+    )
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    bridge.suspendNextSnapshot()
+    model.selectedStoryID = "story"
+
+    let saveTask = Task { await model.toggleSelectedStorySaved() }
+    await eventually { bridge.snapshotCalls == 2 }
+    #expect(model.snapshot?.revision == initial.revision)
+    #expect(model.snapshot?.sources.map(\.name) == sourceFixtures.map(\.name))
+    #expect(model.selectedStory?.isSaved == false)
+
+    bridge.releaseSnapshots()
+    await saveTask.value
+    #expect(model.snapshot?.revision == compositeRevision)
+    #expect(model.snapshot?.sources.map(\.name) == ["Updated Research"])
+    #expect(model.selectedStory?.isSaved == true)
+  }
+
+  @Test @MainActor
+  func mutationQueuesBehindSuspendedPollingRevisionWithoutOverlappingBridgeCalls() async {
+    // Break caught: stateRevision bypassing the coordinator and overlapping a visible mutation.
+    let initialStory = story(id: "story", title: "Signal")
+    let initial = snapshot(todayStories: [initialStory], latest: [initialStory], saved: [])
+    let confirmedStory = copy(initialStory, saved: true)
+    let bridge = FakeBridgeClient(snapshot: initial, revisions: [initial.revision])
+    bridge.savedResult = StoryMutationResult(story: confirmedStory, revision: mutationRevision)
+    bridge.suspendNextStateRevision()
+    bridge.suspendNextSavedMutation()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+    model.setActive(true)
+    await eventually { bridge.stateRevisionCalls == 1 }
+
+    let saveTask = Task { await model.toggleSelectedStorySaved() }
+    await eventually {
+      model.storyActionState(for: .saving(storyID: "story")) == .queued
+    }
+    #expect(bridge.savedRequests.isEmpty)
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
+
+    bridge.releaseStateRevisions()
+    await eventually { bridge.savedRequests.count == 1 }
+    model.stopPolling()
+    bridge.releaseSavedMutations()
+    await saveTask.value
+    #expect(model.selectedStory?.isSaved == true)
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
+  }
+
+  @Test @MainActor
+  func laterSmartIntentSurvivesSuspendedAISelectionConfirmation() async {
+    // Break caught: a late AI confirmation overriding the reader's newer local mode choice.
+    let initialStory = story(id: "story", title: "Signal")
+    let confirmedStory = copy(initialStory, selectedVariantID: "variant-new")
+    let initial = snapshot(todayStories: [initialStory], latest: [initialStory], saved: [])
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.summaryResult = StoryMutationResult(story: confirmedStory, revision: mutationRevision)
+    bridge.suspendNextSummaryMutation()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+
+    let selectTask = Task { await model.selectSummary(.ai(variantID: "variant-new")) }
+    await eventually { bridge.summaryRequests.count == 1 }
+    model.showSummary(.smart)
+    bridge.releaseSummaryMutations()
+    await selectTask.value
+
+    #expect(model.selectedStory?.selectedSummary?.id == "variant-new")
+    #expect(model.selectedSummarySelection == .smart)
+  }
+
+  @Test @MainActor
+  func laterRawIntentSurvivesSuspendedRegenerationConfirmation() async {
+    // Break caught: a late generation completion overriding a newer Raw reading choice.
+    let initialStory = story(id: "story", title: "Signal")
+    let confirmedStory = copy(initialStory, selectedVariantID: "variant-new")
+    let initial = snapshot(todayStories: [initialStory], latest: [initialStory], saved: [])
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.generationResult = GenerationResult(
+      story: confirmedStory,
+      selectedSummary: variantNew,
+      revision: mutationRevision
+    )
+    bridge.suspendNextGeneration()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+
+    let generationTask = Task {
+      await model.regenerateSelectedStory(profileID: "profile-1", force: false)
+    }
+    await eventually { bridge.generationRequests.count == 1 }
+    model.showSummary(.raw)
+    bridge.releaseGenerations()
+    await generationTask.value
+
+    #expect(model.selectedStory?.selectedSummary?.id == "variant-new")
+    #expect(model.selectedSummarySelection == .raw)
+  }
 }
 
 @MainActor
@@ -849,7 +1093,8 @@ private func snapshot(
   latest: [Story],
   saved: [Story],
   defaultProfileID: String? = "profile-1",
-  modelProfiles: [ModelProfile] = [.fixture]
+  modelProfiles: [ModelProfile] = [.fixture],
+  sources: [Source] = sourceFixtures
 ) -> AppSnapshot {
   AppSnapshot(
     revision: revision,
@@ -864,7 +1109,7 @@ private func snapshot(
     ),
     latest: latest,
     saved: saved,
-    sources: sourceFixtures,
+    sources: sources,
     modelProfiles: modelProfiles,
     defaultModelProfileID: defaultProfileID,
     hasUsableAIProfile: true

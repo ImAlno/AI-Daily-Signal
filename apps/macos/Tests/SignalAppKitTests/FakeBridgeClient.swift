@@ -165,7 +165,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
 
   let savedMutationRevision = StateRevision(
     dataGeneration: 2,
-    sourceConfigRevision: "source-after-save"
+    sourceConfigRevision: "source-a"
   )
 
   func enqueueSnapshot(_ snapshot: AppSnapshot) {

@@ -285,8 +285,10 @@ struct AppModelTests {
     await eventually { bridge.stateRevisionCalls == 1 }
 
     await model.refresh()
-    await eventually { bridge.refreshIdentifiers.count == 1 }
+    #expect(bridge.refreshIdentifiers.isEmpty)
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
     bridge.releaseStateRevisions()
+    await eventually { bridge.refreshIdentifiers.count == 1 }
     try? await Task.sleep(for: .milliseconds(20))
     #expect(bridge.snapshotCalls == 1)
 
@@ -325,6 +327,9 @@ struct AppModelTests {
     await eventually { bridge.stateRevisionCalls == 1 }
 
     await model.refresh()
+    #expect(bridge.refreshIdentifiers.isEmpty)
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
+    bridge.releaseStateRevisions()
     await eventually { bridge.refreshIdentifiers.count == 1 }
     bridge.finishRefresh(with: .fixture)
     await eventually {
@@ -332,7 +337,6 @@ struct AppModelTests {
     }
     bridge.enqueueSnapshot(stale)
 
-    bridge.releaseStateRevisions()
     try? await Task.sleep(for: .milliseconds(20))
     model.stopPolling()
 

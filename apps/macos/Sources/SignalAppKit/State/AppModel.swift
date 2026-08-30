@@ -36,6 +36,7 @@ private enum BridgeActivity: Equatable {
   case reloading(token: UUID, origin: ReloadOrigin)
   case refreshing(operationID: String)
   case mutating(token: UUID, action: StoryAction)
+  case polling(token: UUID, generation: UInt64, revisionEpoch: UInt64)
 }
 
 private struct PendingRefresh: Equatable {
@@ -54,6 +55,7 @@ private struct PendingStoryMutation {
   let token: UUID
   let action: StoryAction
   let payload: StoryMutationPayload
+  let summaryIntentEpoch: UInt64?
   let continuation: CheckedContinuation<Void, Never>
 }
 
@@ -83,6 +85,7 @@ public final class AppModel {
   @ObservationIgnored private let pollInterval: Duration
   @ObservationIgnored private var refreshTask: Task<Void, Never>?
   @ObservationIgnored private var pollTask: Task<Void, Never>?
+  @ObservationIgnored private var pollBridgeTask: Task<Void, Never>?
   @ObservationIgnored private var reloadTask: Task<Void, Never>?
   @ObservationIgnored private var bridgeActivity = BridgeActivity.idle
   @ObservationIgnored private var pendingRefresh: PendingRefresh?
@@ -92,6 +95,7 @@ public final class AppModel {
   @ObservationIgnored private var pollGeneration: UInt64 = 0
   @ObservationIgnored private var revisionEpoch: UInt64 = 0
   private var summarySelections: [String: ReadingSummarySelection] = [:]
+  private var summarySelectionIntentEpochs: [String: UInt64] = [:]
   private var storyActionErrors: [StoryAction: String] = [:]
 
   public init(
@@ -107,6 +111,7 @@ public final class AppModel {
 
   isolated deinit {
     pollTask?.cancel()
+    pollBridgeTask?.cancel()
     reloadTask?.cancel()
     refreshTask?.cancel()
     if let activeOperationID {
@@ -187,6 +192,7 @@ public final class AppModel {
     guard let storyID = storyID ?? selectedStoryID, story(id: storyID) != nil else { return }
     switch selection {
     case .raw, .smart:
+      _ = advanceSummarySelectionIntent(for: storyID)
       summarySelections[storyID] = selection
       storyActionErrors = storyActionErrors.filter { actionStoryID($0.key) != storyID }
     case .ai:
@@ -218,7 +224,7 @@ public final class AppModel {
     switch bridgeActivity {
     case .idle:
       beginRefresh(request)
-    case .reloading, .mutating:
+    case .reloading, .mutating, .polling:
       pendingRefresh = request
     case .refreshing:
       assertionFailure("An active refresh must own activeOperationID")
@@ -272,9 +278,11 @@ public final class AppModel {
       else { return }
       let action = StoryAction.selectingSummary(storyID: storyID)
       guard storyActionStates[action] == nil else { return }
+      let intentEpoch = advanceSummarySelectionIntent(for: storyID)
       await enqueueStoryMutation(
         action: action,
-        payload: .select(storyID: storyID, variantID: variantID)
+        payload: .select(storyID: storyID, variantID: variantID),
+        summaryIntentEpoch: intentEpoch
       )
     }
   }
@@ -289,20 +297,24 @@ public final class AppModel {
       return
     }
     guard storyActionStates[action] == nil else { return }
+    let intentEpoch = advanceSummarySelectionIntent(for: selectedStory.id)
     await enqueueStoryMutation(
       action: action,
       payload: .regenerate(
         storyID: selectedStory.id,
         profileID: resolvedProfile,
         force: force
-      )
+      ),
+      summaryIntentEpoch: intentEpoch
     )
   }
 
   private func enqueueStoryMutation(
     action: StoryAction,
-    payload: StoryMutationPayload
+    payload: StoryMutationPayload,
+    summaryIntentEpoch: UInt64? = nil
   ) async {
+    invalidatePendingRevisionReads()
     storyActionErrors[action] = nil
     storyActionStates[action] = .queued
     await withCheckedContinuation { continuation in
@@ -311,6 +323,7 @@ public final class AppModel {
           token: UUID(),
           action: action,
           payload: payload,
+          summaryIntentEpoch: summaryIntentEpoch,
           continuation: continuation
         )
       )
@@ -361,9 +374,34 @@ public final class AppModel {
             generatedSelectionID: result.selectedSummary?.id
           )
         }
-        self?.finishStoryMutation(pending, confirmation: confirmation, error: nil)
+        let requiresReconciliation =
+          self?.storyMutationRequiresReconciliation(confirmation) == true
+        if requiresReconciliation {
+          let replacement = try await bridge.snapshot()
+          self?.finishStoryMutation(
+            pending,
+            confirmation: confirmation,
+            reconciliationSnapshot: replacement,
+            requiresReconciliation: true,
+            error: nil
+          )
+        } else {
+          self?.finishStoryMutation(
+            pending,
+            confirmation: confirmation,
+            reconciliationSnapshot: nil,
+            requiresReconciliation: false,
+            error: nil
+          )
+        }
       } catch {
-        self?.finishStoryMutation(pending, confirmation: nil, error: error)
+        self?.finishStoryMutation(
+          pending,
+          confirmation: nil,
+          reconciliationSnapshot: nil,
+          requiresReconciliation: false,
+          error: error
+        )
       }
     }
   }
@@ -371,24 +409,47 @@ public final class AppModel {
   private func finishStoryMutation(
     _ pending: PendingStoryMutation,
     confirmation: StoryMutationConfirmation?,
+    reconciliationSnapshot: AppSnapshot?,
+    requiresReconciliation: Bool,
     error: (any Error)?
   ) {
     guard bridgeActivity == .mutating(token: pending.token, action: pending.action) else { return }
     invalidatePendingRevisionReads()
-    if let confirmation,
-      confirmation.revision.dataGeneration > (snapshot?.revision.dataGeneration ?? 0)
+    var appliedConfirmation: StoryMutationConfirmation?
+    if requiresReconciliation, let reconciliationSnapshot {
+      replaceSnapshot(reconciliationSnapshot)
+      if snapshot?.revision == reconciliationSnapshot.revision {
+        appliedConfirmation = confirmation
+      }
+    } else if let confirmation,
+      confirmation.revision.dataGeneration >= (snapshot?.revision.dataGeneration ?? 0)
     {
       replaceStory(confirmation.story, revision: confirmation.revision)
-      if let variantID = confirmation.generatedSelectionID {
-        summarySelections[confirmation.story.id] = .ai(variantID: variantID)
-      }
+      appliedConfirmation = confirmation
     } else if let error {
       storyActionErrors[pending.action] = userFacingMessage(for: error)
+    }
+    if let confirmation = appliedConfirmation,
+      let variantID = confirmation.generatedSelectionID,
+      pending.summaryIntentEpoch == summarySelectionIntentEpochs[confirmation.story.id],
+      story(id: confirmation.story.id)?.summaryVariants.contains(where: { $0.id == variantID })
+        == true,
+      !requiresReconciliation || story(id: confirmation.story.id)?.selectedSummary?.id == variantID
+    {
+      summarySelections[confirmation.story.id] = .ai(variantID: variantID)
     }
     storyActionStates[pending.action] = nil
     bridgeActivity = .idle
     pending.continuation.resume()
     beginNextBridgeActivityIfPossible()
+  }
+
+  private func storyMutationRequiresReconciliation(
+    _ confirmation: StoryMutationConfirmation
+  ) -> Bool {
+    guard let revision = snapshot?.revision else { return false }
+    return confirmation.revision.dataGeneration < revision.dataGeneration
+      || confirmation.revision.sourceConfigRevision != revision.sourceConfigRevision
   }
 
   private func beginNextBridgeActivityIfPossible() {
@@ -429,7 +490,7 @@ public final class AppModel {
       await reloadTask?.value
     case .refreshing:
       await refreshTask?.value
-    case .mutating:
+    case .mutating, .polling:
       await withCheckedContinuation { continuation in
         pendingReloadWaiters.append(continuation)
       }
@@ -457,8 +518,7 @@ public final class AppModel {
     pollGeneration &+= 1
     let generation = pollGeneration
     let interval = pollInterval
-    let bridge = bridge
-    pollTask = Task { [weak self, bridge] in
+    pollTask = Task { [weak self] in
       while !Task.isCancelled {
         do {
           try await Task.sleep(for: interval)
@@ -466,29 +526,11 @@ public final class AppModel {
           return
         } catch {
           guard !Task.isCancelled else { return }
-          self?.receivePollingError(error, generation: generation)
+          self?.apply(error)
           continue
         }
         guard !Task.isCancelled else { return }
-        guard let revisionEpoch = self?.revisionReadEpoch(generation: generation) else { continue }
-        do {
-          let revision = try await bridge.stateRevision()
-          guard !Task.isCancelled else { return }
-          self?.receivePolledRevision(
-            revision,
-            generation: generation,
-            revisionEpoch: revisionEpoch
-          )
-        } catch is CancellationError {
-          return
-        } catch {
-          guard !Task.isCancelled else { return }
-          self?.receivePollingError(
-            error,
-            generation: generation,
-            revisionEpoch: revisionEpoch
-          )
-        }
+        self?.beginPollingCycle(generation: generation)
       }
     }
   }
@@ -500,44 +542,120 @@ public final class AppModel {
     pollGeneration &+= 1
     pollTask?.cancel()
     pollTask = nil
-    if case .reloading(_, .polling) = bridgeActivity {
-      reloadTask?.cancel()
+    if case .polling = bridgeActivity {
+      pollBridgeTask?.cancel()
     }
   }
 
-  private func pollMayReadRevision(generation: UInt64) -> Bool {
-    isActive
-      && generation == pollGeneration
-      && activeOperationID == nil
-      && bridgeActivity == .idle
+  private func beginPollingCycle(generation: UInt64) {
+    guard isActive,
+      generation == pollGeneration,
+      activeOperationID == nil,
+      bridgeActivity == .idle
+    else { return }
+    let token = UUID()
+    let epoch = revisionEpoch
+    bridgeActivity = .polling(token: token, generation: generation, revisionEpoch: epoch)
+    let bridge = bridge
+    pollBridgeTask = Task { [weak self, bridge] in
+      do {
+        let revision = try await bridge.stateRevision()
+        guard
+          self?.pollingCycleMayContinue(
+            token: token,
+            generation: generation,
+            revisionEpoch: epoch
+          ) == true
+        else {
+          self?.finishPollingCycle(
+            token: token,
+            generation: generation,
+            revisionEpoch: epoch,
+            replacement: nil,
+            error: nil,
+            taskWasCancelled: Task.isCancelled
+          )
+          return
+        }
+        if self?.polledRevisionNeedsSnapshot(revision) != true {
+          self?.finishPollingCycle(
+            token: token,
+            generation: generation,
+            revisionEpoch: epoch,
+            replacement: nil,
+            error: nil,
+            taskWasCancelled: Task.isCancelled
+          )
+        } else {
+          let replacement = try await bridge.snapshot()
+          self?.finishPollingCycle(
+            token: token,
+            generation: generation,
+            revisionEpoch: epoch,
+            replacement: replacement,
+            error: nil,
+            taskWasCancelled: Task.isCancelled
+          )
+        }
+      } catch {
+        self?.finishPollingCycle(
+          token: token,
+          generation: generation,
+          revisionEpoch: epoch,
+          replacement: nil,
+          error: error,
+          taskWasCancelled: Task.isCancelled
+        )
+      }
+    }
   }
 
-  private func revisionReadEpoch(generation: UInt64) -> UInt64? {
-    guard pollMayReadRevision(generation: generation) else { return nil }
-    return revisionEpoch
-  }
-
-  private func receivePolledRevision(
-    _ revision: StateRevision,
+  private func pollingCycleMayContinue(
+    token: UUID,
     generation: UInt64,
     revisionEpoch: UInt64
-  ) {
-    guard revisionEpoch == self.revisionEpoch else { return }
-    guard pollMayReadRevision(generation: generation) else { return }
-    guard revision != snapshot?.revision else { return }
-    beginReload(origin: .polling(generation: generation))
+  ) -> Bool {
+    !Task.isCancelled
+      && isActive
+      && generation == pollGeneration
+      && activeOperationID == nil
+      && revisionEpoch == self.revisionEpoch
+      && bridgeActivity
+        == .polling(token: token, generation: generation, revisionEpoch: revisionEpoch)
   }
 
-  private func receivePollingError(
-    _ error: any Error,
+  private func polledRevisionNeedsSnapshot(_ revision: StateRevision) -> Bool {
+    guard let current = snapshot?.revision else { return true }
+    guard revision.dataGeneration >= current.dataGeneration else { return false }
+    return revision != current
+  }
+
+  private func finishPollingCycle(
+    token: UUID,
     generation: UInt64,
-    revisionEpoch: UInt64? = nil
+    revisionEpoch: UInt64,
+    replacement: AppSnapshot?,
+    error: (any Error)?,
+    taskWasCancelled: Bool
   ) {
-    if let revisionEpoch {
-      guard revisionEpoch == self.revisionEpoch else { return }
+    guard
+      bridgeActivity
+        == .polling(token: token, generation: generation, revisionEpoch: revisionEpoch)
+    else { return }
+    let mayApply =
+      !taskWasCancelled
+      && isActive
+      && generation == pollGeneration
+      && activeOperationID == nil
+      && revisionEpoch == self.revisionEpoch
+    pollBridgeTask = nil
+    bridgeActivity = .idle
+    if mayApply, let replacement {
+      replaceSnapshot(replacement)
+    } else if mayApply, let error {
+      apply(error)
     }
-    guard pollMayReadRevision(generation: generation) else { return }
-    apply(error)
+    beginNextBridgeActivityIfPossible()
   }
 
   private func beginReload(origin: ReloadOrigin) {
@@ -752,6 +870,12 @@ public final class AppModel {
     case .ai(let variantID):
       return story.summaryVariants.contains(where: { $0.id == variantID })
     }
+  }
+
+  private func advanceSummarySelectionIntent(for storyID: String) -> UInt64 {
+    let next = (summarySelectionIntentEpochs[storyID] ?? 0) &+ 1
+    summarySelectionIntentEpochs[storyID] = next
+    return next
   }
 
   private func validateSelectedStoryForDestination() {
