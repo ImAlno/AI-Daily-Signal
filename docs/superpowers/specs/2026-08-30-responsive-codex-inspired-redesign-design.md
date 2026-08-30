@@ -65,7 +65,7 @@ The menu-bar popover remains a compact companion surface and retains its approve
 The shell contains:
 
 - the native macOS title bar and traffic-light controls;
-- a compact toolbar with Refresh, Search, and context-sensitive actions;
+- a compact toolbar with Refresh and context-sensitive actions backed by existing commands;
 - a leading navigation sidebar or icon rail;
 - one opaque main content surface;
 - subtle status text for freshness, active refresh, offline state, or failure.
