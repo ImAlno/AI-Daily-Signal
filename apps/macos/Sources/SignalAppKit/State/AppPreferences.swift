@@ -5,6 +5,7 @@ public enum Destination: String, CaseIterable, Sendable, Equatable {
   case latest
   case saved
   case sources
+  case models
   case settings
 }
 

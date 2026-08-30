@@ -61,7 +61,11 @@ struct AppPresentationTests {
   @Test
   func readingWindowExposesExactlyTheApprovedDestinationsAndCommands() {
     // Break caught: adding placeholder destinations or omitting a required keyboard action.
-    #expect(Destination.allCases == [.today, .latest, .saved, .sources, .settings])
+    #expect(
+      Destination.allCases == [.today, .latest, .saved, .sources, .models, .settings]
+    )
+    #expect(Destination.models.title == "Models")
+    #expect(Destination.settings.title == "Preferences")
     #expect(ReadingCommand.allCases == [.refresh, .openSource, .save, .settings])
     #expect(ReadingCommand.refresh.keyEquivalent == "r")
     #expect(ReadingCommand.openSource.keyEquivalent == "o")

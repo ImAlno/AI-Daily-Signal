@@ -32,7 +32,7 @@ public enum ReadingCommand: CaseIterable, Sendable, Equatable {
       )
     case .settings:
       KeyboardCommandDescriptor(
-        key: ",", modifiers: [.command], help: "Open Settings (⌘,)"
+        key: ",", modifiers: [.command], help: "Open Preferences (⌘,)"
       )
     }
   }
@@ -128,7 +128,7 @@ public struct ReadingWindowView: View {
             StoryDetailView(model: model)
               .frame(minWidth: 440, idealWidth: 680)
           }
-        case .sources, .settings:
+        case .sources, .models, .settings:
           destinationContent
         }
       }
@@ -157,7 +157,7 @@ public struct ReadingWindowView: View {
         )
         .help(ReadingCommand.save.descriptor.help)
 
-        Button("Settings", systemImage: "gearshape") {
+        Button("Preferences", systemImage: "gearshape") {
           model.destination = .settings
         }
         .keyboardShortcut(ReadingCommand.settings.keyEquivalent, modifiers: .command)
@@ -249,6 +249,8 @@ public struct ReadingWindowView: View {
       StoryListView(kind: .saved, model: model)
     case .sources:
       SourcesView(model: model)
+    case .models:
+      ModelsSettingsView(model: model)
     case .settings:
       SettingsView(model: model)
     }
@@ -289,16 +291,18 @@ extension Destination {
     case .latest: "Latest"
     case .saved: "Saved"
     case .sources: "Sources"
-    case .settings: "Settings"
+    case .models: "Models"
+    case .settings: "Preferences"
     }
   }
 
-  fileprivate var systemImage: String {
+  var systemImage: String {
     switch self {
     case .today: "sun.max"
     case .latest: "clock"
     case .saved: "bookmark"
     case .sources: "dot.radiowaves.left.and.right"
+    case .models: "cpu"
     case .settings: "gearshape"
     }
   }

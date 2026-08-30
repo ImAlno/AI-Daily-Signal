@@ -195,7 +195,7 @@ public final class AppModel {
       return snapshot?.latest.first(where: { $0.id == selectedStoryID })
     case .saved:
       return snapshot?.saved.first(where: { $0.id == selectedStoryID })
-    case .sources, .settings:
+    case .sources, .models, .settings:
       return nil
     }
   }

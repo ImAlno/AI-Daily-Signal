@@ -91,7 +91,7 @@ struct AccessibilityPolicyTests {
       (.refresh, "r", "Refresh briefing (⌘R)"),
       (.openSource, "o", "Open selected story source (⌘O)"),
       (.save, "s", "Save selected story (⌘S)"),
-      (.settings, ",", "Open Settings (⌘,)"),
+      (.settings, ",", "Open Preferences (⌘,)"),
     ]
 
     for (command, key, help) in expected {
