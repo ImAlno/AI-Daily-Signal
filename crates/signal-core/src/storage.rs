@@ -19,6 +19,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (3, include_str!("../migrations/003_model_profiles.sql")),
     (4, include_str!("../migrations/004_ai_summaries.sql")),
+    (
+        5,
+        include_str!("../migrations/005_generation_attempt_cancelled.sql"),
+    ),
 ];
 
 const MODEL_PROFILE_COLUMNS: &str = "

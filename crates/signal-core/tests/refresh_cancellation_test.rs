@@ -375,7 +375,12 @@ async fn cancelled_retry_stops_before_a_second_provider_request_and_keeps_the_ch
         .refresh_with_control(fixture.now, RefreshOptions::default(), &token)
         .await;
 
-    assert!(matches!(result, Err(SignalError::Cancelled)));
+    assert_eq!(
+        result
+            .expect_err("refresh should return cancellation")
+            .to_string(),
+        "operation cancelled"
+    );
     assert_eq!(provider_server.received_requests().await.unwrap().len(), 1);
     let attempt = fixture.store.list_generation_attempts().unwrap().remove(0);
     assert_eq!(
@@ -417,6 +422,7 @@ async fn retry_helper_checks_cancellation_before_each_operation() {
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let failure = result.expect_err("cancellation should prevent the retry dispatch");
+    assert_eq!(failure.kind(), ProviderFailureKind::Cancelled);
     assert_eq!(failure.charge_status(), RequestChargeStatus::PossiblySent);
 }
 

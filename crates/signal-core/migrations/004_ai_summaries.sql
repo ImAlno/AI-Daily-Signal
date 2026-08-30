@@ -52,7 +52,7 @@ CREATE TABLE generation_attempts (
     output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
     failure_kind TEXT CHECK (
         failure_kind IS NULL OR failure_kind IN (
-            'credential_missing', 'authentication', 'rate_limited', 'timeout', 'transport',
+            'cancelled', 'credential_missing', 'authentication', 'rate_limited', 'timeout', 'transport',
             'provider_rejected', 'provider_unavailable', 'malformed_output'
         )
     ),

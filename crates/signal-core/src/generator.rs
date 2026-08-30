@@ -420,6 +420,19 @@ impl<'a> AiGenerationCoordinator<'a> {
                 if failure.charge_status() == RequestChargeStatus::PossiblySent {
                     consume_refresh_cap(&mut control)?;
                 }
+                if failure.kind() == ProviderFailureKind::Cancelled {
+                    let outcome = match failure.charge_status() {
+                        RequestChargeStatus::NotSent => AttemptOutcome::FailedUncharged {
+                            category: GenerationFailureKind::Cancelled,
+                        },
+                        RequestChargeStatus::PossiblySent => AttemptOutcome::FailedCharged {
+                            category: GenerationFailureKind::Cancelled,
+                            cost_microusd: estimated_cost,
+                        },
+                    };
+                    self.store.finalize_generation(attempt_id, now, outcome)?;
+                    return Err(SignalError::Cancelled);
+                }
                 let status = if failure.kind() == ProviderFailureKind::MalformedOutput {
                     ManualGenerationStatus::MalformedOutput
                 } else {

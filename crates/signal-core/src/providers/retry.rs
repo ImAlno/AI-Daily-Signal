@@ -127,7 +127,7 @@ where
     loop {
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
             return Err(ProviderFailure::new(
-                ProviderFailureKind::Transport,
+                ProviderFailureKind::Cancelled,
                 charge_status,
             ));
         }

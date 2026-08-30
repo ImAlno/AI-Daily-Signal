@@ -154,6 +154,7 @@ impl ProviderRegistry {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderFailureKind {
+    Cancelled,
     CredentialMissing,
     Authentication,
     RateLimited,
@@ -185,6 +186,7 @@ impl ProviderFailureKind {
 impl From<ProviderFailureKind> for GenerationFailureKind {
     fn from(value: ProviderFailureKind) -> Self {
         match value {
+            ProviderFailureKind::Cancelled => Self::Cancelled,
             ProviderFailureKind::CredentialMissing => Self::CredentialMissing,
             ProviderFailureKind::Authentication => Self::Authentication,
             ProviderFailureKind::RateLimited => Self::RateLimited,
