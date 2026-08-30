@@ -30,6 +30,17 @@ async fn ranking_finishes_before_only_selected_items_are_generated() {
 }
 
 #[tokio::test]
+async fn refresh_revision_counts_generated_variant_and_refresh_commit() {
+    let fixture = signal_core::test_support::ai_app_fixture().with_max_items(1);
+    let before = fixture.app.status().unwrap().data_generation;
+
+    let report = fixture.app.refresh(fixture.now).await.unwrap();
+
+    assert_eq!(report.generation.generated, 1);
+    assert_eq!(fixture.app.status().unwrap().data_generation, before + 2,);
+}
+
+#[tokio::test]
 async fn cache_hits_make_no_request_and_do_not_consume_refresh_cap() {
     let fixture = signal_core::test_support::ai_app_fixture()
         .with_max_items(2)

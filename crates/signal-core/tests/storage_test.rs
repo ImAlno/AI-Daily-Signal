@@ -143,6 +143,21 @@ fn failed_story_mutations_do_not_increment_data_generation() {
 }
 
 #[test]
+fn inserting_summary_variant_increments_data_generation_once() {
+    let store = signal_core::test_support::temporary_store();
+    let variant = signal_core::test_support::summary_variant(
+        "visible-variant",
+        "visible-variant-cache-key",
+        signal_core::test_support::fixed_now(),
+    );
+    let before = store.status().unwrap().data_generation;
+
+    store.insert_summary_variant(&variant).unwrap();
+
+    assert_eq!(store.status().unwrap().data_generation, before + 1);
+}
+
+#[test]
 fn counted_refresh_commit_persists_source_counts() {
     let temp = tempfile::tempdir().unwrap();
     let store = signal_core::Store::open(temp.path().join("signal.sqlite3")).unwrap();

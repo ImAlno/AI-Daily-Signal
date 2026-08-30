@@ -207,8 +207,9 @@ impl Store {
 
     pub fn insert_summary_variant(&self, variant: &SummaryVariant) -> Result<()> {
         validate_summary_variant(variant)?;
-        let connection = self.connect()?;
-        connection.execute(
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
             "INSERT INTO summary_variants (
                  id, story_id, profile_id, provider, model, endpoint, dialect, prompt_version,
                  cache_key, what_happened, why_it_matters, caveat, input_tokens, output_tokens,
@@ -237,6 +238,8 @@ impl Store {
                 variant.generated_at.to_rfc3339(),
             ],
         )?;
+        bump_data_generation(&transaction)?;
+        transaction.commit()?;
         Ok(())
     }
 
