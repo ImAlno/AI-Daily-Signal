@@ -17,6 +17,41 @@ public enum ReadingCommand: CaseIterable, Sendable, Equatable {
   }
 }
 
+public enum UnavailableContentAction: Sendable, Equatable {
+  case retry
+
+  public var title: String { "Try Again" }
+}
+
+public struct UnavailableContentPresentation: Sendable, Equatable {
+  public let title: String
+  public let message: String
+  public let systemImage: String
+  public let action: UnavailableContentAction?
+
+  public init?(phase: AppPhase) {
+    switch phase {
+    case .startupFailure(let message):
+      title = "Local data unavailable"
+      self.message = message
+      systemImage = "internaldrive"
+      action = nil
+    case .offline(let message):
+      title = "Offline"
+      self.message = message
+      systemImage = "wifi.slash"
+      action = .retry
+    case .failure(let message):
+      title = "AI Daily Signal unavailable"
+      self.message = message
+      systemImage = "exclamationmark.triangle.fill"
+      action = .retry
+    default:
+      return nil
+    }
+  }
+}
+
 public struct ReadingWindowView: View {
   @Bindable private var model: AppModel
 
@@ -25,8 +60,9 @@ public struct ReadingWindowView: View {
   }
 
   public var body: some View {
+    let welcome = WelcomePresentation(phase: model.phase)
     Group {
-      if model.phase == .welcome {
+      if welcome.isPresented {
         WelcomeView(model: model)
       } else {
         readingShell
@@ -92,15 +128,10 @@ public struct ReadingWindowView: View {
     if model.phase == .loading {
       ProgressView("Loading your briefing…")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    } else if model.snapshot == nil, let error = model.errorMessage {
-      EmptyStateView(
-        title: SignalStatus(phase: model.phase).title,
-        message: error,
-        systemImage: SignalStatus(phase: model.phase).symbolName,
-        actionTitle: "Try Again"
-      ) {
-        Task { await model.reloadSnapshot() }
-      }
+    } else if model.snapshot == nil,
+      let presentation = UnavailableContentPresentation(phase: model.phase)
+    {
+      unavailableContent(presentation)
     } else {
       VStack(spacing: 0) {
         if let error = model.errorMessage {
@@ -114,6 +145,26 @@ public struct ReadingWindowView: View {
         }
         destinationBody
       }
+    }
+  }
+
+  @ViewBuilder
+  private func unavailableContent(_ presentation: UnavailableContentPresentation) -> some View {
+    if presentation.action == .retry {
+      EmptyStateView(
+        title: presentation.title,
+        message: presentation.message,
+        systemImage: presentation.systemImage,
+        actionTitle: UnavailableContentAction.retry.title
+      ) {
+        Task { await model.reloadSnapshot() }
+      }
+    } else {
+      EmptyStateView(
+        title: presentation.title,
+        message: presentation.message,
+        systemImage: presentation.systemImage
+      )
     }
   }
 

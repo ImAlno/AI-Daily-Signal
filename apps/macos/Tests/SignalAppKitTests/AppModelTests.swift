@@ -20,19 +20,85 @@ struct AppModelTests {
   }
 
   @Test @MainActor
-  func welcomeCompletesWhenFirstRefreshIsOffline() async {
-    // Break caught: reopening welcome forever after standard sources initialized but the network failed.
+  func firstAppLaunchShowsWelcomeEvenWhenTheCLIPrepopulatedToday() async {
+    // Break caught: treating shared CLI data as proof that this app's welcome was completed.
+    let model = AppModel(
+      bridge: FakeBridgeClient(snapshot: .fixture),
+      preferences: MemoryAppPreferences(welcomeCompleted: false)
+    )
+
+    await model.start()
+
+    #expect(model.snapshot?.today != nil)
+    #expect(model.phase == .welcome)
+  }
+
+  @Test @MainActor
+  func firstBuildStaysOnWelcomeWhileItsRefreshIsRunning() async {
+    // Break caught: replacing the first-build composition with the generic reading shell mid-action.
+    let bridge = FakeBridgeClient(
+      snapshot: AppSnapshot.fixture.with(
+        status: CollectionStatus(state: .notInitialized, refresh: nil),
+        today: .some(nil),
+        latest: []
+      )
+    )
+    bridge.suspendNextRefreshBeforeRegistration()
+    let model = AppModel(bridge: bridge, preferences: MemoryAppPreferences())
+    await model.start()
+
+    await model.buildFirstBriefing()
+    await eventually { model.phase == .buildingFirstBriefing }
+    let presentation = WelcomePresentation(phase: model.phase)
+
+    #expect(presentation.isPresented)
+    #expect(presentation.showsProgress)
+    #expect(!presentation.primaryActionEnabled)
+
+    model.cancelRefresh()
+    bridge.releaseRefreshStarts()
+    await eventually { model.activeOperationID == nil }
+  }
+
+  @Test @MainActor
+  func offlineFirstRefreshAfterStartupDoesNotClaimAPriorBriefing() async {
+    // Break caught: treating a noninitialized snapshot as a successfully built prior briefing.
     let preferences = MemoryAppPreferences()
-    let bridge = FakeBridgeClient(snapshot: .fixture)
+    let bridge = FakeBridgeClient(
+      snapshot: AppSnapshot.fixture.with(
+        status: CollectionStatus(state: .notInitialized, refresh: nil),
+        today: .some(nil),
+        latest: []
+      )
+    )
     bridge.refreshError = BridgeError.offline
     let model = AppModel(bridge: bridge, preferences: preferences)
 
+    await model.start()
     await model.buildFirstBriefing()
     await eventually {
       model.phase == .offline(message: "The network is unavailable. Try again when you're online.")
     }
 
     #expect(preferences.welcomeCompleted)
+  }
+
+  @Test @MainActor
+  func offlineRefreshWithAnExistingTodayPreservesTruthfulCopy() async {
+    // Break caught: losing the preservation message when a real prior Today briefing exists.
+    let bridge = FakeBridgeClient(snapshot: .fixture)
+    bridge.refreshError = BridgeError.offline
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+
+    await model.refresh()
+    await eventually {
+      model.phase
+        == .offline(message: "The network is unavailable. Your last briefing is still here.")
+    }
   }
 
   @Test @MainActor

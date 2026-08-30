@@ -22,45 +22,45 @@ final class AppEnvironment {
 }
 
 private final class StartupFailureBridgeClient: BridgeClient, Sendable {
-  func snapshot() async throws -> AppSnapshot { throw BridgeError.storageUnavailable }
-  func stateRevision() async throws -> StateRevision { throw BridgeError.storageUnavailable }
+  func snapshot() async throws -> AppSnapshot { throw BridgeError.startupUnavailable }
+  func stateRevision() async throws -> StateRevision { throw BridgeError.startupUnavailable }
   func refresh(operationID: String, ai: Bool) async throws -> RefreshResult {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func cancelOperation(id: String) -> Bool { false }
-  func setSaved(storyID: String, saved: Bool) async throws -> Story {
-    throw BridgeError.storageUnavailable
+  func setSaved(storyID: String, saved: Bool) async throws -> StoryMutationResult {
+    throw BridgeError.startupUnavailable
   }
   func setRead(storyID: String, read: Bool) async throws -> Story {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func selectSummary(storyID: String, variantID: String) async throws -> SummaryVariant {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func regenerate(storyID: String, profile: String?, force: Bool) async throws
     -> GenerationResult
   {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func addSource(_ input: FeedSourceInput) async throws -> Source {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func setSourceEnabled(id: String, enabled: Bool) async throws -> Source {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func removeSource(id: String) async throws -> Source {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func addModel(_ input: ModelProfileInput) async throws -> ModelProfile {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func setDefaultModel(_ selector: String) async throws -> ModelProfile {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func testModel(_ selector: String) async throws -> ModelTestResult {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
   func removeModel(_ selector: String) async throws -> ModelRemovalResult {
-    throw BridgeError.storageUnavailable
+    throw BridgeError.startupUnavailable
   }
 }

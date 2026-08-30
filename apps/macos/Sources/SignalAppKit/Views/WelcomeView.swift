@@ -1,5 +1,17 @@
 import SwiftUI
 
+public struct WelcomePresentation: Sendable, Equatable {
+  public let isPresented: Bool
+  public let showsProgress: Bool
+  public let primaryActionEnabled: Bool
+
+  public init(phase: AppPhase) {
+    isPresented = phase == .welcome || phase == .buildingFirstBriefing
+    showsProgress = phase == .buildingFirstBriefing
+    primaryActionEnabled = phase == .welcome
+  }
+}
+
 public enum WelcomeContent {
   public static let primaryAction = "Build My First Briefing"
   public static let localFirstExplanation =
@@ -16,6 +28,7 @@ public struct WelcomeView: View {
   }
 
   public var body: some View {
+    let presentation = WelcomePresentation(phase: model.phase)
     VStack(spacing: 24) {
       Image(systemName: "dot.radiowaves.left.and.right")
         .font(.system(size: 44, weight: .medium))
@@ -41,10 +54,10 @@ public struct WelcomeView: View {
       }
       .buttonStyle(.borderedProminent)
       .controlSize(.large)
-      .disabled(model.phase == .refreshing)
+      .disabled(!presentation.primaryActionEnabled)
       .accessibilityHint("Initializes the standard source pack and refreshes it")
 
-      if model.phase == .refreshing {
+      if presentation.showsProgress {
         ProgressView("Building your briefing…")
           .controlSize(.small)
       }

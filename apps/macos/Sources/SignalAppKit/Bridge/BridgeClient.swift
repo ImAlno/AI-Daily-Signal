@@ -1,4 +1,5 @@
 public enum BridgeError: Error, Sendable, Equatable {
+  case startupUnavailable
   case notInitialized
   case invalidInput
   case notFound
@@ -17,7 +18,7 @@ public protocol BridgeClient: Sendable {
   func stateRevision() async throws -> StateRevision
   func refresh(operationID: String, ai: Bool) async throws -> RefreshResult
   func cancelOperation(id: String) -> Bool
-  func setSaved(storyID: String, saved: Bool) async throws -> Story
+  func setSaved(storyID: String, saved: Bool) async throws -> StoryMutationResult
   func setRead(storyID: String, read: Bool) async throws -> Story
   func selectSummary(storyID: String, variantID: String) async throws -> SummaryVariant
   func regenerate(storyID: String, profile: String?, force: Bool) async throws -> GenerationResult

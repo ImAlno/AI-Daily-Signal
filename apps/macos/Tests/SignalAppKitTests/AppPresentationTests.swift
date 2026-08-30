@@ -19,10 +19,17 @@ struct AppPresentationTests {
   }
 
   @Test
-  func popoverContainsOnlyTheApprovedCompactElements() {
-    // Break caught: turning the popover into a scrollable story feed or adding deferred actions.
+  func popoverRenderPlanDrivesTheApprovedCompactSurface() {
+    // Break caught: rendering an untested feed/action outside the fixed compact popover plan.
+    let presentation = MenuBarPresentation(
+      phase: .ready,
+      snapshot: snapshotWithTwoTodaySignals,
+      errorMessage: nil,
+      refreshInProgress: false
+    )
+
     #expect(
-      MenuBarElement.allCases == [
+      presentation.elements == [
         .status,
         .topSignal,
         .refreshOrCancel,
@@ -30,7 +37,25 @@ struct AppPresentationTests {
         .settings,
         .quit,
       ])
-    #expect(!AppPresentation.menuBarAllowsStoryFeed)
+    #expect(
+      presentation.actionSet == [.refreshOrCancel, .openBriefing, .settings, .quit]
+    )
+    #expect(presentation.scrolling == .fixedContent)
+    #expect(presentation.topSignals.count == 1)
+    #expect(presentation.topSignals.first?.title == "A signal")
+  }
+
+  @Test
+  func firstBriefingOperationMakesThePopoverControlCancelable() {
+    // Break caught: showing an inoperative Refresh button while the first refresh already owns the model.
+    let presentation = MenuBarPresentation(
+      phase: .buildingFirstBriefing,
+      snapshot: nil,
+      errorMessage: nil,
+      refreshInProgress: true
+    )
+
+    #expect(presentation.refreshControl == .cancel)
   }
 
   @Test
@@ -53,24 +78,32 @@ struct AppPresentationTests {
 
     #expect(Set(statuses.map(\.symbolName)).count == statuses.count)
     #expect(Set(statuses.map(\.accessibilityLabel)).count == statuses.count)
+    #expect(statuses.allSatisfy { $0.accessibilityLabel.hasPrefix("AI Daily Signal, ") })
   }
 
   @Test @MainActor
-  func coordinatorReusesOneWindowAndRoutesEveryOpenToTheSharedModel() {
-    // Break caught: building another model/window graph each time Open Briefing is chosen.
+  func coordinatorClosesAndReopensTheSameWindowThroughTheFrontOrderingSeam() {
+    // Break caught: replacing the closed window or failing to bring that retained window forward again.
     let model = AppModel(
       bridge: FakeBridgeClient(snapshot: .fixture),
       preferences: MemoryAppPreferences(welcomeCompleted: true)
     )
-    let coordinator = WindowCoordinator(model: model, activatesApplication: false)
+    var presentedWindows: [NSWindow] = []
+    let coordinator = WindowCoordinator(model: model) { window in
+      presentedWindows.append(window)
+    }
 
     coordinator.open(destination: .latest)
     let firstWindow = coordinator.managedWindow
+    coordinator.close()
     coordinator.open(destination: .settings)
 
     #expect(firstWindow != nil)
     #expect(coordinator.managedWindow === firstWindow)
     #expect(coordinator.createdWindowCount == 1)
+    #expect(presentedWindows.count == 2)
+    #expect(presentedWindows[0] === firstWindow)
+    #expect(presentedWindows[1] === firstWindow)
     #expect(model.destination == .settings)
 
     coordinator.close()
@@ -92,6 +125,7 @@ struct AppPresentationTests {
     #expect(bridge.savedRequests.count == 1)
     #expect(bridge.savedRequests.first?.storyID == "story-1")
     #expect(bridge.savedRequests.first?.saved == true)
+    #expect(model.snapshot?.revision == bridge.savedMutationRevision)
     #expect(model.snapshot?.latest.first?.isSaved == true)
     #expect(model.snapshot?.today?.items.first?.story.isSaved == true)
   }
@@ -103,4 +137,71 @@ struct AppPresentationTests {
     #expect(WelcomeContent.localFirstExplanation.contains("AI is optional"))
     #expect(WelcomeContent.refreshDisclosure.contains("enabled source websites"))
   }
+
+  @Test @MainActor
+  func bridgeConstructionFailureIsBlockingWithoutAnInoperativeRetry() async {
+    // Break caught: offering Try Again through a bridge that can never recover in this process.
+    let bridge = FakeBridgeClient(snapshot: .fixture)
+    bridge.snapshotError = BridgeError.startupUnavailable
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+
+    await model.start()
+    let presentation = UnavailableContentPresentation(phase: model.phase)
+    let menuBarPresentation = MenuBarPresentation(
+      phase: model.phase,
+      snapshot: model.snapshot,
+      errorMessage: model.errorMessage,
+      refreshInProgress: false
+    )
+
+    #expect(
+      model.phase
+        == .startupFailure(
+          message:
+            "AI Daily Signal could not open its local data. Quit and reopen the app. If the problem continues, make sure this Mac has available storage."
+        )
+    )
+    #expect(presentation?.title == "Local data unavailable")
+    #expect(presentation?.action == nil)
+    #expect(!presentation.orEmptyMessage.contains("/"))
+    #expect(menuBarPresentation.refreshControl == .unavailable)
+    #expect(menuBarPresentation.actionSet == [.openBriefing, .settings, .quit])
+  }
+}
+
+private var snapshotWithTwoTodaySignals: AppSnapshot {
+  let fixture = AppSnapshot.fixture
+  let today = fixture.today!
+  let first = today.items[0]
+  let second = BriefingItem(
+    position: 2,
+    section: "More Signals",
+    isStale: false,
+    story: .fixture,
+    selectedSummary: .fixture,
+    summaryVariants: [.fixture]
+  )
+  return AppSnapshot(
+    revision: fixture.revision,
+    status: fixture.status,
+    today: Briefing(
+      date: today.date,
+      generatedAt: today.generatedAt,
+      isStale: today.isStale,
+      items: [first, second]
+    ),
+    latest: fixture.latest,
+    saved: fixture.saved,
+    sources: fixture.sources,
+    modelProfiles: fixture.modelProfiles,
+    defaultModelProfileID: fixture.defaultModelProfileID,
+    hasUsableAIProfile: fixture.hasUsableAIProfile
+  )
+}
+
+extension Optional where Wrapped == UnavailableContentPresentation {
+  fileprivate var orEmptyMessage: String { self?.message ?? "" }
 }

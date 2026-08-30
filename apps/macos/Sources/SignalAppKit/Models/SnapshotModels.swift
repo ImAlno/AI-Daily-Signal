@@ -334,6 +334,16 @@ public struct AppSnapshot: Sendable, Equatable {
   }
 }
 
+public struct StoryMutationResult: Sendable, Equatable {
+  public let story: Story
+  public let revision: StateRevision
+
+  public init(story: Story, revision: StateRevision) {
+    self.story = story
+    self.revision = revision
+  }
+}
+
 public struct FeedSourceInput: Sendable, Equatable {
   public let name: String
   public let category: String

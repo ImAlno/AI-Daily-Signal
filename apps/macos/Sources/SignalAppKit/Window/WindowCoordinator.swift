@@ -6,7 +6,7 @@ public enum AppLaunchAction: Sendable, Equatable {
   case remainInMenuBar
 }
 
-public enum MenuBarElement: CaseIterable, Sendable, Equatable {
+public enum MenuBarElement: Sendable, Equatable {
   case status
   case topSignal
   case refreshOrCancel
@@ -17,7 +17,6 @@ public enum MenuBarElement: CaseIterable, Sendable, Equatable {
 
 public struct AppPresentation {
   public static let activationPolicy = NSApplication.ActivationPolicy.accessory
-  public static let menuBarAllowsStoryFeed = false
 
   public let launchAction: AppLaunchAction
 
@@ -29,22 +28,26 @@ public struct AppPresentation {
 @MainActor
 public final class WindowCoordinator: NSObject, NSWindowDelegate {
   private let model: AppModel
-  private let activatesApplication: Bool
+  private let presentWindow: @MainActor (NSWindow) -> Void
 
   private(set) var managedWindow: NSWindow?
   private(set) var createdWindowCount = 0
 
-  public init(model: AppModel, activatesApplication: Bool = true) {
+  public init(
+    model: AppModel,
+    presentWindow: @escaping @MainActor (NSWindow) -> Void = { window in
+      NSApplication.shared.activate()
+      window.makeKeyAndOrderFront(nil)
+    }
+  ) {
     self.model = model
-    self.activatesApplication = activatesApplication
+    self.presentWindow = presentWindow
   }
 
   public func open(destination: Destination = .today) {
     model.destination = destination
     let window = managedWindow ?? makeWindow()
-    guard activatesApplication else { return }
-    NSApplication.shared.activate()
-    window.makeKeyAndOrderFront(nil)
+    presentWindow(window)
   }
 
   public func close() {

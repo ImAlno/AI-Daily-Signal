@@ -86,6 +86,11 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     lock.withLock { storedSavedRequests }
   }
 
+  let savedMutationRevision = StateRevision(
+    dataGeneration: 2,
+    sourceConfigRevision: "source-after-save"
+  )
+
   func enqueueSnapshot(_ snapshot: AppSnapshot) {
     lock.withLock { snapshots.append(snapshot) }
   }
@@ -252,23 +257,26 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     return matched
   }
 
-  func setSaved(storyID: String, saved: Bool) async throws -> Story {
+  func setSaved(storyID: String, saved: Bool) async throws -> StoryMutationResult {
     lock.withLock { storedSavedRequests.append((storyID, saved)) }
     let story = Story.fixture
-    return Story(
-      id: story.id,
-      title: story.title,
-      canonicalURL: story.canonicalURL,
-      excerpt: story.excerpt,
-      category: story.category,
-      publishedAt: story.publishedAt,
-      sourceIDs: story.sourceIDs,
-      score: story.score,
-      smartSummary: story.smartSummary,
-      isRead: story.isRead,
-      isSaved: saved,
-      selectedSummary: story.selectedSummary,
-      summaryVariants: story.summaryVariants
+    return StoryMutationResult(
+      story: Story(
+        id: story.id,
+        title: story.title,
+        canonicalURL: story.canonicalURL,
+        excerpt: story.excerpt,
+        category: story.category,
+        publishedAt: story.publishedAt,
+        sourceIDs: story.sourceIDs,
+        score: story.score,
+        smartSummary: story.smartSummary,
+        isRead: story.isRead,
+        isSaved: saved,
+        selectedSummary: story.selectedSummary,
+        summaryVariants: story.summaryVariants
+      ),
+      revision: savedMutationRevision
     )
   }
   func setRead(storyID: String, read: Bool) async throws -> Story { .fixture }

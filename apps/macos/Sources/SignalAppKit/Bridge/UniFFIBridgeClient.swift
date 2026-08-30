@@ -29,9 +29,13 @@ public final class UniFFIBridgeClient: BridgeClient, Sendable {
     client.cancelOperation(operationId: id)
   }
 
-  public func setSaved(storyID: String, saved: Bool) async throws -> Story {
+  public func setSaved(storyID: String, saved: Bool) async throws -> StoryMutationResult {
     try await call {
-      try await client.setStorySaved(id: storyID, saved: saved).story.localValue
+      let mutation = try await client.setStorySaved(id: storyID, saved: saved)
+      return StoryMutationResult(
+        story: mutation.story.localValue,
+        revision: mutation.revision.localValue
+      )
     }
   }
 

@@ -4,6 +4,8 @@ import Observation
 public enum AppPhase: Sendable, Equatable {
   case loading
   case welcome
+  case buildingFirstBriefing
+  case startupFailure(message: String)
   case empty
   case ready
   case refreshing
@@ -73,7 +75,7 @@ public final class AppModel {
 
   public var errorMessage: String? {
     switch phase {
-    case .offline(let message), .failure(let message): message
+    case .offline(let message), .startupFailure(let message), .failure(let message): message
     default: nil
     }
   }
@@ -94,15 +96,19 @@ public final class AppModel {
 
   public func buildFirstBriefing() async {
     preferences.welcomeCompleted = true
-    await refresh()
+    await requestRefresh(ai: true, startingPhase: .buildingFirstBriefing)
   }
 
   public func refresh(ai: Bool = true) async {
+    await requestRefresh(ai: ai, startingPhase: .refreshing)
+  }
+
+  private func requestRefresh(ai: Bool, startingPhase: AppPhase) async {
     guard activeOperationID == nil else { return }
     invalidatePendingRevisionReads()
     let operationID = UUID().uuidString
     activeOperationID = operationID
-    phase = .refreshing
+    phase = startingPhase
     let request = PendingRefresh(operationID: operationID, ai: ai)
     switch bridgeActivity {
     case .idle:
@@ -134,7 +140,7 @@ public final class AppModel {
         storyID: selectedStory.id,
         saved: !selectedStory.isSaved
       )
-      replaceStory(confirmed)
+      replaceStory(confirmed.story, revision: confirmed.revision)
     } catch {
       apply(error)
     }
@@ -420,7 +426,7 @@ public final class AppModel {
     phase = presentationPhase(for: replacement)
   }
 
-  private func replaceStory(_ replacement: Story) {
+  private func replaceStory(_ replacement: Story, revision: StateRevision) {
     guard let snapshot else { return }
     let today = snapshot.today.map { briefing in
       Briefing(
@@ -446,7 +452,7 @@ public final class AppModel {
       saved.append(replacement)
     }
     self.snapshot = AppSnapshot(
-      revision: snapshot.revision,
+      revision: revision,
       status: snapshot.status,
       today: today,
       latest: latest,
@@ -459,7 +465,7 @@ public final class AppModel {
   }
 
   private func presentationPhase(for snapshot: AppSnapshot) -> AppPhase {
-    if snapshot.status.state == .notInitialized, !preferences.welcomeCompleted {
+    if !preferences.welcomeCompleted {
       return .welcome
     }
     if snapshot.today?.isStale == true
@@ -479,11 +485,16 @@ public final class AppModel {
       return
     }
     switch error {
+    case .startupUnavailable:
+      phase = .startupFailure(
+        message:
+          "AI Daily Signal could not open its local data. Quit and reopen the app. If the problem continues, make sure this Mac has available storage."
+      )
     case .cancelled:
       phase = snapshot.map(presentationPhase(for:)) ?? .empty
     case .offline:
       phase = .offline(
-        message: snapshot == nil
+        message: snapshot?.today == nil
           ? "The network is unavailable. Try again when you're online."
           : "The network is unavailable. Your last briefing is still here."
       )
