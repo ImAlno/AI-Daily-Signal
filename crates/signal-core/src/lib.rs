@@ -14,7 +14,7 @@ mod summaries;
 
 pub use app::{
     AddModelCredential, AddModelInput, AddModelReport, CredentialWarningKind, RefreshOptions,
-    RefreshReport, RemoveModelReport, SignalApp, TodayView,
+    RefreshReport, RemoveModelReport, SignalApp, StateRevision, TodayView,
 };
 pub use collector::{CollectionReport, FeedCollector, SourceFailure};
 pub use config::{AppConfig, BriefingConfig, ConfigRepository};

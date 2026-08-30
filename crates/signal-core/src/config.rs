@@ -1,5 +1,7 @@
 use std::{fs, io::Write};
 
+use sha2::Digest;
+
 use crate::{AppPaths, Result, SignalError, Source};
 use atomic_write_file::AtomicWriteFile;
 
@@ -27,12 +29,23 @@ impl ConfigRepository {
     pub fn load_or_create(&self) -> Result<AppConfig> {
         let config_path = self.paths.config_dir.join("config.toml");
         if config_path.exists() {
-            return Self::parse(&fs::read_to_string(config_path)?);
+            return self.load();
         }
 
         let config = Self::parse(include_str!("../assets/standard-sources.toml"))?;
         self.save(&config)?;
         Ok(config)
+    }
+
+    pub fn load(&self) -> Result<AppConfig> {
+        Self::parse(&fs::read_to_string(
+            self.paths.config_dir.join("config.toml"),
+        )?)
+    }
+
+    pub fn revision(&self) -> Result<String> {
+        let bytes = fs::read(self.paths.config_dir.join("config.toml"))?;
+        Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
     }
 
     pub fn save(&self, config: &AppConfig) -> Result<()> {

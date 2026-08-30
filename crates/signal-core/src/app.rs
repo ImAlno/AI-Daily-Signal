@@ -12,7 +12,8 @@ use crate::{
     GeminiProvider, GenerationReport, ModelProfile, NewModelProfile, OpenAiProvider, Pipeline,
     ProcessEnvironmentReader, ProfileLimits, ProviderKind, ProviderRegistry, Result, SignalError,
     Source, SourceFailure, Store, StoreStatus, Story, SummarizeOptions, SummarizeReport,
-    SystemCredentialStore, TestModelOptions, TestModelReport, persist_system_credential_then,
+    SummaryVariant, SystemCredentialStore, TestModelOptions, TestModelReport,
+    persist_system_credential_then,
 };
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -33,6 +34,12 @@ pub struct RefreshReport {
     pub failures: Vec<SourceFailure>,
     #[serde(default)]
     pub generation: GenerationReport,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateRevision {
+    pub data_generation: u64,
+    pub source_config_revision: String,
 }
 
 pub enum AddModelCredential {
@@ -164,6 +171,19 @@ impl SignalApp {
 
     pub fn init(&self) -> Result<StoreStatus> {
         storage_result(self.store.status())
+    }
+
+    pub fn reload_config(&mut self) -> Result<()> {
+        self.config = ConfigRepository::new(self.paths.clone()).load()?;
+        Ok(())
+    }
+
+    pub fn state_revision(&mut self) -> Result<StateRevision> {
+        self.reload_config()?;
+        Ok(StateRevision {
+            data_generation: storage_result(self.store.status())?.data_generation,
+            source_config_revision: ConfigRepository::new(self.paths.clone()).revision()?,
+        })
     }
 
     pub async fn refresh(&self, now: DateTime<Utc>) -> Result<RefreshReport> {
@@ -380,6 +400,28 @@ impl SignalApp {
         self.show(id)?;
         storage_result(self.store.set_saved(id, saved))?;
         self.show(id)
+    }
+
+    pub fn set_read(&self, id: &str, read: bool) -> Result<Story> {
+        self.show(id)?;
+        storage_result(self.store.set_read(id, read))?;
+        self.show(id)
+    }
+
+    pub fn summary_variants(&self, story_id: &str) -> Result<Vec<SummaryVariant>> {
+        storage_result(self.store.list_summary_variants(story_id))
+    }
+
+    pub fn select_summary_variant(
+        &self,
+        story_id: &str,
+        variant_id: Uuid,
+    ) -> Result<SummaryVariant> {
+        storage_result(self.store.select_story_summary(story_id, variant_id))?;
+        self.summary_variants(story_id)?
+            .into_iter()
+            .find(|variant| variant.id == variant_id)
+            .ok_or_else(|| SignalError::NotFound(format!("summary variant {variant_id}")))
     }
 
     pub fn saved(&self) -> Result<Vec<Story>> {

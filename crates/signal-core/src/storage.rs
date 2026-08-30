@@ -148,11 +148,7 @@ impl Store {
                 ],
             )?;
         }
-        transaction.execute(
-            "UPDATE metadata SET value = CAST(value AS INTEGER) + 1
-             WHERE key = 'data_generation'",
-            [],
-        )?;
+        bump_data_generation(&transaction)?;
         if let Some((successful_sources, failed_sources)) = source_counts {
             insert_refresh_run(
                 &transaction,
@@ -192,6 +188,7 @@ impl Store {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         insert_model_profile(&transaction, &profile)?;
+        bump_data_generation(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
@@ -450,6 +447,9 @@ impl Store {
              ) AND story_id = ?2",
             params![summary_variant_id.hyphenated().to_string(), story_id],
         )?;
+        if changed > 0 {
+            bump_data_generation(&transaction)?;
+        }
         transaction.commit()?;
         Ok(changed > 0)
     }
@@ -516,6 +516,7 @@ impl Store {
                 )?;
             }
         }
+        bump_data_generation(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
@@ -551,6 +552,7 @@ impl Store {
             "DELETE FROM app_settings WHERE key = 'default_model_profile_id' AND value = ?1",
             [&profile_id],
         )?;
+        bump_data_generation(&transaction)?;
         transaction.commit()?;
         Ok(())
     }
@@ -706,14 +708,32 @@ impl Store {
     }
 
     pub fn set_saved(&self, id: &str, saved: bool) -> Result<()> {
-        let connection = self.connect()?;
-        let changed = connection.execute(
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE stories SET is_saved = ?1 WHERE id = ?2",
             params![saved, id],
         )?;
         if changed == 0 {
             return Err(SignalError::NotFound(format!("story {id}")));
         }
+        bump_data_generation(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn set_read(&self, id: &str, read: bool) -> Result<()> {
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE stories SET is_read = ?1 WHERE id = ?2",
+            params![read, id],
+        )?;
+        if changed == 0 {
+            return Err(SignalError::NotFound(format!("story {id}")));
+        }
+        bump_data_generation(&transaction)?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -786,6 +806,14 @@ impl Store {
         transaction.commit()?;
         Ok(())
     }
+}
+
+fn bump_data_generation(transaction: &Transaction<'_>) -> Result<()> {
+    transaction.execute(
+        "UPDATE metadata SET value = CAST(value AS INTEGER) + 1 WHERE key = 'data_generation'",
+        [],
+    )?;
+    Ok(())
 }
 
 fn insert_refresh_run(

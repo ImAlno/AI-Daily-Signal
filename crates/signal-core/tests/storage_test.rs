@@ -86,6 +86,63 @@ fn saved_stories_are_listed_and_can_be_removed() {
 }
 
 #[test]
+fn user_visible_database_mutations_increment_data_generation() {
+    let store = signal_core::test_support::temporary_store();
+    let briefing = signal_core::test_support::briefing_fixture();
+    store
+        .commit_refresh(
+            &briefing
+                .items
+                .iter()
+                .map(|item| item.story.clone())
+                .collect::<Vec<_>>(),
+            &briefing,
+        )
+        .unwrap();
+    let variant = signal_core::test_support::summary_variant(
+        "generation-test-variant",
+        "generation-test-cache-key",
+        signal_core::test_support::fixed_now(),
+    );
+    store.insert_summary_variant(&variant).unwrap();
+    let profile = signal_core::test_support::model_profile(
+        "generation-test-profile",
+        signal_core::ProviderKind::OpenAi,
+    );
+
+    let before = store.status().unwrap().data_generation;
+    store.set_saved("story-1", true).unwrap();
+    assert_eq!(store.status().unwrap().data_generation, before + 1);
+
+    store.set_read("story-1", true).unwrap();
+    assert_eq!(store.status().unwrap().data_generation, before + 2);
+
+    store.select_story_summary("story-1", variant.id).unwrap();
+    assert_eq!(store.status().unwrap().data_generation, before + 3);
+
+    store.create_model_profile(&profile).unwrap();
+    assert_eq!(store.status().unwrap().data_generation, before + 4);
+
+    store.set_default_model_profile(Some(profile.id)).unwrap();
+    assert_eq!(store.status().unwrap().data_generation, before + 5);
+
+    store.remove_model_profile(profile.id).unwrap();
+    assert_eq!(store.status().unwrap().data_generation, before + 6);
+}
+
+#[test]
+fn failed_story_mutations_do_not_increment_data_generation() {
+    let store = signal_core::test_support::temporary_store();
+    let before = store.status().unwrap().data_generation;
+
+    assert!(store.set_saved("missing-story", true).is_err());
+    assert_eq!(store.status().unwrap().data_generation, before);
+
+    assert!(store.set_read("missing-story", true).is_err());
+    assert_eq!(store.status().unwrap().data_generation, before);
+}
+
+#[test]
 fn counted_refresh_commit_persists_source_counts() {
     let temp = tempfile::tempdir().unwrap();
     let store = signal_core::Store::open(temp.path().join("signal.sqlite3")).unwrap();
