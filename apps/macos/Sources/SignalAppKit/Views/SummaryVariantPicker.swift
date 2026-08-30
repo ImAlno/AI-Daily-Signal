@@ -16,6 +16,8 @@ public struct SummaryVariantOption: Identifiable, Sendable, Equatable {
 public struct SummaryVariantPickerPresentation: Sendable, Equatable {
   public let options: [SummaryVariantOption]
   public let selection: ReadingSummarySelection
+  public let accessibilityLabel = "Summary version"
+  public let selectedValue: String
 
   public init(story: Story, selection: ReadingSummarySelection) {
     let immutableVariants = story.summaryVariants.enumerated().sorted { lhs, rhs in
@@ -53,6 +55,9 @@ public struct SummaryVariantPickerPresentation: Sendable, Equatable {
       })
     options = values
     self.selection = selection
+    selectedValue =
+      values.first(where: { $0.selection == selection })?.provenance.shortLabel
+      ?? SummaryProvenance.smart.shortLabel
   }
 }
 
@@ -87,8 +92,10 @@ public struct SummaryVariantPicker: View {
         .accessibilityLabel("\(option.title), \(option.detail)")
       }
     } label: {
-      Label("Summary", systemImage: "text.quote")
+      Label(presentation.selectedValue, systemImage: "text.quote")
     }
+    .accessibilityLabel(presentation.accessibilityLabel)
+    .accessibilityValue(presentation.selectedValue)
     .accessibilityHint("Choose the original excerpt, Smart summary, or a cached AI summary")
   }
 

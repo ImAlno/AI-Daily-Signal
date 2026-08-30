@@ -53,6 +53,13 @@ struct AccessibilityPolicyTests {
   }
 
   @Test
+  func reduceMotionDisablesReaderPolishAnimation() {
+    // Break caught: animating disclosure or hover changes after Reduce Motion is enabled.
+    #expect(ReaderMotionPresentation(reduceMotion: false).duration == 0.17)
+    #expect(ReaderMotionPresentation(reduceMotion: true).duration == nil)
+  }
+
+  @Test
   func accessibilitySortPrioritiesRemainStableAndUnique() {
     // Break caught: VoiceOver visiting actions before the story identity and status context.
     #expect(AccessibilityOrder.title.sortPriority == 400)

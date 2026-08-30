@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 
 @testable import SignalAppKit
@@ -132,6 +133,63 @@ struct ReadingFlowTests {
   }
 
   @Test
+  func storyHeaderKeepsIdentityAndDisclosesItsState() {
+    // Break caught: collapsed and expanded stories rendering different identity or disclosure state.
+    let row = StoryRowPresentation(
+      story: story(id: "story", title: "A signal"),
+      primarySource: "Signal Research",
+      relativeTime: "now",
+      isStale: false,
+      rank: 3,
+      summarySelection: .smart
+    )
+    let collapsed = StoryHeaderPresentation(
+      row: row,
+      isExpanded: false,
+      isHovered: false,
+      dynamicTypeSize: .large
+    )
+    let expanded = StoryHeaderPresentation(
+      row: row,
+      isExpanded: true,
+      isHovered: false,
+      dynamicTypeSize: .large
+    )
+
+    #expect(collapsed.title == expanded.title)
+    #expect(collapsed.chevronSystemImage == "chevron.right")
+    #expect(expanded.chevronSystemImage == "chevron.down")
+    #expect(collapsed.accessibilityValue == "Collapsed")
+    #expect(expanded.accessibilityValue == "Expanded")
+    #expect(!collapsed.emphasizesSignalLine)
+    #expect(expanded.emphasizesSignalLine)
+    #expect(!collapsed.showsSelectionSurface)
+    #expect(expanded.showsSelectionSurface)
+    #expect(collapsed.titleLineLimit == 3)
+  }
+
+  @Test
+  func accessibilityTextLeavesStoryTitlesUnrestricted() {
+    // Break caught: clipping long story identity when Dynamic Type enters an accessibility size.
+    let row = StoryRowPresentation(
+      story: story(id: "story", title: "A signal"),
+      primarySource: "Signal Research",
+      relativeTime: "now",
+      isStale: false,
+      rank: 3,
+      summarySelection: .smart
+    )
+    let accessible = StoryHeaderPresentation(
+      row: row,
+      isExpanded: false,
+      isHovered: false,
+      dynamicTypeSize: .accessibility1
+    )
+
+    #expect(accessible.titleLineLimit == nil)
+  }
+
+  @Test
   func detailRenderPlanUsesApprovedHierarchyAndDoesNotInventStructuredSmartFields() {
     // Break caught: rearranging reading hierarchy or presenting Smart text as validated AI fields.
     let value = story(id: "story", title: "A signal", saved: true)
@@ -184,6 +242,25 @@ struct ReadingFlowTests {
   }
 
   @Test
+  func expandedBodyExcludesIdentityAndKeepsSemanticOrder() {
+    // Break caught: duplicating header identity in the expanded body or rearranging article sections.
+    let detail = StoryDetailPresentation(
+      story: story(id: "story", title: "A signal"),
+      sourceNames: ["Signal Research"],
+      isStale: false,
+      selection: .ai(variantID: "variant-old")
+    )
+
+    #expect(
+      detail.bodyElements
+        == [.whatHappened, .whyItMatters, .caveat, .scoreAndSources, .actions]
+    )
+    #expect(!detail.bodyElements.contains(.metadata))
+    #expect(!detail.bodyElements.contains(.title))
+    #expect(!detail.bodyElements.contains(.provenance))
+  }
+
+  @Test
   func pickerOrdersRawSmartThenImmutableAINewestFirst() {
     // Break caught: conflating Smart with AI or presenting cached variants in unstable order.
     let value = story(id: "story", title: "A signal")
@@ -198,6 +275,8 @@ struct ReadingFlowTests {
     #expect(picker.options[1].displayLabel == "Smart · local algorithmic summary")
     #expect(picker.options[2].provenance == .ai(provider: "Anthropic", model: "claude-signal"))
     #expect(picker.options[3].provenance == .ai(provider: "OpenAI", model: "gpt-signal"))
+    #expect(picker.accessibilityLabel == "Summary version")
+    #expect(picker.selectedValue == "Smart · local algorithmic summary")
   }
 
   @Test

@@ -4,6 +4,9 @@ import SwiftUI
 public struct ExpandedStoryView: View {
   private let story: Story
   @Bindable private var model: AppModel
+  @ScaledMetric(relativeTo: .subheadline) private var sectionLabelSize = 13.0
+  @ScaledMetric(relativeTo: .body) private var bodySize = 15.0
+  @ScaledMetric(relativeTo: .body) private var bodyLineSpacing = 5.0
 
   public init(story: Story, model: AppModel) {
     self.story = story
@@ -30,7 +33,7 @@ public struct ExpandedStoryView: View {
           .accessibilityLabel("Story action failed. \(error)")
           .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
       }
-      ForEach(presentation.elements, id: \.self) { element in
+      ForEach(presentation.bodyElements, id: \.self) { element in
         detailElement(element, presentation: presentation)
       }
     }
@@ -43,31 +46,8 @@ public struct ExpandedStoryView: View {
     presentation: StoryDetailPresentation
   ) -> some View {
     switch element {
-    case .metadata:
-      ViewThatFits(in: .horizontal) {
-        metadataContent(presentation, axis: .horizontal)
-        metadataContent(presentation, axis: .vertical)
-      }
-      .font(.callout)
-      .foregroundStyle(.secondary)
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(presentation.accessibilityMetadata)
-      .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
-      .padding(.bottom, 12)
-    case .title:
-      Text(presentation.title)
-        .font(.title2.weight(.semibold))
-        .textSelection(.enabled)
-        .accessibilityAddTraits(.isHeader)
-        .accessibilitySortPriority(AccessibilityOrder.title.sortPriority)
-        .padding(.bottom, 14)
-    case .provenance:
-      Text(presentation.provenance.shortLabel)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .accessibilityLabel(presentation.provenance.accessibilityLabel)
-        .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
-        .padding(.bottom, 24)
+    case .metadata, .title, .provenance:
+      EmptyView()
     case .originalExcerpt:
       readingSection("Original excerpt", body: presentation.originalExcerpt)
     case .whatHappened:
@@ -77,54 +57,31 @@ public struct ExpandedStoryView: View {
     case .caveat:
       readingSection("Caveat", body: presentation.caveat)
     case .scoreAndSources:
-      DisclosureGroup("Why this ranked here") {
+      DisclosureGroup {
         VStack(alignment: .leading, spacing: 8) {
           Text(presentation.scoreExplanation)
           Text("Sources: \(presentation.sourceNames.joined(separator: ", "))")
         }
-        .font(.callout)
+        .font(.system(size: bodySize))
         .foregroundStyle(.secondary)
+        .textSelection(.enabled)
         .padding(.top, 8)
+      } label: {
+        Text("Why this ranked here")
+          .font(.system(size: sectionLabelSize, weight: .semibold))
+          .foregroundStyle(.secondary)
       }
-      .font(.callout)
       .accessibilitySortPriority(AccessibilityOrder.content.sortPriority)
-      .padding(.top, 4)
-      .padding(.bottom, 28)
+      .padding(.bottom, 24)
     case .actions:
       Divider()
-        .padding(.bottom, 18)
-      SummaryVariantPicker(story: story, model: model)
-        .frame(maxWidth: 340, alignment: .leading)
-        .padding(.bottom, 14)
+        .padding(.bottom, 16)
       ViewThatFits(in: .horizontal) {
         actionContent(axis: .horizontal)
         actionContent(axis: .vertical)
       }
       .controlSize(.regular)
       .accessibilitySortPriority(AccessibilityOrder.actions.sortPriority)
-    }
-  }
-
-  @ViewBuilder
-  private func metadataContent(
-    _ presentation: StoryDetailPresentation,
-    axis: Axis
-  ) -> some View {
-    let content = Group {
-      Text(presentation.metadata)
-        .fixedSize(horizontal: false, vertical: true)
-      ForEach(presentation.stateLabels, id: \.self) { label in
-        Text(label)
-      }
-      if presentation.isStale {
-        Label("Stale", systemImage: "clock.badge.exclamationmark")
-          .foregroundStyle(.orange)
-      }
-    }
-    if axis == .horizontal {
-      HStack(spacing: 8) { content }
-    } else {
-      VStack(alignment: .leading, spacing: 5) { content }
     }
   }
 
@@ -167,15 +124,15 @@ public struct ExpandedStoryView: View {
     if let body, !body.isEmpty {
       VStack(alignment: .leading, spacing: 8) {
         Text(title)
-          .font(.title3)
-          .fontWeight(.semibold)
+          .font(.system(size: sectionLabelSize, weight: .semibold))
+          .foregroundStyle(.secondary)
           .accessibilityAddTraits(.isHeader)
         Text(body)
-          .font(.body)
-          .lineSpacing(4)
+          .font(.system(size: bodySize))
+          .lineSpacing(bodyLineSpacing)
           .textSelection(.enabled)
       }
-      .padding(.bottom, 26)
+      .padding(.bottom, 24)
       .accessibilitySortPriority(AccessibilityOrder.content.sortPriority)
     }
   }

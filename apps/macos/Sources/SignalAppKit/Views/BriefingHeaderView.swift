@@ -17,13 +17,15 @@ public struct BriefingHeaderPresentation: Sendable, Equatable {
     case .sources, .models, .settings: signalCount = 0
     }
     enabledSourceCount = snapshot?.sources.filter(\.enabled).count ?? 0
-    metadataText = "\(signalCount) \(signalCount == 1 ? "signal" : "signals") · "
+    metadataText =
+      "\(signalCount) \(signalCount == 1 ? "signal" : "signals") · "
       + "\(enabledSourceCount) \(enabledSourceCount == 1 ? "source" : "sources")"
   }
 }
 
 public struct BriefingHeaderView: View {
   private let presentation: BriefingHeaderPresentation
+  @ScaledMetric(relativeTo: .largeTitle) private var pageTitleSize = 30.0
 
   public init(presentation: BriefingHeaderPresentation) {
     self.presentation = presentation
@@ -35,13 +37,13 @@ public struct BriefingHeaderView: View {
         .font(.caption)
         .foregroundStyle(.secondary)
       Text(presentation.title)
-        .font(.largeTitle.weight(.semibold))
+        .font(.system(size: pageTitleSize, weight: .semibold))
         .accessibilityAddTraits(.isHeader)
       Text(presentation.metadataText)
         .font(.callout)
         .foregroundStyle(.secondary)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.bottom, 22)
+    .padding(.bottom, 16)
   }
 }

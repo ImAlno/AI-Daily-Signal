@@ -12,6 +12,9 @@ public struct SignalDisclosurePresentation: Sendable, Equatable {
 public struct SignalDisclosureView: View {
   private let presentation: StoryRowPresentation
   @Bindable private var model: AppModel
+  @State private var isHovered = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   public init(presentation: StoryRowPresentation, model: AppModel) {
     self.presentation = presentation
@@ -23,19 +26,31 @@ public struct SignalDisclosureView: View {
       storyID: presentation.storyID,
       selectedStoryID: model.selectedStoryID
     )
+    let header = StoryHeaderPresentation(
+      row: presentation,
+      isExpanded: disclosure.isExpanded,
+      isHovered: isHovered,
+      dynamicTypeSize: dynamicTypeSize
+    )
+    let transition = ReaderMotionPresentation(reduceMotion: reduceMotion).duration.map {
+      Animation.easeOut(duration: $0)
+    }
     VStack(alignment: .leading, spacing: 0) {
+      StoryHeaderView(presentation: header) {
+        model.selectedStoryID = disclosure.isExpanded ? nil : presentation.storyID
+      }
+      .animation(transition, value: header.isExpanded)
+      .animation(transition, value: header.isHovered)
+      .onHover { isHovered = $0 }
+
       if disclosure.isExpanded, let story = model.story(id: presentation.storyID) {
+        SummaryVariantPicker(story: story, model: model)
+          .padding(.horizontal, 12)
+          .padding(.top, 8)
         ExpandedStoryView(story: story, model: model)
-          .padding(.vertical, 22)
-      } else {
-        Button {
-          model.selectedStoryID = presentation.storyID
-        } label: {
-          StoryRowView(presentation: presentation)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Expand this signal")
+          .padding(.horizontal, 12)
+          .padding(.top, 18)
+          .padding(.bottom, 22)
       }
       Divider()
     }

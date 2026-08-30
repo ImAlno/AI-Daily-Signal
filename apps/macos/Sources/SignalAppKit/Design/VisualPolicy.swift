@@ -52,6 +52,14 @@ public enum KeyboardFocusPresentation: Sendable, Equatable {
   case systemVisible
 }
 
+public struct ReaderMotionPresentation: Sendable, Equatable {
+  public let duration: Double?
+
+  public init(reduceMotion: Bool) {
+    duration = reduceMotion ? nil : 0.17
+  }
+}
+
 public struct VisualPolicy: Sendable, Equatable {
   public let appearance: SignalAppearance
   public let reduceTransparency: Bool

@@ -1,4 +1,4 @@
-import SwiftUI
+import Foundation
 
 public enum ReadingSummarySelection: Sendable, Hashable {
   case raw
@@ -74,87 +74,6 @@ public struct StoryRowPresentation: Identifiable, Sendable, Equatable {
     if isSaved { values.append("saved") }
     if isRead { values.append("read") }
     return values.joined(separator: ", ")
-  }
-}
-
-public struct StoryRowView: View {
-  private let presentation: StoryRowPresentation
-
-  public init(presentation: StoryRowPresentation) {
-    self.presentation = presentation
-  }
-
-  public var body: some View {
-    HStack(alignment: .top, spacing: 12) {
-      if let rank = presentation.rank {
-        rankRail(rank)
-      }
-
-      VStack(alignment: .leading, spacing: 6) {
-        ViewThatFits(in: .horizontal) {
-          HStack(spacing: 5) {
-            metadata
-          }
-          VStack(alignment: .leading, spacing: 3) {
-            metadata
-          }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-
-        Text(presentation.title)
-          .font(.headline)
-          .fontWeight(presentation.isRead ? .regular : .semibold)
-          .foregroundStyle(.primary)
-          .multilineTextAlignment(.leading)
-          .lineLimit(3)
-
-        HStack(spacing: 8) {
-          Text(presentation.provenance.shortLabel)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-          if presentation.isSaved {
-            Label("Saved", systemImage: "bookmark.fill")
-              .labelStyle(.iconOnly)
-              .foregroundStyle(.tint)
-              .accessibilityLabel("Saved")
-          }
-        }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    .padding(.vertical, 7)
-    .contentShape(Rectangle())
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(presentation.accessibilitySummary)
-  }
-
-  @ViewBuilder
-  private var metadata: some View {
-    Text(presentation.primarySource)
-      .foregroundStyle(.primary)
-    Text("·")
-    Text(presentation.relativeTime)
-    Text("·")
-    Text(presentation.category)
-    if presentation.isStale {
-      Label("Stale", systemImage: "clock.badge.exclamationmark")
-        .foregroundStyle(.orange)
-    }
-  }
-
-  private func rankRail(_ rank: UInt32) -> some View {
-    VStack(spacing: 5) {
-      Text(String(format: "%02d", rank))
-        .font(.caption.monospacedDigit())
-        .fontWeight(.medium)
-        .foregroundStyle(.tint)
-      Rectangle()
-        .fill(.separator)
-        .frame(width: 1, height: 36)
-    }
-    .frame(width: 28)
-    .accessibilityHidden(true)
   }
 }
 
