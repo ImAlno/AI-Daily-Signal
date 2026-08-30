@@ -4,7 +4,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
-        Arc, Barrier,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
@@ -13,8 +13,8 @@ use std::{
 
 use secrecy::SecretString;
 use signal_core::{
-    ApiDialect, AppPaths, ConfigRepository, CredentialStore, GenerationOutcomeKind, OpenAiProvider,
-    ProviderFailureKind, ProviderKind, ProviderRegistry, SignalApp, SourceKind, Store,
+    ApiDialect, AppPaths, ConfigRepository, CredentialStore, FeedCollector, GenerationOutcomeKind,
+    OpenAiProvider, Pipeline, ProviderKind, ProviderRegistry, SignalApp, SourceKind, Store,
     test_support::{MemoryCredentialStore, MemoryEnvironmentReader},
 };
 use signal_ffi::{CompanionClient, CompanionError};
@@ -23,39 +23,81 @@ const FEED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>FFI refresh fixture</title>
   <item><guid>ffi-refresh-story</guid><title>Deterministic FFI refresh story</title>
     <link>https://example.com/ffi-refresh-story</link>
-    <description>A complete deterministic fixture sentence.</description>
-    <pubDate>Sat, 29 Aug 2026 11:30:00 +0000</pubDate></item>
+    <description>A complete deterministic fixture sentence.</description></item>
 </channel></rss>"#;
 
+#[derive(Default)]
+struct RequestGateState {
+    entered: bool,
+    released: bool,
+    closed: bool,
+}
+
+#[derive(Clone)]
 struct RequestGate {
-    entered: Arc<Barrier>,
-    release: Arc<Barrier>,
+    state: Arc<(Mutex<RequestGateState>, Condvar)>,
 }
 
 impl RequestGate {
     fn new() -> Self {
         Self {
-            entered: Arc::new(Barrier::new(2)),
-            release: Arc::new(Barrier::new(2)),
+            state: Arc::new((Mutex::new(RequestGateState::default()), Condvar::new())),
         }
     }
 
     async fn wait_until_entered(&self) {
-        let entered = self.entered.clone();
-        tokio::task::spawn_blocking(move || {
-            entered.wait();
-        })
-        .await
-        .expect("request-entry barrier task");
+        let gate = self.clone();
+        let entered = tokio::task::spawn_blocking(move || gate.wait_until_entered_blocking())
+            .await
+            .expect("request-entry gate task");
+        assert!(entered, "gated server closed before a request entered");
     }
 
-    async fn release(&self) {
-        let release = self.release.clone();
-        tokio::task::spawn_blocking(move || {
-            release.wait();
-        })
-        .await
-        .expect("request-release barrier task");
+    fn wait_until_entered_blocking(&self) -> bool {
+        let (state, changed) = &*self.state;
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !state.entered && !state.closed {
+            state = changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        state.entered
+    }
+
+    fn enter_and_wait_for_release(&self, shutdown: &AtomicBool) -> bool {
+        let (state, changed) = &*self.state;
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.entered = true;
+        changed.notify_all();
+        while !state.released && !state.closed {
+            state = changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        !state.closed && !shutdown.load(Ordering::SeqCst)
+    }
+
+    fn release(&self) {
+        let (state, changed) = &*self.state;
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.released = true;
+        changed.notify_all();
+    }
+
+    fn close(&self) {
+        let (state, changed) = &*self.state;
+        let mut state = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.closed = true;
+        state.released = true;
+        changed.notify_all();
     }
 }
 
@@ -63,6 +105,7 @@ struct LoopbackServer {
     address: std::net::SocketAddr,
     shutdown: Arc<AtomicBool>,
     requests: Arc<AtomicUsize>,
+    gate: Option<RequestGate>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -77,19 +120,14 @@ impl LoopbackServer {
         body: &'static str,
         gate: &RequestGate,
     ) -> Self {
-        Self::start_with_gate(
-            status,
-            content_type,
-            body,
-            Some((gate.entered.clone(), gate.release.clone())),
-        )
+        Self::start_with_gate(status, content_type, body, Some(gate.clone()))
     }
 
     fn start_with_gate(
         status: u16,
         content_type: &'static str,
         body: &'static str,
-        gate: Option<(Arc<Barrier>, Arc<Barrier>)>,
+        gate: Option<RequestGate>,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("loopback server bind");
         let address = listener.local_addr().expect("loopback server address");
@@ -97,6 +135,7 @@ impl LoopbackServer {
         let requests = Arc::new(AtomicUsize::new(0));
         let worker_shutdown = shutdown.clone();
         let worker_requests = requests.clone();
+        let worker_gate = gate.clone();
         let thread = thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
@@ -106,10 +145,10 @@ impl LoopbackServer {
                 let request_number = worker_requests.fetch_add(1, Ordering::SeqCst) + 1;
                 read_request(&mut stream);
                 if request_number == 1
-                    && let Some((entered, release)) = &gate
+                    && let Some(gate) = &worker_gate
+                    && !gate.enter_and_wait_for_release(&worker_shutdown)
                 {
-                    entered.wait();
-                    release.wait();
+                    return;
                 }
                 let reason = if status == 200 { "OK" } else { "Server Error" };
                 let response = format!(
@@ -124,6 +163,7 @@ impl LoopbackServer {
             address,
             shutdown,
             requests,
+            gate,
             thread: Some(thread),
         }
     }
@@ -140,6 +180,9 @@ impl LoopbackServer {
 impl Drop for LoopbackServer {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
+        if let Some(gate) = &self.gate {
+            gate.close();
+        }
         let _ = TcpStream::connect(self.address);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -193,6 +236,8 @@ impl RefreshFixture {
         let root = tempfile::tempdir().expect("temporary refresh root");
         let paths = AppPaths::for_root(root.path());
         let mut config = signal_core::test_support::config_fixture();
+        config.sources.truncate(1);
+        config.briefing.max_items = 1;
         match &mut config.sources[0].kind {
             SourceKind::Feed { url } => *url = feed_url,
         }
@@ -259,6 +304,40 @@ impl RefreshFixture {
     }
 }
 
+#[test]
+fn feed_fixture_remains_briefing_eligible_at_a_far_future_collection_time() {
+    // Break caught: a fixed publication date silently expiring after the seven-day window.
+    use chrono::{TimeZone, Utc};
+
+    let config = signal_core::test_support::config_fixture();
+    let far_future = Utc.with_ymd_and_hms(2036, 8, 30, 12, 0, 0).unwrap();
+    let candidates = FeedCollector::parse(&config.sources[0], FEED.as_bytes(), far_future)
+        .expect("far-future fixture feed parse");
+    let output = Pipeline::build(candidates, &config, far_future);
+
+    assert_eq!(output.briefing.items.len(), 1);
+}
+
+#[test]
+fn dropping_a_gated_server_before_release_does_not_block_cleanup() {
+    // Break caught: assertion unwind hanging forever in LoopbackServer::drop on the release gate.
+    let gate = RequestGate::new();
+    let server = LoopbackServer::gated(200, "application/rss+xml", FEED, &gate);
+    let address = server.address;
+    let request = thread::spawn(move || {
+        let mut stream = TcpStream::connect(address).expect("gated cleanup request connect");
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .expect("gated cleanup request write");
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response);
+    });
+    assert!(gate.wait_until_entered_blocking());
+
+    drop(server);
+    request.join().expect("gated cleanup request thread");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn active_refresh_has_exact_single_flight_ownership_and_cancellation_preserves_today() {
     // Break caught: overlapping IDs or a non-owner can cancel, cancellation blocks behind the
@@ -279,8 +358,11 @@ async fn active_refresh_has_exact_single_flight_ownership_and_cancellation_prese
         .expect("snapshot before refresh");
 
     let client = fixture.client.clone();
-    let first = tokio::spawn(async move { client.refresh("refresh-a".into(), true).await });
-    provider_gate.wait_until_entered().await;
+    let mut first = tokio::spawn(async move { client.refresh("refresh-a".into(), true).await });
+    tokio::select! {
+        () = provider_gate.wait_until_entered() => {}
+        result = &mut first => panic!("refresh completed before provider request: {result:?}"),
+    }
 
     assert_eq!(
         fixture
@@ -290,10 +372,18 @@ async fn active_refresh_has_exact_single_flight_ownership_and_cancellation_prese
             .unwrap_err(),
         CompanionError::RefreshAlreadyRunning,
     );
+    assert_eq!(
+        fixture
+            .client
+            .refresh("refresh-a".into(), true)
+            .await
+            .unwrap_err(),
+        CompanionError::RefreshAlreadyRunning,
+    );
     assert!(!fixture.client.cancel_operation("refresh-b".into()));
     assert!(fixture.client.cancel_operation("refresh-a".into()));
     assert!(fixture.client.cancel_operation("refresh-a".into()));
-    provider_gate.release().await;
+    provider_gate.release();
 
     assert_eq!(
         first.await.expect("first refresh task").unwrap_err(),
@@ -327,12 +417,16 @@ async fn active_refresh_has_exact_single_flight_ownership_and_cancellation_prese
 #[tokio::test]
 async fn provider_failure_returns_a_successful_smart_fallback_report() {
     // Break caught: a paid-provider failure escaping as an FFI error or losing fallback counts.
-    let core_fixture = signal_core::test_support::ai_app_fixture()
-        .with_max_items(1)
-        .with_provider_failure(ProviderFailureKind::ProviderUnavailable);
-    let client = CompanionClient::for_test(core_fixture.app);
+    let feed = LoopbackServer::start(200, "application/rss+xml", FEED);
+    let provider = LoopbackServer::start(
+        400,
+        "application/json",
+        "ffi-provider-fallback-private-body-SENTINEL",
+    );
+    let fixture = RefreshFixture::with_provider(feed.url(), provider.url());
 
-    let result = client
+    let result = fixture
+        .client
         .refresh("provider-fallback".into(), true)
         .await
         .expect("provider failure remains a successful feed refresh");
@@ -345,7 +439,10 @@ async fn provider_failure_returns_a_successful_smart_fallback_report() {
     assert_eq!(result.generation.smart_fallbacks, 1);
     assert_eq!(result.briefing.items.len(), 1);
     assert!(result.briefing.items[0].selected_summary.is_none());
-    assert_eq!(result.revision, client.state_revision().await.unwrap());
+    assert_eq!(
+        result.revision,
+        fixture.client.state_revision().await.unwrap()
+    );
 }
 
 #[tokio::test]
@@ -385,8 +482,12 @@ async fn aborting_the_refresh_future_releases_single_flight_ownership() {
     let fixture = RefreshFixture::with_provider(feed.url(), unused_provider.url());
 
     let client = fixture.client.clone();
-    let first = tokio::spawn(async move { client.refresh("aborted-refresh".into(), false).await });
-    feed_gate.wait_until_entered().await;
+    let mut first =
+        tokio::spawn(async move { client.refresh("aborted-refresh".into(), false).await });
+    tokio::select! {
+        () = feed_gate.wait_until_entered() => {}
+        result = &mut first => panic!("refresh completed before feed request: {result:?}"),
+    }
     first.abort();
     assert!(
         first
@@ -395,7 +496,7 @@ async fn aborting_the_refresh_future_releases_single_flight_ownership() {
             .is_cancelled()
     );
     assert!(!fixture.client.cancel_operation("aborted-refresh".into()));
-    feed_gate.release().await;
+    feed_gate.release();
 
     let result = fixture
         .client
