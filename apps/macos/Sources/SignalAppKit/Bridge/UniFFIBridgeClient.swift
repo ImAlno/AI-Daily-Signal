@@ -19,6 +19,18 @@ public final class UniFFIBridgeClient: BridgeClient, Sendable {
     try await call { try await client.stateRevision().localValue }
   }
 
+  public func reserveRefresh(operationID: String) throws {
+    do {
+      try client.reserveRefresh(operationId: operationID)
+    } catch let error as SignalFFIBindings.CompanionError {
+      throw BridgeError(error)
+    }
+  }
+
+  public func releaseRefreshReservation(operationID: String) -> Bool {
+    client.releaseRefreshReservation(operationId: operationID)
+  }
+
   public func refresh(operationID: String, ai: Bool) async throws -> RefreshResult {
     try await call {
       try await client.refresh(operationId: operationID, ai: ai).localValue

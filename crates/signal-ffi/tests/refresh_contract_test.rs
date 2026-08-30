@@ -357,6 +357,10 @@ async fn active_refresh_has_exact_single_flight_ownership_and_cancellation_prese
         .await
         .expect("snapshot before refresh");
 
+    fixture
+        .client
+        .reserve_refresh("refresh-a".into())
+        .expect("reserve first refresh");
     let client = fixture.client.clone();
     let mut first = tokio::spawn(async move { client.refresh("refresh-a".into(), true).await });
     tokio::select! {
@@ -415,6 +419,103 @@ async fn active_refresh_has_exact_single_flight_ownership_and_cancellation_prese
 }
 
 #[tokio::test]
+async fn reserved_refresh_cancels_before_async_work_and_releases_exact_ownership() {
+    // Break caught: cancellation arriving before the exported async refresh body registers its
+    // operation, allowing HTTP and a refresh commit to proceed without a cancellable owner.
+    let feed = LoopbackServer::start(200, "application/rss+xml", FEED);
+    let unused_provider = LoopbackServer::start(200, "application/json", "unused");
+    let fixture = RefreshFixture::with_provider(feed.url(), unused_provider.url());
+    let before = fixture
+        .client
+        .state_revision()
+        .await
+        .expect("initial revision");
+
+    fixture
+        .client
+        .reserve_refresh("reserved-refresh".into())
+        .expect("reserve synchronously before async hand-off");
+    assert_eq!(
+        fixture
+            .client
+            .reserve_refresh("overlap".into())
+            .unwrap_err(),
+        CompanionError::RefreshAlreadyRunning
+    );
+    assert!(!fixture.client.cancel_operation("wrong-refresh".into()));
+    assert!(fixture.client.cancel_operation("reserved-refresh".into()));
+    assert!(fixture.client.cancel_operation("reserved-refresh".into()));
+    assert_eq!(
+        fixture
+            .client
+            .refresh("reserved-refresh".into(), false)
+            .await
+            .unwrap_err(),
+        CompanionError::Cancelled
+    );
+    assert_eq!(feed.request_count(), 0);
+    assert_eq!(fixture.client.state_revision().await.unwrap(), before);
+    assert!(!fixture.client.cancel_operation("reserved-refresh".into()));
+
+    fixture
+        .client
+        .reserve_refresh("released-refresh".into())
+        .expect("later reservation after cancellation");
+    assert!(
+        !fixture
+            .client
+            .release_refresh_reservation("wrong-refresh".into())
+    );
+    assert!(
+        fixture
+            .client
+            .release_refresh_reservation("released-refresh".into())
+    );
+    assert!(!fixture.client.cancel_operation("released-refresh".into()));
+    assert_eq!(
+        fixture
+            .client
+            .refresh("released-refresh".into(), false)
+            .await
+            .unwrap_err(),
+        CompanionError::InvalidInput
+    );
+    assert_eq!(feed.request_count(), 0);
+
+    fixture
+        .client
+        .reserve_refresh("cancelled-before-handoff".into())
+        .expect("reserve a refresh that will be abandoned before hand-off");
+    assert!(
+        fixture
+            .client
+            .cancel_operation("cancelled-before-handoff".into())
+    );
+    assert!(
+        fixture
+            .client
+            .release_refresh_reservation("cancelled-before-handoff".into())
+    );
+    assert!(
+        !fixture
+            .client
+            .cancel_operation("cancelled-before-handoff".into())
+    );
+
+    fixture
+        .client
+        .reserve_refresh("completed-refresh".into())
+        .expect("reserve the later refresh");
+    fixture
+        .client
+        .refresh("completed-refresh".into(), false)
+        .await
+        .expect("no leaked reservation blocks a later refresh");
+    assert_eq!(feed.request_count(), 1);
+    assert!(!fixture.client.cancel_operation("completed-refresh".into()));
+}
+
+#[tokio::test]
 async fn provider_failure_returns_a_successful_smart_fallback_report() {
     // Break caught: a paid-provider failure escaping as an FFI error or losing fallback counts.
     let feed = LoopbackServer::start(200, "application/rss+xml", FEED);
@@ -425,6 +526,10 @@ async fn provider_failure_returns_a_successful_smart_fallback_report() {
     );
     let fixture = RefreshFixture::with_provider(feed.url(), provider.url());
 
+    fixture
+        .client
+        .reserve_refresh("provider-fallback".into())
+        .expect("reserve provider-fallback refresh");
     let result = fixture
         .client
         .refresh("provider-fallback".into(), true)
@@ -453,6 +558,10 @@ async fn total_source_failure_is_offline_keeps_cached_today_and_releases_ownersh
     let fixture = RefreshFixture::with_provider(failed_feed.url(), unused_provider.url());
     let before = fixture.client.snapshot().await.expect("cached snapshot");
 
+    fixture
+        .client
+        .reserve_refresh("source-failure-a".into())
+        .expect("reserve first failing refresh");
     assert_eq!(
         fixture
             .client
@@ -461,6 +570,10 @@ async fn total_source_failure_is_offline_keeps_cached_today_and_releases_ownersh
             .unwrap_err(),
         CompanionError::Offline
     );
+    fixture
+        .client
+        .reserve_refresh("source-failure-b".into())
+        .expect("reserve second failing refresh");
     assert_eq!(
         fixture
             .client
@@ -481,6 +594,10 @@ async fn aborting_the_refresh_future_releases_single_flight_ownership() {
     let unused_provider = LoopbackServer::start(200, "application/json", "unused");
     let fixture = RefreshFixture::with_provider(feed.url(), unused_provider.url());
 
+    fixture
+        .client
+        .reserve_refresh("aborted-refresh".into())
+        .expect("reserve refresh before its future is spawned");
     let client = fixture.client.clone();
     let mut first =
         tokio::spawn(async move { client.refresh("aborted-refresh".into(), false).await });
@@ -498,6 +615,10 @@ async fn aborting_the_refresh_future_releases_single_flight_ownership() {
     assert!(!fixture.client.cancel_operation("aborted-refresh".into()));
     feed_gate.release();
 
+    fixture
+        .client
+        .reserve_refresh("replacement-refresh".into())
+        .expect("reserve replacement after abort cleanup");
     let result = fixture
         .client
         .refresh("replacement-refresh".into(), false)

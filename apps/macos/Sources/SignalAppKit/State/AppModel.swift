@@ -1172,7 +1172,21 @@ public final class AppModel {
     else { return }
     bridgeActivity = .refreshing(operationID: request.operationID)
     let bridge = bridge
+    do {
+      try bridge.reserveRefresh(operationID: request.operationID)
+    } catch {
+      finishRefresh(
+        operationID: request.operationID,
+        result: nil,
+        replacement: nil,
+        error: error
+      )
+      return
+    }
     refreshTask = Task { [weak self, bridge] in
+      defer {
+        _ = bridge.releaseRefreshReservation(operationID: request.operationID)
+      }
       guard !Task.isCancelled else {
         self?.finishRefresh(
           operationID: request.operationID,

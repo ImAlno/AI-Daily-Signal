@@ -23,6 +23,13 @@ use crate::{
 struct ActiveRefresh {
     id: String,
     cancellation: CancellationToken,
+    phase: RefreshPhase,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RefreshPhase {
+    Reserved,
+    Running,
 }
 
 struct ActiveRefreshGuard<'a> {
@@ -72,6 +79,36 @@ impl CompanionClient {
             Ok(report) => refresh_result(&mut app, report),
             Err(error) => Err(error.into()),
         }
+    }
+
+    pub fn reserve_refresh(&self, operation_id: String) -> Result<(), CompanionError> {
+        let mut active = self
+            .active_refresh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active.is_some() {
+            return Err(CompanionError::RefreshAlreadyRunning);
+        }
+        *active = Some(ActiveRefresh {
+            id: operation_id,
+            cancellation: CancellationToken::new(),
+            phase: RefreshPhase::Reserved,
+        });
+        Ok(())
+    }
+
+    pub fn release_refresh_reservation(&self, operation_id: String) -> bool {
+        let mut active = self
+            .active_refresh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let matches_reservation = active.as_ref().is_some_and(|refresh| {
+            refresh.id == operation_id && refresh.phase == RefreshPhase::Reserved
+        });
+        if matches_reservation {
+            *active = None;
+        }
+        matches_reservation
     }
 
     pub fn cancel_operation(&self, operation_id: String) -> bool {
@@ -382,18 +419,18 @@ impl CompanionClient {
         &self,
         id: String,
     ) -> Result<(CancellationToken, ActiveRefreshGuard<'_>), CompanionError> {
-        let cancellation = CancellationToken::new();
         let mut active = self
             .active_refresh
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if active.is_some() {
-            return Err(CompanionError::RefreshAlreadyRunning);
-        }
-        *active = Some(ActiveRefresh {
-            id: id.clone(),
-            cancellation: cancellation.clone(),
-        });
+        let cancellation = match active.as_mut() {
+            Some(refresh) if refresh.id == id && refresh.phase == RefreshPhase::Reserved => {
+                refresh.phase = RefreshPhase::Running;
+                refresh.cancellation.clone()
+            }
+            Some(_) => return Err(CompanionError::RefreshAlreadyRunning),
+            None => return Err(CompanionError::InvalidInput),
+        };
         drop(active);
         Ok((
             cancellation,

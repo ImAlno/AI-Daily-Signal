@@ -124,10 +124,9 @@ struct AppModelTests {
   }
 
   @Test @MainActor
-  func immediateCancellationBeforeRefreshTaskStartsNeverEntersBridge() async throws {
-    // Break caught: relying on Rust cancellation registration instead of cancelling the local task.
+  func immediateCancellationBeforeRefreshTaskStartsReleasesTheRemoteReservation() async throws {
+    // Break caught: cancelling before the Task starts leaving a synchronous remote reservation.
     let bridge = FakeBridgeClient(snapshot: .fixture)
-    bridge.discardCancellationBeforeRefreshRegistration()
     bridge.suspendNextRefreshBeforeRegistration()
     let model = AppModel(
       bridge: bridge, preferences: MemoryAppPreferences(welcomeCompleted: true))
@@ -140,7 +139,9 @@ struct AppModelTests {
 
     #expect(bridge.refreshEntryCalls == 0)
     #expect(bridge.refreshIdentifiers.isEmpty)
+    #expect(bridge.reservedRefreshIdentifiers == [operationID])
     #expect(bridge.cancelledIdentifiers == [operationID])
+    #expect(bridge.releasedRefreshReservationIdentifiers == [operationID])
     #expect(model.activeOperationID == nil)
     #expect(model.phase == .ready)
 
@@ -150,6 +151,45 @@ struct AppModelTests {
       bridge.finishRefresh(with: .fixture)
       await eventually { model.activeOperationID == nil }
     }
+  }
+
+  @Test @MainActor
+  func cancellationAfterReservationBeforeRemoteBodyUsesExactOwnerAndSkipsSnapshot() async throws {
+    // Break caught: local cancellation after entering the bridge but before Rust registers the
+    // async refresh, allowing remote HTTP/commit work and a later snapshot reconciliation.
+    let bridge = FakeBridgeClient(snapshot: .fixture)
+    bridge.suspendNextRefreshBeforeRegistration()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+
+    await model.refresh()
+    let firstID = try #require(model.activeOperationID)
+    await eventually {
+      bridge.reservedRefreshIdentifiers == [firstID]
+        && bridge.refreshEntryCalls == 1
+    }
+    #expect(bridge.refreshIdentifiers.isEmpty)
+
+    model.cancelRefresh()
+    #expect(bridge.cancelledIdentifiers == [firstID])
+    bridge.releaseRefreshStarts()
+    await eventually { model.activeOperationID == nil }
+    #expect(model.phase == .ready)
+    #expect(bridge.snapshotCalls == 1)
+    #expect(bridge.refreshWorkIdentifiers.isEmpty)
+
+    await model.refresh(ai: false)
+    let secondID = try #require(model.activeOperationID)
+    await eventually {
+      bridge.refreshIdentifiers == [firstID, secondID]
+    }
+    bridge.finishRefresh(with: .fixture)
+    await eventually { model.activeOperationID == nil }
+    #expect(bridge.snapshotCalls == 2)
+    #expect(bridge.releasedRefreshReservationIdentifiers.contains(firstID))
   }
 
   @Test @MainActor

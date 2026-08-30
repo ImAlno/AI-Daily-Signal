@@ -16,6 +16,8 @@ public enum BridgeError: Error, Sendable, Equatable {
 public protocol BridgeClient: Sendable {
   func snapshot() async throws -> AppSnapshot
   func stateRevision() async throws -> StateRevision
+  func reserveRefresh(operationID: String) throws
+  func releaseRefreshReservation(operationID: String) -> Bool
   func refresh(operationID: String, ai: Bool) async throws -> RefreshResult
   func cancelOperation(id: String) -> Bool
   func setSaved(storyID: String, saved: Bool) async throws -> StoryMutationResult

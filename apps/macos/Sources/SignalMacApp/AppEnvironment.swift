@@ -24,6 +24,8 @@ final class AppEnvironment {
 private final class StartupFailureBridgeClient: BridgeClient, Sendable {
   func snapshot() async throws -> AppSnapshot { throw BridgeError.startupUnavailable }
   func stateRevision() async throws -> StateRevision { throw BridgeError.startupUnavailable }
+  func reserveRefresh(operationID: String) throws { throw BridgeError.startupUnavailable }
+  func releaseRefreshReservation(operationID: String) -> Bool { false }
   func refresh(operationID: String, ai: Bool) async throws -> RefreshResult {
     throw BridgeError.startupUnavailable
   }

@@ -387,6 +387,10 @@ async fn bridge_and_real_cli_share_one_uncorrupted_application_root() {
         fixture.cli(&["sources", "disable", &standard.id]);
     }
     fixture.cli(&["sources", "disable", &stale_source.source.id]);
+    fixture
+        .client
+        .reserve_refresh("latest-source-config".to_owned())
+        .expect("reserve current-config refresh");
     let refresh = fixture
         .client
         .refresh("latest-source-config".to_owned(), false)

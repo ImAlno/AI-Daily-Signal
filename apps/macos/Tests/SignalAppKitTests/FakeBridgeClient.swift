@@ -27,6 +27,8 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var pendingRevisions: [(RevisionContinuation, Result<StateRevision, any Error>)] = []
   private var pendingRefreshStarts: [CheckedContinuation<Void, Never>] = []
   private var pendingRefreshes: [String: RefreshContinuation] = [:]
+  private var activeRefreshReservationID: String?
+  private var refreshReservationIsRunning = false
   private var pendingSavedMutations:
     [(StoryMutationContinuation, Result<StoryMutationResult, any Error>)] = []
   private var pendingReadMutations:
@@ -49,8 +51,10 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var pendingModelRemovals:
     [(ModelRemovalContinuation, Result<ModelRemovalResult, any Error>)] = []
   private var cancellationRequests: Set<String> = []
-  private var remembersCancellationBeforeRefreshRegistration = true
   private var storedRefreshIdentifiers: [String] = []
+  private var storedRefreshWorkIdentifiers: [String] = []
+  private var storedReservedRefreshIdentifiers: [String] = []
+  private var storedReleasedRefreshReservationIdentifiers: [String] = []
   private var storedCancelledIdentifiers: [String] = []
   private var storedSnapshotCalls = 0
   private var storedStateRevisionCalls = 0
@@ -203,6 +207,18 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     lock.withLock { storedRefreshIdentifiers }
   }
 
+  var refreshWorkIdentifiers: [String] {
+    lock.withLock { storedRefreshWorkIdentifiers }
+  }
+
+  var reservedRefreshIdentifiers: [String] {
+    lock.withLock { storedReservedRefreshIdentifiers }
+  }
+
+  var releasedRefreshReservationIdentifiers: [String] {
+    lock.withLock { storedReleasedRefreshReservationIdentifiers }
+  }
+
   var cancelledIdentifiers: [String] {
     lock.withLock { storedCancelledIdentifiers }
   }
@@ -334,10 +350,6 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
 
   func suspendNextModelRemoval() {
     lock.withLock { suspendedModelRemovalCount += 1 }
-  }
-
-  func discardCancellationBeforeRefreshRegistration() {
-    lock.withLock { remembersCancellationBeforeRefreshRegistration = false }
   }
 
   func releaseSnapshots() {
@@ -537,6 +549,29 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     }
   }
 
+  func reserveRefresh(operationID: String) throws {
+    let reserved = lock.withLock { () -> Bool in
+      guard activeRefreshReservationID == nil else { return false }
+      activeRefreshReservationID = operationID
+      refreshReservationIsRunning = false
+      storedReservedRefreshIdentifiers.append(operationID)
+      return true
+    }
+    guard reserved else { throw BridgeError.refreshAlreadyRunning }
+  }
+
+  func releaseRefreshReservation(operationID: String) -> Bool {
+    lock.withLock {
+      storedReleasedRefreshReservationIdentifiers.append(operationID)
+      guard activeRefreshReservationID == operationID, !refreshReservationIsRunning else {
+        return false
+      }
+      activeRefreshReservationID = nil
+      cancellationRequests.remove(operationID)
+      return true
+    }
+  }
+
   func refresh(operationID: String, ai: Bool) async throws -> RefreshResult {
     let shouldSuspend = lock.withLock {
       storedRefreshEntryCalls += 1
@@ -553,14 +588,25 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
       let immediateError = lock.withLock { () -> (any Error)? in
         beginBridgeCallLocked()
         storedRefreshIdentifiers.append(operationID)
+        guard activeRefreshReservationID == operationID else {
+          endBridgeCallLocked()
+          return BridgeError.refreshAlreadyRunning
+        }
+        refreshReservationIsRunning = true
         if let storedRefreshError {
+          activeRefreshReservationID = nil
+          refreshReservationIsRunning = false
           endBridgeCallLocked()
           return storedRefreshError
         }
         if cancellationRequests.contains(operationID) {
+          activeRefreshReservationID = nil
+          refreshReservationIsRunning = false
+          cancellationRequests.remove(operationID)
           endBridgeCallLocked()
           return BridgeError.cancelled
         }
+        storedRefreshWorkIdentifiers.append(operationID)
         pendingRefreshes[operationID] = continuation
         return nil
       }
@@ -574,6 +620,8 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     let continuations = lock.withLock { () -> [RefreshContinuation] in
       let continuations = Array(pendingRefreshes.values)
       pendingRefreshes.removeAll()
+      activeRefreshReservationID = nil
+      refreshReservationIsRunning = false
       for _ in continuations { endBridgeCallLocked() }
       return continuations
     }
@@ -586,12 +634,17 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     let (matched, continuation) = lock.withLock {
       () -> (Bool, RefreshContinuation?) in
       storedCancelledIdentifiers.append(id)
-      let matched = storedRefreshIdentifiers.contains(id)
-      if matched || remembersCancellationBeforeRefreshRegistration {
+      let matched = activeRefreshReservationID == id
+      if matched {
         cancellationRequests.insert(id)
       }
       let continuation = pendingRefreshes.removeValue(forKey: id)
-      if continuation != nil { endBridgeCallLocked() }
+      if continuation != nil {
+        activeRefreshReservationID = nil
+        refreshReservationIsRunning = false
+        cancellationRequests.remove(id)
+        endBridgeCallLocked()
+      }
       return (matched, continuation)
     }
     if let continuation {

@@ -123,7 +123,7 @@ impl ConfigRepository {
             };
             match result {
                 Ok(()) => return Ok(ConfigLock { _file: file }),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                Err(error) if is_lock_contended(&error) => {
                     if Instant::now() >= deadline {
                         return Err(SignalError::Storage(
                             "source configuration is busy".to_owned(),
@@ -224,6 +224,14 @@ impl ConfigRepository {
     }
 }
 
+fn is_lock_contended(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    let platform_error = fs2::lock_contended_error();
+    error.raw_os_error().is_some() && error.raw_os_error() == platform_error.raw_os_error()
+}
+
 fn revision_for(bytes: &[u8]) -> String {
     format!("{:x}", sha2::Sha256::digest(bytes))
 }
@@ -239,4 +247,30 @@ fn has_user_info_delimiter(input: &str, url: &Url) -> bool {
         .strip_prefix("//")
         .and_then(|authority_and_path| authority_and_path.split(['/', '?', '#']).next())
         .is_some_and(|authority| authority.contains('@'))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::is_lock_contended;
+
+    #[test]
+    fn fs2_lock_contention_is_classified_without_swallowing_unrelated_io_errors() {
+        // Break caught: Windows ERROR_LOCK_VIOLATION escaping the bounded retry path because it
+        // is not normalized to ErrorKind::WouldBlock.
+        let platform_contention = fs2::lock_contended_error();
+        assert!(is_lock_contended(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        assert!(is_lock_contended(&platform_contention));
+        if platform_contention.kind() != io::ErrorKind::WouldBlock {
+            assert!(!is_lock_contended(&io::Error::from(
+                platform_contention.kind()
+            )));
+        }
+        assert!(!is_lock_contended(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+    }
 }
