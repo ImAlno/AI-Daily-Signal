@@ -323,7 +323,7 @@ struct SourceSettingsTests {
     )
 
     #expect(!succeeded)
-    #expect(model.isSourceEditorPresented)
+    #expect(model.inlineEditorRoute == .addSource)
     #expect(model.sourceEditorError == "The source could not be updated.")
     #expect(!model.sourceEditorError.orEmpty.contains("secret"))
     #expect(model.snapshot == initial)
@@ -351,12 +351,15 @@ struct SourceSettingsTests {
     )
     #expect(model.sourceEditorError == "The source could not be updated.")
 
+    model.destination = .models
+    #expect(model.inlineEditorRoute == nil)
+
     model.dismissSourceEditor()
-    #expect(!model.isSourceEditorPresented)
+    #expect(model.inlineEditorRoute == nil)
     #expect(model.sourceEditorError == nil)
 
     model.presentSourceEditor()
-    #expect(model.isSourceEditorPresented)
+    #expect(model.inlineEditorRoute == .addSource)
     #expect(model.sourceEditorError == nil)
   }
 

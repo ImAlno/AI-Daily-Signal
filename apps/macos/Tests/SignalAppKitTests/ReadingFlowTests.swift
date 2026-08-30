@@ -351,6 +351,45 @@ struct ReadingFlowTests {
   }
 
   @Test @MainActor
+  func firstValidStoryExpandsAndValidSelectionPersists() async {
+    let initial = snapshot(
+      todayStories: [story(id: "first", title: "First"), story(id: "second", title: "Second")],
+      latest: [story(id: "first", title: "First"), story(id: "second", title: "Second")],
+      saved: []
+    )
+    let model = AppModel(
+      bridge: FakeBridgeClient(snapshot: initial),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+
+    await model.start()
+    #expect(model.selectedStoryID == "first")
+
+    model.selectedStoryID = "second"
+    model.destination = .latest
+    #expect(model.selectedStoryID == "second")
+  }
+
+  @Test @MainActor
+  func invalidSelectionFallsBackToFirstAndConfigurationClearsIt() async {
+    let first = story(id: "first", title: "First")
+    let model = AppModel(
+      bridge: FakeBridgeClient(
+        snapshot: snapshot(todayStories: [first], latest: [first], saved: [])
+      ),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+
+    await model.start()
+    model.selectedStoryID = "missing"
+    model.destination = .latest
+    #expect(model.selectedStoryID == "first")
+
+    model.destination = .sources
+    #expect(model.selectedStoryID == nil)
+  }
+
+  @Test @MainActor
   func destinationChangeAndSnapshotReplacementPruneSelectionByVisibleMembership() async {
     // Break caught: retaining a Latest selection after switching to Saved or after Saved removal.
     let latestOnly = story(id: "latest", title: "Latest only")
@@ -373,9 +412,8 @@ struct ReadingFlowTests {
     model.selectedStoryID = "latest"
 
     model.destination = .saved
-    #expect(model.selectedStoryID == nil)
+    #expect(model.selectedStoryID == "saved")
 
-    model.selectedStoryID = "saved"
     await model.reloadSnapshot()
     #expect(model.selectedStoryID == nil)
   }

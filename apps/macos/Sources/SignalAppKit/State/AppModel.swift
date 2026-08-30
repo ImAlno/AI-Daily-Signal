@@ -49,6 +49,11 @@ public enum ModelActionState: Sendable, Equatable {
   case inFlight
 }
 
+public enum InlineEditorRoute: Sendable, Equatable {
+  case addSource
+  case addModel
+}
+
 private enum ReloadOrigin: Equatable {
   case requested
   case polling(generation: UInt64)
@@ -126,12 +131,14 @@ public final class AppModel {
   public private(set) var sourceEditorError: String?
   public private(set) var modelEditorError: String?
   public private(set) var credentialCleanupWarning: String?
-  public private(set) var isSourceEditorPresented = false
-  public private(set) var isModelEditorPresented = false
+  public private(set) var inlineEditorRoute: InlineEditorRoute?
+  public var isSourceEditorPresented: Bool { inlineEditorRoute == .addSource }
+  public var isModelEditorPresented: Bool { inlineEditorRoute == .addModel }
   public var destination: Destination {
     didSet {
       preferences.selectedDestination = destination
-      validateSelectedStoryForDestination()
+      dismissIncompatibleInlineEditor()
+      ensureValidStorySelection()
     }
   }
   public var selectedStoryID: String?
@@ -235,22 +242,24 @@ public final class AppModel {
 
   public func presentSourceEditor() {
     sourceEditorError = nil
-    isSourceEditorPresented = true
+    modelEditorError = nil
+    inlineEditorRoute = .addSource
   }
 
   public func dismissSourceEditor() {
     sourceEditorError = nil
-    isSourceEditorPresented = false
+    if inlineEditorRoute == .addSource { inlineEditorRoute = nil }
   }
 
   public func presentModelEditor() {
     modelEditorError = nil
-    isModelEditorPresented = true
+    sourceEditorError = nil
+    inlineEditorRoute = .addModel
   }
 
   public func dismissModelEditor() {
     modelEditorError = nil
-    isModelEditorPresented = false
+    if inlineEditorRoute == .addModel { inlineEditorRoute = nil }
   }
 
   public func dismissCredentialCleanupWarning() {
@@ -1281,7 +1290,7 @@ public final class AppModel {
       replacement.containsStory(id: storyID)
         && isValid(selection, for: story(id: storyID))
     }
-    validateSelectedStoryForDestination()
+    ensureValidStorySelection()
     phase = presentationPhase(for: replacement)
   }
 
@@ -1300,10 +1309,32 @@ public final class AppModel {
     return next
   }
 
-  private func validateSelectedStoryForDestination() {
-    guard selectedStoryID != nil else { return }
-    if selectedStory == nil {
+  public func ensureValidStorySelection() {
+    let validIDs: [String]
+    switch destination {
+    case .today:
+      validIDs = snapshot?.today?.items.map { $0.story.id } ?? []
+    case .latest:
+      validIDs = snapshot?.latest.map(\.id) ?? []
+    case .saved:
+      validIDs = snapshot?.saved.map(\.id) ?? []
+    case .sources, .models, .settings:
       selectedStoryID = nil
+      return
+    }
+
+    if let selectedStoryID, validIDs.contains(selectedStoryID) { return }
+    selectedStoryID = validIDs.first
+  }
+
+  private func dismissIncompatibleInlineEditor() {
+    switch (destination, inlineEditorRoute) {
+    case (.sources, .addSource), (.models, .addModel), (_, nil):
+      return
+    default:
+      inlineEditorRoute = nil
+      sourceEditorError = nil
+      modelEditorError = nil
     }
   }
 

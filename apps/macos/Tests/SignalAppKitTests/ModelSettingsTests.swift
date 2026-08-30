@@ -5,6 +5,22 @@ import Testing
 
 @Suite(.serialized)
 struct ModelSettingsTests {
+  @Test @MainActor
+  func modelCreationUsesTheSharedInlineEditorRoute() async {
+    let model = AppModel(
+      bridge: FakeBridgeClient(snapshot: .fixture),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+
+    model.presentModelEditor()
+    #expect(model.inlineEditorRoute == .addModel)
+
+    model.dismissModelEditor()
+    #expect(model.inlineEditorRoute == nil)
+    #expect(model.modelEditorError == nil)
+  }
+
   @Test
   func newProfileUsesTheExactBoundedDefaults() {
     // Break caught: silently expanding the number, size, duration, or retries of paid requests.
