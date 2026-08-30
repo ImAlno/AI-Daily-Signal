@@ -1,7 +1,9 @@
 import Foundation
 import SwiftUI
 
-public struct SourceEditorDraft: Sendable, Equatable {
+public struct SourceEditorDraft: Sendable, Equatable, CustomDebugStringConvertible,
+  CustomReflectable
+{
   public var name: String
   public var feedURL: String
   public var category: String
@@ -20,6 +22,14 @@ public struct SourceEditorDraft: Sendable, Equatable {
     self.category = category
     self.weight = weight
     self.enabled = enabled
+  }
+
+  public var debugDescription: String {
+    "SourceEditorDraft(weight: \(weight), enabled: \(enabled), feedURL: <redacted>)"
+  }
+
+  public var customMirror: Mirror {
+    Mirror(self, children: ["source editor draft": "<redacted>"])
   }
 
   public var validationMessage: String? {
@@ -83,7 +93,7 @@ public enum SourceWeightParser {
   }
 }
 
-public struct SourceEditorView: View {
+public struct SourceEditorView: View, CustomDebugStringConvertible, CustomReflectable {
   private enum Field: Hashable {
     case name
     case feedURL
@@ -100,6 +110,12 @@ public struct SourceEditorView: View {
 
   public init(model: AppModel) {
     self.model = model
+  }
+
+  nonisolated public var debugDescription: String { "SourceEditorView(state: <redacted>)" }
+
+  nonisolated public var customMirror: Mirror {
+    Mirror(reflecting: "<redacted source editor view>")
   }
 
   public var body: some View {

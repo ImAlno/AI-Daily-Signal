@@ -34,6 +34,7 @@ public struct PreviewFixture: Sendable, Equatable, Identifiable {
   public let id: String
   public let phase: AppPhase
   public let snapshot: AppSnapshot?
+  public let refreshNotice: RefreshNotice?
   public let selectedStoryID: String?
   public let appearance: SignalAppearance
   public let reduceTransparency: Bool
@@ -43,6 +44,7 @@ public struct PreviewFixture: Sendable, Equatable, Identifiable {
     id: String,
     phase: AppPhase,
     snapshot: AppSnapshot?,
+    refreshNotice: RefreshNotice? = nil,
     selectedStoryID: String? = nil,
     appearance: SignalAppearance = .light,
     reduceTransparency: Bool = false,
@@ -51,6 +53,7 @@ public struct PreviewFixture: Sendable, Equatable, Identifiable {
     self.id = id
     self.phase = phase
     self.snapshot = snapshot
+    self.refreshNotice = refreshNotice
     self.selectedStoryID = selectedStoryID
     self.appearance = appearance
     self.reduceTransparency = reduceTransparency
@@ -62,7 +65,7 @@ public struct PreviewFixture: Sendable, Equatable, Identifiable {
   public var message: String? {
     switch phase {
     case .startupFailure(let message), .offline(let message), .failure(let message): message
-    default: nil
+    default: refreshNotice.map(RefreshNoticePresentation.init)?.message
     }
   }
 
@@ -121,8 +124,14 @@ public enum PreviewFixtures {
 
   public static let providerFailure = PreviewFixture(
     id: "provider-failure",
-    phase: .failure(message: "AI provider unavailable. Smart summaries remain available."),
+    phase: .ready,
     snapshot: smartSnapshot,
+    refreshNotice: RefreshNotice(
+      failedSources: 0,
+      providerFailures: 1,
+      malformedOutputs: 0,
+      smartFallbacks: 1
+    ),
     selectedStoryID: smartStory.id
   )
 
@@ -167,6 +176,12 @@ public enum PreviewFixtures {
     snapshot: populatedSnapshot,
     selectedStoryID: aiStory.id
   )
+  public static let failure = PreviewFixture(
+    id: "failure",
+    phase: .failure(message: "The briefing could not be refreshed."),
+    snapshot: populatedSnapshot,
+    selectedStoryID: aiStory.id
+  )
 
   public static let all: [PreviewFixture] = [
     welcome,
@@ -184,6 +199,7 @@ public enum PreviewFixtures {
     buildingFirstBriefing,
     startupFailure,
     refreshing,
+    failure,
   ]
 
   private static let generatedAt = referenceDate.addingTimeInterval(-900)

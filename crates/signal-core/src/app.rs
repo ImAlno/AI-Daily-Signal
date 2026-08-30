@@ -42,6 +42,11 @@ pub struct StateRevision {
     pub source_config_revision: String,
 }
 
+pub struct SourceConfigMutation<T> {
+    pub value: T,
+    pub source_config_revision: String,
+}
+
 pub enum AddModelCredential {
     SystemStore { secret: SecretString },
     Environment { variable: String },
@@ -187,10 +192,11 @@ impl SignalApp {
     }
 
     pub fn state_revision(&mut self) -> Result<StateRevision> {
-        self.reload_config()?;
+        let loaded = ConfigRepository::new(self.paths.clone()).load_with_revision()?;
+        self.config = loaded.config;
         Ok(StateRevision {
             data_generation: storage_result(self.store.status())?.data_generation,
-            source_config_revision: ConfigRepository::new(self.paths.clone()).revision()?,
+            source_config_revision: loaded.revision,
         })
     }
 
@@ -215,14 +221,17 @@ impl SignalApp {
         cancellation: &CancellationToken,
     ) -> Result<RefreshReport> {
         cancellation.check()?;
-        if !self.config.sources.iter().any(|source| source.enabled) {
+        let config = ConfigRepository::new(self.paths.clone())
+            .load_with_revision()?
+            .config;
+        if !config.sources.iter().any(|source| source.enabled) {
             return Err(SignalError::InvalidConfiguration(
                 "at least one source must be enabled".to_owned(),
             ));
         }
 
         let collection = FeedCollector::new()?
-            .collect_all_with_cancel(&self.config.sources, now, cancellation)
+            .collect_all_with_cancel(&config.sources, now, cancellation)
             .await;
         let collection = collection?;
         let successful_sources = collection.successful_source_ids.len();
@@ -240,12 +249,12 @@ impl SignalApp {
         } else {
             storage_result(self.store.load_latest_briefing())?
         };
-        let mut output = Pipeline::build(collection.candidates, &self.config, now);
+        let mut output = Pipeline::build(collection.candidates, &config, now);
         merge_partial_briefing(
             &mut output.briefing,
             previous.as_ref(),
             &failures,
-            self.config.briefing.max_items,
+            config.briefing.max_items,
         );
         for item in &mut output.briefing.items {
             item.selected_summary = None;
@@ -492,71 +501,111 @@ impl SignalApp {
     }
 
     pub fn add_feed_source(&mut self, input: NewFeedSource) -> Result<SourceRecord> {
-        validate_new_feed_source(&input)?;
-        if self
-            .config
-            .sources
-            .iter()
-            .any(|source| source.name.trim().to_lowercase() == input.name.trim().to_lowercase())
-        {
-            return Err(SignalError::InvalidConfiguration(
-                "source names must be unique".to_owned(),
-            ));
-        }
+        Ok(self.add_feed_source_with_revision(input)?.value)
+    }
 
-        let source = Source {
-            id: format!("personal-{}", Uuid::new_v4().hyphenated()),
-            name: input.name.trim().to_owned(),
-            category: input.category.trim().to_owned(),
-            enabled: input.enabled,
-            weight: input.weight,
-            kind: SourceKind::Feed { url: input.url },
-        };
-        let mut candidate = self.config.clone();
-        candidate.sources.push(source.clone());
-        ConfigRepository::new(self.paths.clone()).save(&candidate)?;
-        self.config = candidate;
-        Ok(SourceRecord {
-            source,
-            origin: SourceOrigin::Personal,
+    pub fn add_feed_source_with_revision(
+        &mut self,
+        input: NewFeedSource,
+    ) -> Result<SourceConfigMutation<SourceRecord>> {
+        validate_new_feed_source(&input)?;
+        let mutation =
+            ConfigRepository::new(self.paths.clone()).mutate(|config| {
+                if config.sources.iter().any(|source| {
+                    source.name.trim().to_lowercase() == input.name.trim().to_lowercase()
+                }) {
+                    return Err(SignalError::InvalidConfiguration(
+                        "source names must be unique".to_owned(),
+                    ));
+                }
+                let source = Source {
+                    id: format!("personal-{}", Uuid::new_v4().hyphenated()),
+                    name: input.name.trim().to_owned(),
+                    category: input.category.trim().to_owned(),
+                    enabled: input.enabled,
+                    weight: input.weight,
+                    kind: SourceKind::Feed { url: input.url },
+                };
+                config.sources.push(source.clone());
+                Ok(SourceRecord {
+                    source,
+                    origin: SourceOrigin::Personal,
+                })
+            })?;
+        self.config = mutation.config;
+        Ok(SourceConfigMutation {
+            value: mutation.value,
+            source_config_revision: mutation.revision,
         })
     }
 
     pub fn set_source_enabled(&mut self, id: &str, enabled: bool) -> Result<Source> {
-        let mut candidate = self.config.clone();
-        let source = candidate
-            .sources
-            .iter_mut()
-            .find(|source| source.id == id)
-            .ok_or_else(|| SignalError::NotFound("Source was not found".to_owned()))?;
-        source.enabled = enabled;
-        let updated = source.clone();
-        ConfigRepository::new(self.paths.clone()).save(&candidate)?;
-        self.config = candidate;
-        Ok(updated)
+        Ok(self
+            .set_source_enabled_with_revision(id, enabled)?
+            .value
+            .source)
+    }
+
+    pub fn set_source_enabled_with_revision(
+        &mut self,
+        id: &str,
+        enabled: bool,
+    ) -> Result<SourceConfigMutation<SourceRecord>> {
+        let standard_source_ids = ConfigRepository::standard_source_ids()?;
+        let mutation = ConfigRepository::new(self.paths.clone()).mutate(|config| {
+            let source = config
+                .sources
+                .iter_mut()
+                .find(|source| source.id == id)
+                .ok_or_else(|| SignalError::NotFound("Source was not found".to_owned()))?;
+            source.enabled = enabled;
+            Ok(SourceRecord {
+                origin: if standard_source_ids.contains(id) {
+                    SourceOrigin::Standard
+                } else {
+                    SourceOrigin::Personal
+                },
+                source: source.clone(),
+            })
+        })?;
+        self.config = mutation.config;
+        Ok(SourceConfigMutation {
+            value: mutation.value,
+            source_config_revision: mutation.revision,
+        })
     }
 
     pub fn remove_personal_source(&mut self, id: &str) -> Result<SourceRecord> {
-        let source = self
-            .config
-            .sources
-            .iter()
-            .find(|source| source.id == id)
-            .cloned()
-            .ok_or_else(|| SignalError::NotFound("Source was not found".to_owned()))?;
-        if ConfigRepository::standard_source_ids()?.contains(id) {
+        Ok(self.remove_personal_source_with_revision(id)?.value)
+    }
+
+    pub fn remove_personal_source_with_revision(
+        &mut self,
+        id: &str,
+    ) -> Result<SourceConfigMutation<SourceRecord>> {
+        let standard_source_ids = ConfigRepository::standard_source_ids()?;
+        if standard_source_ids.contains(id) {
             return Err(SignalError::InvalidConfiguration(
                 "standard sources cannot be removed".to_owned(),
             ));
         }
-
-        let mut candidate = self.config.clone();
-        candidate.sources.retain(|source| source.id != id);
-        ConfigRepository::new(self.paths.clone()).save(&candidate)?;
-        self.config = candidate;
-        Ok(SourceRecord {
-            source,
-            origin: SourceOrigin::Personal,
+        let mutation = ConfigRepository::new(self.paths.clone()).mutate(|config| {
+            let source = config
+                .sources
+                .iter()
+                .find(|source| source.id == id)
+                .cloned()
+                .ok_or_else(|| SignalError::NotFound("Source was not found".to_owned()))?;
+            config.sources.retain(|source| source.id != id);
+            Ok(SourceRecord {
+                source,
+                origin: SourceOrigin::Personal,
+            })
+        })?;
+        self.config = mutation.config;
+        Ok(SourceConfigMutation {
+            value: mutation.value,
+            source_config_revision: mutation.revision,
         })
     }
 

@@ -16,11 +16,12 @@ mod summaries;
 
 pub use app::{
     AddModelCredential, AddModelInput, AddModelReport, CredentialWarningKind, NewFeedSource,
-    RefreshOptions, RefreshReport, RemoveModelReport, SignalApp, StateRevision, TodayView,
+    RefreshOptions, RefreshReport, RemoveModelReport, SignalApp, SourceConfigMutation,
+    StateRevision, TodayView,
 };
 pub use cancellation::CancellationToken;
 pub use collector::{CollectionReport, FeedCollector, SourceFailure};
-pub use config::{AppConfig, BriefingConfig, ConfigRepository};
+pub use config::{AppConfig, BriefingConfig, CONFIG_LOCK_FILE_NAME, ConfigRepository};
 pub use credentials::{
     CredentialResolver, CredentialStore, EnvironmentReader, ProcessEnvironmentReader,
     ResolvedCredential, SystemCredentialStore, persist_system_credential_then,

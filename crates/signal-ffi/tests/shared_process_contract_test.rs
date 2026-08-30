@@ -1,17 +1,93 @@
 #![cfg(feature = "test-support")]
 
 use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
     path::PathBuf,
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread::{self, JoinHandle},
 };
 
 use chrono::Utc;
+use fs2::FileExt;
+use sha2::Digest;
 use signal_core::{
-    AppPaths, ConfigRepository, ProviderRegistry, SignalApp, Store,
+    AppPaths, CONFIG_LOCK_FILE_NAME, ConfigRepository, ProviderRegistry, SignalApp, Store,
     test_support::{MemoryCredentialStore, MemoryEnvironmentReader},
 };
 use signal_ffi::{AddFeedSourceRequest, CompanionClient, FfiSourceOrigin};
+
+const OVERLAP_FEED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Shared process fixture</title>
+  <item><guid>shared-process-story</guid><title>Shared process source signal</title>
+    <link>https://example.com/shared-process-story</link>
+    <description>A deterministic shared process fixture sentence.</description></item>
+</channel></rss>"#;
+
+struct CountingFeedServer {
+    address: std::net::SocketAddr,
+    shutdown: Arc<AtomicBool>,
+    requests: Arc<AtomicUsize>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl CountingFeedServer {
+    fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback feed bind");
+        let address = listener.local_addr().expect("loopback feed address");
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let worker_shutdown = Arc::clone(&shutdown);
+        let worker_requests = Arc::clone(&requests);
+        let thread = thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                if worker_shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+                worker_requests.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/rss+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{OVERLAP_FEED}",
+                    OVERLAP_FEED.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        Self {
+            address,
+            shutdown,
+            requests,
+            thread: Some(thread),
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}/feed.xml", self.address)
+    }
+
+    fn request_count(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for CountingFeedServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.address);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
 
 struct SharedProcessFixture {
     fixture_root: tempfile::TempDir,
@@ -207,39 +283,166 @@ async fn bridge_and_real_cli_share_one_uncorrupted_application_root() {
     assert!(after_cli_unsave.latest[0].is_read);
     assert!(after_cli_unsave.saved.is_empty());
 
-    let source = fixture
-        .client
-        .add_feed_source(AddFeedSourceRequest {
-            name: "Shared process feed".to_owned(),
-            category: "research".to_owned(),
-            url: "https://shared.example.test/feed.xml".to_owned(),
-            weight: 0.75,
-            enabled: true,
-        })
-        .await
-        .expect("bridge adds source");
-    assert_eq!(source.source.origin, FfiSourceOrigin::Personal);
+    let good_feed = CountingFeedServer::start();
+    let standard_source_id = after_cli_unsave
+        .sources
+        .iter()
+        .find(|source| source.origin == FfiSourceOrigin::Standard)
+        .expect("standard source")
+        .id
+        .clone();
+    let config_lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(fixture.paths.config_dir.join(CONFIG_LOCK_FILE_NAME))
+        .expect("open stable source configuration lock");
+    FileExt::lock_exclusive(&config_lock).expect("hold deterministic config overlap barrier");
+    let mut cli_source = fixture.spawn_cli(&["sources", "disable", &standard_source_id]);
+    let concurrent_client = Arc::clone(&fixture.client);
+    let good_feed_url = good_feed.url();
+    let bridge_source = tokio::spawn(async move {
+        concurrent_client
+            .add_feed_source(AddFeedSourceRequest {
+                name: "Shared process feed".to_owned(),
+                category: "research".to_owned(),
+                url: good_feed_url,
+                weight: 0.75,
+                enabled: true,
+            })
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     assert!(
-        fixture
-            .cli_text(&["sources", "list"])
-            .contains("Shared process feed")
+        cli_source
+            .try_wait()
+            .expect("inspect config-blocked CLI")
+            .is_none()
+            && !bridge_source.is_finished(),
+        "real CLI and bridge source writers must both wait behind the held config barrier"
     );
-    fixture.cli(&["sources", "disable", &source.source.id]);
+    FileExt::unlock(&config_lock).expect("release deterministic config overlap barrier");
+    let source = tokio::time::timeout(std::time::Duration::from_secs(6), bridge_source)
+        .await
+        .expect("bridge source writer completes after barrier release")
+        .expect("bridge source writer task remains healthy")
+        .expect("bridge source write after deterministic overlap");
+    let cli_source_output = cli_source
+        .wait_with_output()
+        .expect("wait for overlapped CLI source write");
+    assert!(
+        cli_source_output.status.success(),
+        "overlapped CLI source write failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&cli_source_output.stdout),
+        String::from_utf8_lossy(&cli_source_output.stderr)
+    );
+    assert_eq!(source.source.origin, FfiSourceOrigin::Personal);
     let after_cli_source = fixture
         .client
         .snapshot()
         .await
-        .expect("bridge reload after CLI source");
+        .expect("bridge reload after overlapping source writes");
     assert!(
         after_cli_source
             .sources
             .iter()
-            .any(|value| value.id == source.source.id && !value.enabled)
+            .any(|value| value.id == standard_source_id && !value.enabled)
+    );
+    assert!(
+        after_cli_source.sources.iter().any(|value| {
+            value.id == source.source.id
+                && value.enabled
+                && value.origin == FfiSourceOrigin::Personal
+        }),
+        "the independently added personal source must survive the CLI whole-file mutation"
     );
     assert_ne!(
         after_cli_source.revision.source_config_revision,
         initial.source_config_revision
     );
+    assert!(
+        fixture
+            .cli_text(&["sources", "list"])
+            .contains("Shared process feed")
+    );
+
+    let stale_feed = CountingFeedServer::start();
+    let stale_source = fixture
+        .client
+        .add_feed_source(AddFeedSourceRequest {
+            name: "Stale cached feed".to_owned(),
+            category: "research".to_owned(),
+            url: stale_feed.url(),
+            weight: 0.75,
+            enabled: true,
+        })
+        .await
+        .expect("bridge adds source before external disable");
+    for standard in after_cli_source
+        .sources
+        .iter()
+        .filter(|source| source.origin == FfiSourceOrigin::Standard && source.enabled)
+    {
+        fixture.cli(&["sources", "disable", &standard.id]);
+    }
+    fixture.cli(&["sources", "disable", &stale_source.source.id]);
+    let refresh = fixture
+        .client
+        .refresh("latest-source-config".to_owned(), false)
+        .await
+        .expect("stale bridge refresh uses current source configuration");
+    assert_eq!(refresh.successful_sources, 1);
+    assert_eq!(refresh.failed_sources, 0);
+    assert_eq!(good_feed.request_count(), 1);
+    assert_eq!(
+        stale_feed.request_count(),
+        0,
+        "a source disabled by the CLI after bridge construction must not be contacted"
+    );
+    let valid_config = ConfigRepository::new(fixture.paths.clone())
+        .load()
+        .expect("overlapped TOML remains valid");
+    assert!(
+        valid_config
+            .sources
+            .iter()
+            .any(|candidate| candidate.id == source.source.id && candidate.enabled)
+    );
+    assert!(
+        valid_config
+            .sources
+            .iter()
+            .any(|candidate| candidate.id == stale_source.source.id && !candidate.enabled)
+    );
+    let config_bytes = std::fs::read(fixture.paths.config_dir.join("config.toml"))
+        .expect("read exact committed TOML bytes");
+    let exact_config_revision = format!("{:x}", sha2::Sha256::digest(config_bytes));
+    let after_source_refresh = fixture
+        .client
+        .snapshot()
+        .await
+        .expect("authoritative snapshot after current-config refresh");
+    let after_source_revision = fixture
+        .client
+        .state_revision()
+        .await
+        .expect("authoritative revision after current-config refresh");
+    assert_eq!(
+        refresh.revision.source_config_revision,
+        exact_config_revision
+    );
+    assert_eq!(after_source_refresh.revision, after_source_revision);
+    assert_eq!(
+        after_source_revision.source_config_revision,
+        exact_config_revision
+    );
+    assert!(after_source_refresh.sources.iter().any(|candidate| {
+        candidate.id == standard_source_id && candidate.origin == FfiSourceOrigin::Standard
+    }));
+    assert!(after_source_refresh.sources.iter().any(|candidate| {
+        candidate.id == source.source.id && candidate.origin == FfiSourceOrigin::Personal
+    }));
 
     fixture.cli(&[
         "models",

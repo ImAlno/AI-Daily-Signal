@@ -1,6 +1,6 @@
 # Signal CLI reference
 
-`signal` is the local-first command-line interface for AI Daily Signal. Milestone two includes the shared Rust core and cross-platform CLI. The native macOS companion remains the next milestone.
+`signal` is the local-first command-line interface for AI Daily Signal. Milestone two includes the shared Rust core and cross-platform CLI. A source-built [macOS companion alpha](macos-alpha.md) is also available for macOS 26 on Apple Silicon; packaged distribution, signing, and installers remain deferred.
 
 Signal reads and writes local TOML configuration and SQLite data. Feed access occurs only during `refresh` and `today --refresh`. Optional AI provider access occurs during an AI-enabled refresh, `today --refresh`, `models test`, or `summarize`; cached summary hits make no provider request.
 
@@ -318,4 +318,4 @@ Errors are intentionally concise and do not echo vault diagnostics, credential v
 
 ## Scope boundary
 
-This milestone is the shared core and cross-platform CLI. It includes secure opt-in AI model profiles and AI summaries alongside local Raw and Smart summaries. The native SwiftUI macOS companion, packaged installers, signing, and distribution are later milestones.
+This milestone is the shared core and cross-platform CLI. It includes secure opt-in AI model profiles and AI summaries alongside local Raw and Smart summaries. A source-built [macOS companion alpha](macos-alpha.md) is available for macOS 26 on Apple Silicon; packaged installers, signing, and distribution remain deferred.

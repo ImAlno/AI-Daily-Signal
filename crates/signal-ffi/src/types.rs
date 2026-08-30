@@ -156,13 +156,26 @@ pub struct FfiModelProfile {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct AddFeedSourceRequest {
     pub name: String,
     pub category: String,
     pub url: String,
     pub weight: f64,
     pub enabled: bool,
+}
+
+impl std::fmt::Debug for AddFeedSourceRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AddFeedSourceRequest")
+            .field("name", &"<redacted>")
+            .field("category", &"<redacted>")
+            .field("url", &"<redacted>")
+            .field("weight", &self.weight)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
 }
 
 #[derive(Clone, uniffi::Enum)]

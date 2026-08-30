@@ -105,7 +105,6 @@ private struct PendingSourceMutation {
 
 private struct SourceMutationConfirmation {
   let result: SourceMutationResult
-  let removesSource: Bool
 }
 
 private struct PendingModelTurn {
@@ -120,6 +119,7 @@ public final class AppModel {
   public private(set) var snapshot: AppSnapshot?
   public private(set) var phase: AppPhase = .loading
   public private(set) var activeOperationID: String?
+  public private(set) var refreshNotice: RefreshNotice?
   public private(set) var storyActionStates: [StoryAction: StoryActionState] = [:]
   public private(set) var sourceActionStates: [SourceAction: SourceActionState] = [:]
   public private(set) var modelActionStates: [ModelAction: ModelActionState] = [:]
@@ -317,6 +317,7 @@ public final class AppModel {
   private func requestRefresh(ai: Bool, startingPhase: AppPhase) async {
     guard activeOperationID == nil else { return }
     invalidatePendingRevisionReads()
+    refreshNotice = nil
     let operationID = UUID().uuidString
     activeOperationID = operationID
     phase = startingPhase
@@ -484,32 +485,18 @@ public final class AppModel {
             generatedSelectionID: result.selectedSummary?.id
           )
         }
-        let requiresReconciliation =
-          self?.storyMutationRequiresReconciliation(confirmation) == true
-        if requiresReconciliation {
-          let replacement = try await bridge.snapshot()
-          self?.finishStoryMutation(
-            pending,
-            confirmation: confirmation,
-            reconciliationSnapshot: replacement,
-            requiresReconciliation: true,
-            error: nil
-          )
-        } else {
-          self?.finishStoryMutation(
-            pending,
-            confirmation: confirmation,
-            reconciliationSnapshot: nil,
-            requiresReconciliation: false,
-            error: nil
-          )
-        }
+        let replacement = try await bridge.snapshot()
+        self?.finishStoryMutation(
+          pending,
+          confirmation: confirmation,
+          reconciliationSnapshot: replacement,
+          error: nil
+        )
       } catch {
         self?.finishStoryMutation(
           pending,
           confirmation: nil,
           reconciliationSnapshot: nil,
-          requiresReconciliation: false,
           error: error
         )
       }
@@ -520,31 +507,30 @@ public final class AppModel {
     _ pending: PendingStoryMutation,
     confirmation: StoryMutationConfirmation?,
     reconciliationSnapshot: AppSnapshot?,
-    requiresReconciliation: Bool,
     error: (any Error)?
   ) {
     guard bridgeActivity == .mutating(token: pending.token, action: pending.action) else { return }
     invalidatePendingRevisionReads()
     var appliedConfirmation: StoryMutationConfirmation?
-    if requiresReconciliation, let reconciliationSnapshot {
+    if let confirmation, let reconciliationSnapshot,
+      reconciliationSnapshot.revision.dataGeneration >= confirmation.revision.dataGeneration
+    {
       replaceSnapshot(reconciliationSnapshot)
       if snapshot?.revision == reconciliationSnapshot.revision {
         appliedConfirmation = confirmation
       }
-    } else if let confirmation,
-      confirmation.revision.dataGeneration >= (snapshot?.revision.dataGeneration ?? 0)
-    {
-      replaceStory(confirmation.story, revision: confirmation.revision)
-      appliedConfirmation = confirmation
     } else if let error {
       storyActionErrors[pending.action] = userFacingMessage(for: error)
+    } else {
+      storyActionErrors[pending.action] =
+        "The story state changed before it could be confirmed. Reload and try again."
     }
     if let confirmation = appliedConfirmation,
       let variantID = confirmation.generatedSelectionID,
       pending.summaryIntentEpoch == summarySelectionIntentEpochs[confirmation.story.id],
       story(id: confirmation.story.id)?.summaryVariants.contains(where: { $0.id == variantID })
         == true,
-      !requiresReconciliation || story(id: confirmation.story.id)?.selectedSummary?.id == variantID
+      story(id: confirmation.story.id)?.selectedSummary?.id == variantID
     {
       summarySelections[confirmation.story.id] = .ai(variantID: variantID)
     }
@@ -552,14 +538,6 @@ public final class AppModel {
     bridgeActivity = .idle
     pending.continuation.resume()
     beginNextBridgeActivityIfPossible()
-  }
-
-  private func storyMutationRequiresReconciliation(
-    _ confirmation: StoryMutationConfirmation
-  ) -> Bool {
-    guard let revision = snapshot?.revision else { return false }
-    return confirmation.revision.dataGeneration < revision.dataGeneration
-      || confirmation.revision.sourceConfigRevision != revision.sourceConfigRevision
   }
 
   private func beginNextBridgeActivityIfPossible() {
@@ -675,41 +653,24 @@ public final class AppModel {
         switch pending.payload {
         case .add(let input):
           confirmation = SourceMutationConfirmation(
-            result: try await bridge.addSource(input),
-            removesSource: false
+            result: try await bridge.addSource(input)
           )
         case .toggle(let id, let enabled):
           confirmation = SourceMutationConfirmation(
-            result: try await bridge.setSourceEnabled(id: id, enabled: enabled),
-            removesSource: false
+            result: try await bridge.setSourceEnabled(id: id, enabled: enabled)
           )
         case .remove(let id):
           confirmation = SourceMutationConfirmation(
-            result: try await bridge.removeSource(id: id),
-            removesSource: true
+            result: try await bridge.removeSource(id: id)
           )
         }
-        let requiresReconciliation =
-          self?.snapshot.map {
-            confirmation.result.revision.dataGeneration
-              != $0.revision.dataGeneration
-          } ?? false
-        if requiresReconciliation {
-          let replacement = try await bridge.snapshot()
-          self?.finishSourceMutation(
-            pending,
-            confirmation: confirmation,
-            reconciliationSnapshot: replacement,
-            error: nil
-          )
-        } else {
-          self?.finishSourceMutation(
-            pending,
-            confirmation: confirmation,
-            reconciliationSnapshot: nil,
-            error: nil
-          )
-        }
+        let replacement = try await bridge.snapshot()
+        self?.finishSourceMutation(
+          pending,
+          confirmation: confirmation,
+          reconciliationSnapshot: replacement,
+          error: nil
+        )
       } catch {
         self?.finishSourceMutation(
           pending,
@@ -732,17 +693,14 @@ public final class AppModel {
     }
     invalidatePendingRevisionReads()
     var succeeded = false
-    if let reconciliationSnapshot {
+    if let confirmation, let reconciliationSnapshot,
+      reconciliationSnapshot.revision.dataGeneration
+        >= confirmation.result.revision.dataGeneration
+    {
       replaceSnapshot(reconciliationSnapshot)
       succeeded = snapshot?.revision == reconciliationSnapshot.revision
-    } else if let confirmation {
-      replaceSource(
-        confirmation.result.source,
-        revision: confirmation.result.revision,
-        removing: confirmation.removesSource
-      )
-      succeeded = snapshot?.revision == confirmation.result.revision
-    } else if error != nil {
+    }
+    if !succeeded {
       if let sourceID = sourceID(for: pending.action) {
         sourceActionErrors[sourceID] = "The source could not be updated."
       } else {
@@ -1218,16 +1176,18 @@ public final class AppModel {
       guard !Task.isCancelled else {
         self?.finishRefresh(
           operationID: request.operationID,
+          result: nil,
           replacement: nil,
           error: BridgeError.cancelled
         )
         return
       }
       do {
-        _ = try await bridge.refresh(operationID: request.operationID, ai: request.ai)
+        let result = try await bridge.refresh(operationID: request.operationID, ai: request.ai)
         guard !Task.isCancelled else {
           self?.finishRefresh(
             operationID: request.operationID,
+            result: nil,
             replacement: nil,
             error: BridgeError.cancelled
           )
@@ -1238,6 +1198,7 @@ public final class AppModel {
         guard !Task.isCancelled else {
           self?.finishRefresh(
             operationID: request.operationID,
+            result: nil,
             replacement: nil,
             error: BridgeError.cancelled
           )
@@ -1245,12 +1206,14 @@ public final class AppModel {
         }
         self?.finishRefresh(
           operationID: request.operationID,
+          result: result,
           replacement: replacement,
           error: nil
         )
       } catch {
         self?.finishRefresh(
           operationID: request.operationID,
+          result: nil,
           replacement: nil,
           error: Task.isCancelled ? BridgeError.cancelled : error
         )
@@ -1265,6 +1228,7 @@ public final class AppModel {
 
   private func finishRefresh(
     operationID: String,
+    result: RefreshResult?,
     replacement: AppSnapshot?,
     error: (any Error)?
   ) {
@@ -1273,10 +1237,17 @@ public final class AppModel {
     bridgeActivity = .idle
     refreshTask = nil
     activeOperationID = nil
-    if let replacement {
+    if let result, let replacement,
+      replacement.revision.dataGeneration >= result.revision.dataGeneration
+    {
       replaceSnapshot(replacement)
+      if snapshot?.revision == replacement.revision {
+        refreshNotice = RefreshNotice(result: result)
+      }
     } else if let error {
       apply(error)
+    } else {
+      phase = .failure(message: "The refreshed briefing could not be confirmed.")
     }
     beginNextBridgeActivityIfPossible()
   }
@@ -1298,77 +1269,6 @@ public final class AppModel {
     }
     validateSelectedStoryForDestination()
     phase = presentationPhase(for: replacement)
-  }
-
-  private func replaceStory(_ replacement: Story, revision: StateRevision) {
-    guard let snapshot else { return }
-    let today = snapshot.today.map { briefing in
-      Briefing(
-        date: briefing.date,
-        generatedAt: briefing.generatedAt,
-        isStale: briefing.isStale,
-        items: briefing.items.map { item in
-          guard item.story.id == replacement.id else { return item }
-          return BriefingItem(
-            position: item.position,
-            section: item.section,
-            isStale: item.isStale,
-            story: replacement,
-            selectedSummary: replacement.selectedSummary,
-            summaryVariants: replacement.summaryVariants
-          )
-        }
-      )
-    }
-    let latest = snapshot.latest.map { $0.id == replacement.id ? replacement : $0 }
-    var saved = snapshot.saved
-    if let index = saved.firstIndex(where: { $0.id == replacement.id }) {
-      if replacement.isSaved {
-        saved[index] = replacement
-      } else {
-        saved.remove(at: index)
-      }
-    } else if replacement.isSaved {
-      saved.append(replacement)
-    }
-    self.snapshot = AppSnapshot(
-      revision: revision,
-      status: snapshot.status,
-      today: today,
-      latest: latest,
-      saved: saved,
-      sources: snapshot.sources,
-      modelProfiles: snapshot.modelProfiles,
-      defaultModelProfileID: snapshot.defaultModelProfileID,
-      hasUsableAIProfile: snapshot.hasUsableAIProfile
-    )
-    if let selectedStoryID, self.snapshot?.containsStory(id: selectedStoryID) != true {
-      summarySelections.removeValue(forKey: selectedStoryID)
-    }
-    validateSelectedStoryForDestination()
-  }
-
-  private func replaceSource(_ replacement: Source, revision: StateRevision, removing: Bool) {
-    guard let snapshot else { return }
-    var sources = snapshot.sources
-    if removing {
-      sources.removeAll(where: { $0.id == replacement.id })
-    } else if let index = sources.firstIndex(where: { $0.id == replacement.id }) {
-      sources[index] = replacement
-    } else {
-      sources.append(replacement)
-    }
-    self.snapshot = AppSnapshot(
-      revision: revision,
-      status: snapshot.status,
-      today: snapshot.today,
-      latest: snapshot.latest,
-      saved: snapshot.saved,
-      sources: sources,
-      modelProfiles: snapshot.modelProfiles,
-      defaultModelProfileID: snapshot.defaultModelProfileID,
-      hasUsableAIProfile: snapshot.hasUsableAIProfile
-    )
   }
 
   private func isValid(_ selection: ReadingSummarySelection, for story: Story?) -> Bool {

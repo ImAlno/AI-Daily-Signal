@@ -1,4 +1,5 @@
 import Foundation
+import SignalFFIBindings
 import Testing
 
 @testable import SignalAppKit
@@ -26,6 +27,50 @@ struct SourceSettingsTests {
           enabled: true
         )
     )
+  }
+
+  @Test
+  func sourceURLBearingStatePreservesSubmissionButRedactsReflection() throws {
+    // Break caught: reflecting a source editor draft/request/view record with URL credentials,
+    // query data, or fragment material while still requiring the exact value at submission.
+    let sentinels = [
+      "swift-source-user-SENTINEL",
+      "swift-source-password-SENTINEL",
+      "swift-source-query-SENTINEL",
+      "swift-source-fragment-SENTINEL",
+    ]
+    let exactURL =
+      "https://\(sentinels[0]):\(sentinels[1])@example.test/feed.xml?token=\(sentinels[2])#\(sentinels[3])"
+    let draft = SourceEditorDraft(
+      name: "Private feed",
+      feedURL: exactURL,
+      category: "Research",
+      weight: 0.75,
+      enabled: true
+    )
+    let input = try #require(draft.input)
+    let request = input.ffiValue
+    let viewState = Source(
+      id: "personal-private",
+      name: "Private feed",
+      category: "Research",
+      enabled: true,
+      weight: 0.75,
+      feedURL: exactURL,
+      origin: .personal
+    )
+
+    #expect(input.url == exactURL)
+    #expect(request.url == exactURL)
+    for value in [
+      String(reflecting: draft), String(reflecting: input), String(reflecting: request),
+      String(reflecting: viewState),
+    ] {
+      #expect(value.contains("<redacted>"))
+      for sentinel in sentinels {
+        #expect(!value.contains(sentinel))
+      }
+    }
   }
 
   @Test(arguments: [Double.nan, -.leastNonzeroMagnitude, 1.000_000_1, .infinity])
@@ -405,6 +450,53 @@ struct SourceSettingsTests {
     #expect(model.snapshot == reconciled)
     #expect(model.snapshot?.latest == [authoritativeStory])
     #expect(model.snapshot?.modelProfiles.isEmpty == true)
+    #expect(bridge.snapshotCalls == 2)
+  }
+
+  @Test @MainActor
+  func configOnlySourceRevisionPublishesCLIChangesBeforePollingSeesEquality() async {
+    // Break caught: partial-patching one source with a config-only revision and permanently hiding
+    // an unrelated CLI-added source because later polling sees the same composite revision.
+    let initialRevision = StateRevision(dataGeneration: 5, sourceConfigRevision: "source-a")
+    let initial = sourceSnapshot(revision: initialRevision, sources: [standardSource])
+    let toggled = standardSource.with(enabled: false)
+    let cliAdded = Source(
+      id: "personal-cli",
+      name: "CLI-added source",
+      category: "Research",
+      enabled: true,
+      weight: 0.6,
+      feedURL: "https://cli.example.test/feed.xml",
+      origin: .personal
+    )
+    let configOnlyRevision = StateRevision(
+      dataGeneration: initialRevision.dataGeneration,
+      sourceConfigRevision: "source-b"
+    )
+    let authoritative = sourceSnapshot(
+      revision: configOnlyRevision,
+      sources: [toggled, cliAdded]
+    )
+    let bridge = FakeBridgeClient(snapshot: initial, revisions: [configOnlyRevision])
+    bridge.sourceToggleResult = SourceMutationResult(
+      source: toggled,
+      revision: configOnlyRevision
+    )
+    bridge.enqueueSnapshot(authoritative)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model.start()
+
+    await model.setSourceEnabled(id: standardSource.id, enabled: false)
+    model.setActive(true)
+    await eventually { bridge.stateRevisionCalls >= 1 }
+    model.stopPolling()
+
+    #expect(model.snapshot == authoritative)
+    #expect(model.snapshot?.sources.map(\.id) == [standardSource.id, cliAdded.id])
     #expect(bridge.snapshotCalls == 2)
   }
 

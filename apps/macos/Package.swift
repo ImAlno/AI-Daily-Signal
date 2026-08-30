@@ -54,7 +54,7 @@ let package = Package(
     .executableTarget(name: "SignalMacApp", dependencies: ["SignalAppKit"]),
     .testTarget(
       name: "SignalAppKitTests",
-      dependencies: ["SignalAppKit"],
+      dependencies: ["SignalAppKit", "SignalFFIBindings"],
       swiftSettings: testingSwiftSettings,
       linkerSettings: testingLinkerSettings
     ),

@@ -73,7 +73,8 @@ struct AppPresentationTests {
   func requiredStatusesHaveDistinctSymbolsAndVoiceOverLabels() {
     // Break caught: encoding freshness only with color or collapsing offline and failed states.
     let statuses: [SignalStatus] = [
-      .current, .refreshing, .partiallyStale, .offline, .failed, .localDataUnavailable,
+      .current, .refreshing, .smartFallback, .partiallyStale, .offline, .failed,
+      .localDataUnavailable,
     ]
 
     #expect(Set(statuses.map(\.symbolName)).count == statuses.count)

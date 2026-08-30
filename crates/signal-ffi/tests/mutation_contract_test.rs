@@ -264,6 +264,38 @@ async fn source_mutations_use_the_config_revision_and_return_sanitized_records()
     );
 }
 
+#[test]
+fn add_feed_source_request_debug_redacts_the_exact_url() {
+    // Break caught: debug formatting an unvalidated source request with private URL material.
+    let sentinels = [
+        "source-debug-user-SENTINEL",
+        "source-debug-password-SENTINEL",
+        "source-debug-query-SENTINEL",
+        "source-debug-fragment-SENTINEL",
+    ];
+    let request = AddFeedSourceRequest {
+        name: "Personal research".to_owned(),
+        category: "research".to_owned(),
+        url: format!(
+            "https://{}:{}@example.test/feed.xml?token={}#{}",
+            sentinels[0], sentinels[1], sentinels[2], sentinels[3]
+        ),
+        weight: 0.7,
+        enabled: true,
+    };
+
+    let reflected = format!("{request:?}");
+
+    assert!(reflected.contains("<redacted>"));
+    for sentinel in sentinels {
+        assert!(!reflected.contains(sentinel));
+    }
+    assert_eq!(
+        request.url,
+        "https://source-debug-user-SENTINEL:source-debug-password-SENTINEL@example.test/feed.xml?token=source-debug-query-SENTINEL#source-debug-fragment-SENTINEL"
+    );
+}
+
 #[tokio::test]
 async fn removing_a_standard_source_is_a_safe_invalid_input_error() {
     // Break caught: allowing bundled source removal or echoing its identifier/path in the error.

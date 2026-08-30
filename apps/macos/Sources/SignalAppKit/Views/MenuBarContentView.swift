@@ -3,15 +3,21 @@ import SwiftUI
 public enum SignalStatus: CaseIterable, Sendable, Equatable {
   case current
   case refreshing
+  case smartFallback
   case partiallyStale
   case offline
   case failed
   case localDataUnavailable
   case settingUp
 
-  public init(phase: AppPhase) {
+  public init(phase: AppPhase, refreshNotice: RefreshNotice? = nil) {
     switch phase {
-    case .ready, .empty: self = .current
+    case .ready, .empty:
+      if let refreshNotice {
+        self = RefreshNoticePresentation(notice: refreshNotice).status
+      } else {
+        self = .current
+      }
     case .refreshing: self = .refreshing
     case .stale: self = .partiallyStale
     case .offline: self = .offline
@@ -25,6 +31,7 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
     switch self {
     case .current: "Current"
     case .refreshing: "Refreshing"
+    case .smartFallback: "Smart fallbacks"
     case .partiallyStale: "Partially stale"
     case .offline: "Offline"
     case .failed: "Refresh failed"
@@ -37,6 +44,7 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
     switch self {
     case .current: "checkmark.circle.fill"
     case .refreshing: "arrow.trianglehead.2.clockwise.rotate.90"
+    case .smartFallback: "wand.and.stars.inverse"
     case .partiallyStale: "clock.badge.exclamationmark"
     case .offline: "wifi.slash"
     case .failed: "exclamationmark.triangle.fill"
@@ -49,6 +57,7 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
     switch self {
     case .current: "AI Daily Signal, briefing status: current"
     case .refreshing: "AI Daily Signal, briefing status: refreshing"
+    case .smartFallback: "AI Daily Signal, briefing status: Smart summary fallbacks"
     case .partiallyStale: "AI Daily Signal, briefing status: partially stale"
     case .offline: "AI Daily Signal, briefing status: offline"
     case .failed: "AI Daily Signal, briefing status: refresh failed"
@@ -61,10 +70,58 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
     switch self {
     case .current: .green
     case .refreshing, .settingUp: .accentColor
+    case .smartFallback: .orange
     case .partiallyStale: .orange
     case .offline: .secondary
     case .failed, .localDataUnavailable: .red
     }
+  }
+}
+
+public enum RefreshNoticeKind: Sendable, Equatable {
+  case providerFallback
+  case partialSources
+}
+
+public struct RefreshNoticePresentation: Sendable, Equatable {
+  public let kind: RefreshNoticeKind
+  public let status: SignalStatus
+  public let title: String
+  public let message: String
+  public let accessibilityLabel: String
+
+  public init(notice: RefreshNotice) {
+    let fallbackCount = max(
+      notice.smartFallbacks,
+      notice.providerFailures + notice.malformedOutputs
+    )
+    if fallbackCount > 0 {
+      kind = .providerFallback
+      status = .smartFallback
+      title = "Smart summaries kept"
+      let fallbackUnit = fallbackCount == 1 ? "story" : "stories"
+      let sourceClause = Self.sourceClause(notice.failedSources)
+      message =
+        "Smart summaries were kept for \(fallbackCount) \(fallbackUnit) after AI output could not be used.\(sourceClause)"
+      accessibilityLabel =
+        "Smart summaries kept for \(fallbackCount) \(fallbackUnit).\(sourceClause)"
+    } else {
+      kind = .partialSources
+      status = .partiallyStale
+      title = "Partial refresh"
+      message = "\(Self.failedSourceSentence(notice.failedSources)) Available stories were kept."
+      accessibilityLabel = "Partial refresh. \(message)"
+    }
+  }
+
+  private static func sourceClause(_ count: UInt64) -> String {
+    guard count > 0 else { return "" }
+    return " \(failedSourceSentence(count))"
+  }
+
+  private static func failedSourceSentence(_ count: UInt64) -> String {
+    let unit = count == 1 ? "source" : "sources"
+    return "\(count) \(unit) could not be refreshed."
   }
 }
 
@@ -112,9 +169,10 @@ public struct MenuBarPresentation: Sendable, Equatable {
     phase: AppPhase,
     snapshot: AppSnapshot?,
     errorMessage: String?,
+    refreshNotice: RefreshNotice? = nil,
     refreshInProgress: Bool
   ) {
-    status = SignalStatus(phase: phase)
+    status = SignalStatus(phase: phase, refreshNotice: refreshNotice)
     if let date = snapshot?.status.refresh?.lastRefreshAt {
       lastRefreshText = SignalFormatters.relativeDate(date)
     } else {
@@ -128,14 +186,15 @@ public struct MenuBarPresentation: Sendable, Equatable {
           provenance: Self.provenance(for: item.story)
         )
       } ?? []
-    self.errorMessage = errorMessage
+    let noticePresentation = refreshNotice.map(RefreshNoticePresentation.init)
+    self.errorMessage = errorMessage ?? (refreshInProgress ? nil : noticePresentation?.message)
     if case .startupFailure = phase {
       refreshControl = .unavailable
     } else {
       refreshControl = refreshInProgress ? .cancel : .refresh
     }
     rows =
-      errorMessage == nil
+      self.errorMessage == nil
       ? [.status, .topSignal, .primaryActions, .utilityMenu]
       : [.status, .topSignal, .explanation, .primaryActions, .utilityMenu]
   }
@@ -184,7 +243,7 @@ public struct MenuBarStatusLabel: View {
   }
 
   public var body: some View {
-    let status = SignalStatus(phase: model.phase)
+    let status = SignalStatus(phase: model.phase, refreshNotice: model.refreshNotice)
     Label("AI Daily Signal — \(status.title)", systemImage: status.symbolName)
       .accessibilityLabel(status.accessibilityLabel)
   }
@@ -213,6 +272,7 @@ public struct MenuBarContentView: View {
       phase: model.phase,
       snapshot: model.snapshot,
       errorMessage: model.errorMessage,
+      refreshNotice: model.refreshNotice,
       refreshInProgress: model.activeOperationID != nil
     )
     switch presentation.scrolling {

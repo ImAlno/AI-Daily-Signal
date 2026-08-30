@@ -173,6 +173,160 @@ struct AppModelTests {
   }
 
   @Test @MainActor
+  func actualRefreshPublishesCountOnlyFallbackAndPartialSourceNotice() async throws {
+    // Break caught: discarding the real refresh result and presenting provider fallback as an
+    // ordinary successful refresh even when no carried row is stale.
+    let smartStory = Story(
+      id: Story.fixture.id,
+      title: Story.fixture.title,
+      canonicalURL: Story.fixture.canonicalURL,
+      excerpt: Story.fixture.excerpt,
+      category: Story.fixture.category,
+      publishedAt: Story.fixture.publishedAt,
+      sourceIDs: Story.fixture.sourceIDs,
+      score: Story.fixture.score,
+      smartSummary: Story.fixture.smartSummary,
+      isRead: Story.fixture.isRead,
+      isSaved: Story.fixture.isSaved,
+      selectedSummary: nil,
+      summaryVariants: []
+    )
+    let initial = AppSnapshot.fixture
+    let revision = StateRevision(dataGeneration: 2, sourceConfigRevision: "source-b")
+    let refreshed = initial.with(
+      revision: revision,
+      today: .some(
+        Briefing(
+          date: initial.today!.date,
+          generatedAt: initial.today!.generatedAt,
+          isStale: false,
+          items: [
+            BriefingItem(
+              position: 1,
+              section: "Top Signals",
+              isStale: false,
+              story: smartStory,
+              selectedSummary: nil,
+              summaryVariants: []
+            )
+          ]
+        )
+      ),
+      latest: [smartStory]
+    )
+    let result = RefreshResult(
+      briefing: try #require(refreshed.today),
+      successfulSources: 2,
+      failedSources: 1,
+      generation: GenerationReport(
+        eligible: 2,
+        generated: 0,
+        cacheHits: 0,
+        skippedCap: 0,
+        skippedBudget: 0,
+        missingCredentials: 0,
+        providerFailures: 1,
+        malformedOutputs: 1,
+        smartFallbacks: 2
+      ),
+      revision: revision
+    )
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.enqueueSnapshot(refreshed)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+
+    await model.refresh()
+    await eventually { bridge.refreshIdentifiers.count == 1 }
+    bridge.finishRefresh(with: result)
+    await eventually { model.activeOperationID == nil }
+
+    let notice = try #require(model.refreshNotice)
+    let presentation = RefreshNoticePresentation(notice: notice)
+    #expect(model.snapshot == refreshed)
+    #expect(model.snapshot?.today?.items.first?.story.smartSummary == Story.fixture.smartSummary)
+    #expect(model.snapshot?.today?.items.first?.selectedSummary == nil)
+    #expect(
+      notice
+        == RefreshNotice(
+          failedSources: 1,
+          providerFailures: 1,
+          malformedOutputs: 1,
+          smartFallbacks: 2
+        )
+    )
+    #expect(presentation.kind == .providerFallback)
+    #expect(SignalStatus(phase: model.phase, refreshNotice: notice) == .smartFallback)
+    #expect(presentation.message.contains("2"))
+    #expect(presentation.message.contains("1 source"))
+    #expect(presentation.accessibilityLabel.contains("Smart summaries"))
+    for sentinel in ["provider-body-SENTINEL", "credential-secret-SENTINEL"] {
+      #expect(!String(reflecting: notice).contains(sentinel))
+      #expect(!presentation.message.contains(sentinel))
+      #expect(!presentation.accessibilityLabel.contains(sentinel))
+    }
+  }
+
+  @Test @MainActor
+  func nextRefreshClearsThePriorNoticeAcrossCancellationAndFailure() async throws {
+    // Break caught: continuing to present an old partial-refresh warning as the outcome of a
+    // later refresh that was cancelled or failed.
+    let revision = StateRevision(dataGeneration: 2, sourceConfigRevision: "source-b")
+    let refreshed = AppSnapshot.fixture.with(revision: revision)
+    let result = RefreshResult(
+      briefing: try #require(refreshed.today),
+      successfulSources: 1,
+      failedSources: 1,
+      generation: GenerationReport(
+        eligible: 1,
+        generated: 0,
+        cacheHits: 0,
+        skippedCap: 0,
+        skippedBudget: 0,
+        missingCredentials: 0,
+        providerFailures: 1,
+        malformedOutputs: 0,
+        smartFallbacks: 1
+      ),
+      revision: revision
+    )
+    let bridge = FakeBridgeClient(snapshot: .fixture)
+    bridge.enqueueSnapshot(refreshed)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    await model.refresh()
+    await eventually { bridge.refreshIdentifiers.count == 1 }
+    bridge.finishRefresh(with: result)
+    await eventually { model.activeOperationID == nil }
+    #expect(model.refreshNotice != nil)
+
+    await model.refresh()
+    await eventually { bridge.refreshIdentifiers.count == 2 }
+    #expect(model.refreshNotice == nil)
+    model.cancelRefresh()
+    await eventually { model.activeOperationID == nil }
+    #expect(model.refreshNotice == nil)
+    #expect(model.snapshot == refreshed)
+
+    bridge.refreshError = DetailedFakeError(description: "provider-body-SENTINEL")
+    await model.refresh()
+    await eventually { model.activeOperationID == nil }
+    #expect(model.refreshNotice == nil)
+    #expect(model.snapshot == refreshed)
+    if case .failure = model.phase {
+      // Expected safe presentation; the raw bridge error must not escape.
+    } else {
+      Issue.record("a failed replacement refresh must publish the safe failure phase")
+    }
+  }
+
+  @Test @MainActor
   func pollingUsesBothRevisionComponentsAndCoalescesReloads() async {
     // Break caught: comparing only SQLite generation or starting overlapping snapshot reloads.
     let initial = AppSnapshot.fixture

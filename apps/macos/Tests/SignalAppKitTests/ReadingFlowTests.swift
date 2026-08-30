@@ -462,7 +462,7 @@ struct ReadingFlowTests {
 
     #expect(model.selectedStory?.isSaved == true)
     #expect(model.snapshot?.revision == mutationRevision)
-    #expect(bridge.snapshotCalls == 1)
+    #expect(bridge.snapshotCalls == 2)
   }
 
   @Test @MainActor
@@ -495,8 +495,12 @@ struct ReadingFlowTests {
     bridge.releaseSnapshots()
     await readTask.value
     await reloadTask.value
-    #expect(model.selectedStory?.isRead == true)
-    #expect(model.snapshot?.revision == mutationRevision)
+    #expect(model.selectedStory?.isRead == false)
+    #expect(model.snapshot?.revision == initial.revision)
+    #expect(
+      model.storyActionError(for: .markingRead(storyID: "story"))
+        == "The story state changed before it could be confirmed. Reload and try again."
+    )
     #expect(bridge.maximumConcurrentBridgeCalls == 1)
   }
 
@@ -530,8 +534,12 @@ struct ReadingFlowTests {
     bridge.releaseSnapshots()
     await selectTask.value
     await reloadTask.value
-    #expect(model.selectedSummarySelection == .ai(variantID: "variant-new"))
-    #expect(model.snapshot?.revision == mutationRevision)
+    #expect(model.selectedSummarySelection == .ai(variantID: "variant-old"))
+    #expect(model.snapshot?.revision == initial.revision)
+    #expect(
+      model.storyActionError(for: .selectingSummary(storyID: "story"))
+        == "The story state changed before it could be confirmed. Reload and try again."
+    )
     #expect(bridge.maximumConcurrentBridgeCalls == 1)
   }
 
@@ -571,8 +579,12 @@ struct ReadingFlowTests {
     bridge.releaseSnapshots()
     await generationTask.value
     await reloadTask.value
-    #expect(model.selectedSummarySelection == .ai(variantID: "variant-new"))
-    #expect(model.snapshot?.revision == mutationRevision)
+    #expect(model.selectedSummarySelection == .ai(variantID: "variant-old"))
+    #expect(model.snapshot?.revision == initial.revision)
+    #expect(
+      model.storyActionError(for: .regenerating(storyID: "story"))
+        == "The story state changed before it could be confirmed. Reload and try again."
+    )
     #expect(bridge.maximumConcurrentBridgeCalls == 1)
   }
 
@@ -736,6 +748,49 @@ struct ReadingFlowTests {
     #expect(model.selectedStory?.selectedSummary?.id == "variant-new")
     #expect(model.selectedSummarySelection == .ai(variantID: "variant-new"))
     #expect(model.snapshot?.revision == initial.revision)
+  }
+
+  @Test @MainActor
+  func forwardStoryGenerationPublishesTheAuthoritativeFullSnapshot() async {
+    // Break caught: publishing one story with a later global revision while hiding an unrelated
+    // CLI story change that is already part of that revision.
+    let localStory = story(id: "story", title: "Local story")
+    let cliStoryBefore = story(id: "cli-story", title: "CLI-updated story", read: false)
+    let cliStory = story(id: "cli-story", title: "CLI-updated story", read: true)
+    let initialRevision = StateRevision(dataGeneration: 5, sourceConfigRevision: "source-a")
+    let initial = snapshot(
+      revision: initialRevision,
+      todayStories: [localStory],
+      latest: [localStory, cliStoryBefore],
+      saved: []
+    )
+    let confirmedStory = copy(localStory, saved: true)
+    let forwardRevision = StateRevision(dataGeneration: 7, sourceConfigRevision: "source-a")
+    let authoritative = snapshot(
+      revision: forwardRevision,
+      todayStories: [confirmedStory],
+      latest: [confirmedStory, cliStory],
+      saved: [confirmedStory]
+    )
+    let bridge = FakeBridgeClient(snapshot: initial, revisions: [forwardRevision])
+    bridge.savedResult = StoryMutationResult(story: confirmedStory, revision: forwardRevision)
+    bridge.enqueueSnapshot(authoritative)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model.start()
+    model.selectedStoryID = localStory.id
+
+    await model.toggleSelectedStorySaved()
+    model.setActive(true)
+    await eventually { bridge.stateRevisionCalls >= 1 }
+    model.stopPolling()
+
+    #expect(model.snapshot == authoritative)
+    #expect(model.snapshot?.latest.first(where: { $0.id == cliStory.id })?.isRead == true)
+    #expect(bridge.snapshotCalls == 2)
   }
 
   @Test @MainActor

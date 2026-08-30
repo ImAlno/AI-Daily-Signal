@@ -446,7 +446,7 @@ extension SignalFFIBindings.CompanionSnapshot {
 }
 
 extension FeedSourceInput {
-  fileprivate var ffiValue: SignalFFIBindings.AddFeedSourceRequest {
+  var ffiValue: SignalFFIBindings.AddFeedSourceRequest {
     AddFeedSourceRequest(
       name: name,
       category: category,
@@ -454,6 +454,18 @@ extension FeedSourceInput {
       weight: weight,
       enabled: enabled
     )
+  }
+}
+
+extension SignalFFIBindings.AddFeedSourceRequest: CustomDebugStringConvertible,
+  CustomReflectable
+{
+  public var debugDescription: String {
+    "AddFeedSourceRequest(weight: \(weight), enabled: \(enabled), url: <redacted>)"
+  }
+
+  public var customMirror: Mirror {
+    Mirror(self, children: ["source request": "<redacted>"])
   }
 }
 

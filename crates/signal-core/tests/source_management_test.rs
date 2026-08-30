@@ -158,6 +158,35 @@ fn personal_feed_names_are_case_insensitively_unique() {
 }
 
 #[test]
+fn stale_apps_preserve_both_source_mutations() {
+    // Break caught: a long-lived app overwriting a completed source edit from another process.
+    let fixture = SourceFixture::new();
+    let mut first = fixture.open_app();
+    let mut stale = fixture.open_app();
+    let standard_id = first
+        .list_source_records()
+        .unwrap()
+        .into_iter()
+        .find(|record| record.origin == SourceOrigin::Standard)
+        .unwrap()
+        .source
+        .id;
+
+    first.set_source_enabled(&standard_id, false).unwrap();
+    let added = stale
+        .add_feed_source(personal_feed("Concurrent personal research"))
+        .unwrap();
+
+    let records = stale.list_source_records().unwrap();
+    assert!(
+        records
+            .iter()
+            .any(|record| record.source.id == standard_id && !record.source.enabled)
+    );
+    assert!(records.contains(&added));
+}
+
+#[test]
 fn only_bundled_source_ids_are_standard() {
     // Break caught: classifying every non-personal-prefix source as bundled standard.
     let fixture = SourceFixture::new();

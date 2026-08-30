@@ -164,6 +164,20 @@ public struct ReadingWindowView: View {
         .help(ReadingCommand.settings.descriptor.help)
       }
     }
+    .safeAreaInset(edge: .top) {
+      if model.errorMessage == nil, model.activeOperationID == nil, let notice = model.refreshNotice {
+        let presentation = RefreshNoticePresentation(notice: notice)
+        Label(presentation.message, systemImage: presentation.status.symbolName)
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 16)
+          .padding(.vertical, 9)
+          .background(.bar)
+          .accessibilityLabel(presentation.accessibilityLabel)
+          .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
+      }
+    }
   }
 
   private var destinationSelection: Binding<Destination?> {

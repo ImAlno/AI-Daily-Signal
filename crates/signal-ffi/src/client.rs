@@ -217,8 +217,8 @@ impl CompanionClient {
         request: AddFeedSourceRequest,
     ) -> Result<FfiSourceMutation, CompanionError> {
         let mut app = self.app.lock().await;
-        let source = app
-            .add_feed_source(NewFeedSource {
+        let mutation = app
+            .add_feed_source_with_revision(NewFeedSource {
                 name: request.name,
                 category: request.category,
                 url: request.url,
@@ -226,7 +226,11 @@ impl CompanionClient {
                 enabled: request.enabled,
             })
             .map_err(CompanionError::from)?;
-        source_mutation(&mut app, source.try_into()?)
+        source_mutation(
+            &mut app,
+            mutation.value.try_into()?,
+            mutation.source_config_revision,
+        )
     }
 
     pub async fn set_source_enabled(
@@ -235,16 +239,14 @@ impl CompanionClient {
         enabled: bool,
     ) -> Result<FfiSourceMutation, CompanionError> {
         let mut app = self.app.lock().await;
-        let updated = app
-            .set_source_enabled(&id, enabled)
+        let mutation = app
+            .set_source_enabled_with_revision(&id, enabled)
             .map_err(CompanionError::from)?;
-        let record = app
-            .list_source_records()
-            .map_err(CompanionError::from)?
-            .into_iter()
-            .find(|record| record.source.id == updated.id)
-            .ok_or(CompanionError::StorageUnavailable)?;
-        source_mutation(&mut app, record.try_into()?)
+        source_mutation(
+            &mut app,
+            mutation.value.try_into()?,
+            mutation.source_config_revision,
+        )
     }
 
     pub async fn remove_personal_source(
@@ -252,10 +254,14 @@ impl CompanionClient {
         id: String,
     ) -> Result<FfiSourceMutation, CompanionError> {
         let mut app = self.app.lock().await;
-        let removed = app
-            .remove_personal_source(&id)
+        let mutation = app
+            .remove_personal_source_with_revision(&id)
             .map_err(CompanionError::from)?;
-        source_mutation(&mut app, removed.try_into()?)
+        source_mutation(
+            &mut app,
+            mutation.value.try_into()?,
+            mutation.source_config_revision,
+        )
     }
 
     pub async fn add_model_profile(
@@ -500,8 +506,12 @@ fn story_mutation(
 fn source_mutation(
     app: &mut SignalApp,
     source: FfiSource,
+    source_config_revision: String,
 ) -> Result<FfiSourceMutation, CompanionError> {
-    let revision = app.state_revision().map_err(CompanionError::from)?.into();
+    let revision = FfiStateRevision {
+        data_generation: app.status().map_err(CompanionError::from)?.data_generation,
+        source_config_revision,
+    };
     Ok(FfiSourceMutation { source, revision })
 }
 

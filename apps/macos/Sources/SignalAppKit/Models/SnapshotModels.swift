@@ -195,7 +195,9 @@ public enum SourceOrigin: String, Sendable, Equatable {
   case personal
 }
 
-public struct Source: Identifiable, Sendable, Equatable {
+public struct Source: Identifiable, Sendable, Equatable, CustomDebugStringConvertible,
+  CustomReflectable
+{
   public let id: String
   public let name: String
   public let category: String
@@ -215,6 +217,14 @@ public struct Source: Identifiable, Sendable, Equatable {
     self.weight = weight
     self.feedURL = feedURL
     self.origin = origin
+  }
+
+  public var debugDescription: String {
+    "Source(id: \(id.debugDescription), enabled: \(enabled), origin: \(origin.rawValue), feedURL: <redacted>)"
+  }
+
+  public var customMirror: Mirror {
+    Mirror(self, children: ["source": "<redacted>"])
   }
 }
 
@@ -354,7 +364,7 @@ public struct SourceMutationResult: Sendable, Equatable {
   }
 }
 
-public struct FeedSourceInput: Sendable, Equatable {
+public struct FeedSourceInput: Sendable, Equatable, CustomDebugStringConvertible, CustomReflectable {
   public let name: String
   public let category: String
   public let url: String
@@ -367,6 +377,14 @@ public struct FeedSourceInput: Sendable, Equatable {
     self.url = url
     self.weight = weight
     self.enabled = enabled
+  }
+
+  public var debugDescription: String {
+    "FeedSourceInput(weight: \(weight), enabled: \(enabled), url: <redacted>)"
+  }
+
+  public var customMirror: Mirror {
+    Mirror(self, children: ["source request": "<redacted>"])
   }
 }
 
@@ -498,6 +516,36 @@ public struct RefreshResult: Sendable, Equatable {
     self.failedSources = failedSources
     self.generation = generation
     self.revision = revision
+  }
+}
+
+public struct RefreshNotice: Sendable, Equatable {
+  public let failedSources: UInt64
+  public let providerFailures: UInt64
+  public let malformedOutputs: UInt64
+  public let smartFallbacks: UInt64
+
+  public init(
+    failedSources: UInt64,
+    providerFailures: UInt64,
+    malformedOutputs: UInt64,
+    smartFallbacks: UInt64
+  ) {
+    self.failedSources = failedSources
+    self.providerFailures = providerFailures
+    self.malformedOutputs = malformedOutputs
+    self.smartFallbacks = smartFallbacks
+  }
+
+  public init?(result: RefreshResult) {
+    self.init(
+      failedSources: result.failedSources,
+      providerFailures: result.generation.providerFailures,
+      malformedOutputs: result.generation.malformedOutputs,
+      smartFallbacks: result.generation.smartFallbacks
+    )
+    guard failedSources > 0 || providerFailures > 0 || malformedOutputs > 0 || smartFallbacks > 0
+    else { return nil }
   }
 }
 

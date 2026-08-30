@@ -633,6 +633,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
             )
           )
         }
+        enqueueStorySnapshotIfNeededLocked(result)
         if suspendedSavedMutationCount > 0 {
           suspendedSavedMutationCount -= 1
           pendingSavedMutations.append((continuation, result))
@@ -659,6 +660,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
               ?? StoryMutationResult(story: .fixture, revision: savedMutationRevision)
           )
         }
+        enqueueStorySnapshotIfNeededLocked(result)
         if suspendedReadMutationCount > 0 {
           suspendedReadMutationCount -= 1
           pendingReadMutations.append((continuation, result))
@@ -685,6 +687,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
               ?? StoryMutationResult(story: .fixture, revision: savedMutationRevision)
           )
         }
+        enqueueStorySnapshotIfNeededLocked(result)
         if suspendedSummaryMutationCount > 0 {
           suspendedSummaryMutationCount -= 1
           pendingSummaryMutations.append((continuation, result))
@@ -713,6 +716,13 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
               ?? GenerationResult(story: .fixture, selectedSummary: .fixture, revision: .fixture)
           )
         }
+        if case .success(let generation) = result {
+          enqueueStorySnapshotIfNeededLocked(
+            .success(
+              StoryMutationResult(story: generation.story, revision: generation.revision)
+            )
+          )
+        }
         if suspendedGenerationCount > 0 {
           suspendedGenerationCount -= 1
           pendingGenerations.append((continuation, result))
@@ -730,6 +740,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
         beginBridgeCallLocked()
         storedAddSourceInputs.append(input)
         let result = sourceMutationResult(storedAddSourceResult)
+        enqueueSourceSnapshotIfNeededLocked(result, operation: .upsert)
         if suspendedAddSourceCount > 0 {
           suspendedAddSourceCount -= 1
           pendingAddSources.append((continuation, result))
@@ -748,6 +759,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
         beginBridgeCallLocked()
         storedSourceToggleRequests.append((id, enabled))
         let result = sourceMutationResult(storedSourceToggleResult)
+        enqueueSourceSnapshotIfNeededLocked(result, operation: .upsert)
         if suspendedSourceToggleCount > 0 {
           suspendedSourceToggleCount -= 1
           pendingSourceToggles.append((continuation, result))
@@ -766,6 +778,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
         beginBridgeCallLocked()
         storedSourceRemovalRequests.append(id)
         let result = sourceMutationResult(storedRemoveSourceResult)
+        enqueueSourceSnapshotIfNeededLocked(result, operation: .remove)
         if suspendedSourceRemovalCount > 0 {
           suspendedSourceRemovalCount -= 1
           pendingSourceRemovals.append((continuation, result))
@@ -888,6 +901,93 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     }
     return .success(
       configured ?? SourceMutationResult(source: .fixture, revision: .fixture)
+    )
+  }
+
+  private enum SourceSnapshotOperation {
+    case upsert
+    case remove
+  }
+
+  /// Mirrors the real bridge's durable mutation side effect when a test has not
+  /// supplied a more authoritative post-mutation snapshot explicitly.
+  private func enqueueStorySnapshotIfNeededLocked(
+    _ result: Result<StoryMutationResult, any Error>
+  ) {
+    guard snapshots.count <= snapshotIndex, case .success(let mutation) = result,
+      let current = snapshots.last
+    else { return }
+
+    func replacing(_ stories: [Story]) -> [Story] {
+      stories.map { $0.id == mutation.story.id ? mutation.story : $0 }
+    }
+
+    let today = current.today.map { briefing in
+      Briefing(
+        date: briefing.date,
+        generatedAt: briefing.generatedAt,
+        isStale: briefing.isStale,
+        items: briefing.items.map { item in
+          guard item.story.id == mutation.story.id else { return item }
+          return BriefingItem(
+            position: item.position,
+            section: item.section,
+            isStale: item.isStale,
+            story: mutation.story,
+            selectedSummary: mutation.story.selectedSummary,
+            summaryVariants: mutation.story.summaryVariants
+          )
+        }
+      )
+    }
+    var saved = replacing(current.saved)
+    if mutation.story.isSaved {
+      if !saved.contains(where: { $0.id == mutation.story.id }) {
+        saved.append(mutation.story)
+      }
+    } else {
+      saved.removeAll(where: { $0.id == mutation.story.id })
+    }
+    snapshots.append(
+      AppSnapshot(
+        revision: mutation.revision,
+        status: current.status,
+        today: today,
+        latest: replacing(current.latest),
+        saved: saved,
+        sources: current.sources,
+        modelProfiles: current.modelProfiles,
+        defaultModelProfileID: current.defaultModelProfileID,
+        hasUsableAIProfile: current.hasUsableAIProfile
+      )
+    )
+  }
+
+  private func enqueueSourceSnapshotIfNeededLocked(
+    _ result: Result<SourceMutationResult, any Error>,
+    operation: SourceSnapshotOperation
+  ) {
+    guard snapshots.count <= snapshotIndex, case .success(let mutation) = result,
+      let current = snapshots.last
+    else { return }
+
+    var sources = current.sources
+    sources.removeAll(where: { $0.id == mutation.source.id })
+    if case .upsert = operation {
+      sources.append(mutation.source)
+    }
+    snapshots.append(
+      AppSnapshot(
+        revision: mutation.revision,
+        status: current.status,
+        today: current.today,
+        latest: current.latest,
+        saved: current.saved,
+        sources: sources,
+        modelProfiles: current.modelProfiles,
+        defaultModelProfileID: current.defaultModelProfileID,
+        hasUsableAIProfile: current.hasUsableAIProfile
+      )
     )
   }
 
