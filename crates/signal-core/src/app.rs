@@ -8,12 +8,12 @@ use uuid::Uuid;
 use crate::credentials::nonempty_secret;
 use crate::{
     AiGenerationCoordinator, AnthropicProvider, ApiDialect, AppConfig, AppPaths, Briefing,
-    ConfigRepository, CredentialRef, CredentialStore, EnvironmentReader, FeedCollector,
-    GeminiProvider, GenerationReport, ModelProfile, NewModelProfile, OpenAiProvider, Pipeline,
-    ProcessEnvironmentReader, ProfileLimits, ProviderKind, ProviderRegistry, Result, SignalError,
-    Source, SourceFailure, SourceKind, SourceOrigin, SourceRecord, Store, StoreStatus, Story,
-    SummarizeOptions, SummarizeReport, SummaryVariant, SystemCredentialStore, TestModelOptions,
-    TestModelReport, persist_system_credential_then,
+    CancellationToken, ConfigRepository, CredentialRef, CredentialStore, EnvironmentReader,
+    FeedCollector, GeminiProvider, GenerationReport, ModelProfile, NewModelProfile, OpenAiProvider,
+    Pipeline, ProcessEnvironmentReader, ProfileLimits, ProviderKind, ProviderRegistry, Result,
+    SignalError, Source, SourceFailure, SourceKind, SourceOrigin, SourceRecord, Store, StoreStatus,
+    Story, SummarizeOptions, SummarizeReport, SummaryVariant, SystemCredentialStore,
+    TestModelOptions, TestModelReport, persist_system_credential_then,
 };
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -204,6 +204,17 @@ impl SignalApp {
         now: DateTime<Utc>,
         options: RefreshOptions,
     ) -> Result<RefreshReport> {
+        let cancellation = CancellationToken::new();
+        self.refresh_with_control(now, options, &cancellation).await
+    }
+
+    pub async fn refresh_with_control(
+        &self,
+        now: DateTime<Utc>,
+        options: RefreshOptions,
+        cancellation: &CancellationToken,
+    ) -> Result<RefreshReport> {
+        cancellation.check()?;
         if !self.config.sources.iter().any(|source| source.enabled) {
             return Err(SignalError::InvalidConfiguration(
                 "at least one source must be enabled".to_owned(),
@@ -211,8 +222,9 @@ impl SignalApp {
         }
 
         let collection = FeedCollector::new()?
-            .collect_all(&self.config.sources, now)
+            .collect_all_with_cancel(&self.config.sources, now, cancellation)
             .await;
+        let collection = collection?;
         let successful_sources = collection.successful_source_ids.len();
         let failed_sources = collection.failures.len();
         if collection.successful_source_ids.is_empty() {
@@ -238,15 +250,23 @@ impl SignalApp {
         for item in &mut output.briefing.items {
             item.selected_summary = None;
         }
+        cancellation.check()?;
         let generation = if options.ai {
+            cancellation.check()?;
             storage_result(self.store.upsert_stories(&output.stories))?;
             let profile = storage_result(self.store.default_model_profile())?;
             self.coordinator()
-                .generate_briefing(&mut output.briefing, profile.as_ref(), now)
+                .generate_briefing_with_cancel(
+                    &mut output.briefing,
+                    profile.as_ref(),
+                    now,
+                    cancellation,
+                )
                 .await?
         } else {
             GenerationReport::default()
         };
+        cancellation.check()?;
         storage_result(self.store.commit_refresh_with_counts(
             &output.stories,
             &output.briefing,

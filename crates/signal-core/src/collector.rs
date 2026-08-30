@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::{Candidate, Result, SignalError, Source, SourceKind};
+use crate::{CancellationToken, Candidate, Result, SignalError, Source, SourceKind};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct SourceFailure {
@@ -76,6 +76,36 @@ impl FeedCollector {
         }
 
         report
+    }
+
+    pub async fn collect_all_with_cancel(
+        &self,
+        sources: &[Source],
+        collected_at: DateTime<Utc>,
+        cancellation: &CancellationToken,
+    ) -> Result<CollectionReport> {
+        let mut report = CollectionReport {
+            candidates: Vec::new(),
+            successful_source_ids: Vec::new(),
+            failures: Vec::new(),
+        };
+
+        for source in sources.iter().filter(|source| source.enabled) {
+            cancellation.check()?;
+            match self.fetch_at(source, collected_at).await {
+                Ok(candidates) => {
+                    report.successful_source_ids.push(source.id.clone());
+                    report.candidates.extend(candidates);
+                }
+                Err(_) => report.failures.push(SourceFailure {
+                    source_id: source.id.clone(),
+                    message: "source could not be collected".to_owned(),
+                }),
+            }
+        }
+
+        cancellation.check()?;
+        Ok(report)
     }
 
     async fn fetch_at(

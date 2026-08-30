@@ -1,4 +1,5 @@
 mod app;
+mod cancellation;
 mod collector;
 mod config;
 mod credentials;
@@ -16,6 +17,7 @@ pub use app::{
     AddModelCredential, AddModelInput, AddModelReport, CredentialWarningKind, NewFeedSource,
     RefreshOptions, RefreshReport, RemoveModelReport, SignalApp, StateRevision, TodayView,
 };
+pub use cancellation::CancellationToken;
 pub use collector::{CollectionReport, FeedCollector, SourceFailure};
 pub use config::{AppConfig, BriefingConfig, ConfigRepository};
 pub use credentials::{

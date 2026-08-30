@@ -378,6 +378,7 @@ fn exit_code(error: &CliError) -> i32 {
             SignalError::Network(_)
             | SignalError::Feed(_)
             | SignalError::Refresh(_)
+            | SignalError::Cancelled
             | SignalError::Provider(_) => 3,
             SignalError::NotFound(_) => 4,
             SignalError::Database(_) | SignalError::Storage(_) | SignalError::Credential(_) => 5,
@@ -404,6 +405,7 @@ fn display_error(error: &CliError) -> String {
             SignalError::Network(_) | SignalError::Feed(_) | SignalError::Refresh(_) => {
                 "Refresh failed".to_owned()
             }
+            SignalError::Cancelled => "Refresh cancelled".to_owned(),
             SignalError::Provider(_) => "AI provider request failed".to_owned(),
             SignalError::NotFound(message) => message.clone(),
             SignalError::Database(_) | SignalError::Storage(_) => {
@@ -448,5 +450,14 @@ mod tests {
                 if message == "provider data-sharing consent was declined"
         ));
         assert_eq!(disclosures.get(), 1);
+    }
+
+    #[test]
+    fn cancelled_core_operation_uses_refresh_exit_and_message() {
+        // Break caught: exposing a cancellation as an unrelated CLI failure.
+        let error = CliError::Core(SignalError::Cancelled);
+
+        assert_eq!(exit_code(&error), 3);
+        assert_eq!(display_error(&error), "Refresh cancelled");
     }
 }

@@ -1,5 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum SignalError {
+    #[error("operation cancelled")]
+    Cancelled,
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(String),
     #[error("I/O error: {0}")]

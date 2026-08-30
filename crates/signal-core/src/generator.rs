@@ -5,11 +5,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    AI_SUMMARY_PROMPT_VERSION, AttemptOutcome, Briefing, BudgetDecision, CredentialResolver,
-    CredentialStore, EnvironmentReader, GenerationAttempt, GenerationFailureKind, GenerationReport,
-    ModelProfile, ProviderFailure, ProviderFailureKind, ProviderRegistry, ProviderRequest,
-    ProviderUsage, RequestChargeStatus, Result, RetryPolicy, SignalError, Store, Story,
-    SummarySettings, SummaryVariant, build_ai_summary_prompt, summary_cache_key,
+    AI_SUMMARY_PROMPT_VERSION, AttemptOutcome, Briefing, BudgetDecision, CancellationToken,
+    CredentialResolver, CredentialStore, EnvironmentReader, GenerationAttempt,
+    GenerationFailureKind, GenerationReport, ModelProfile, ProviderFailure, ProviderFailureKind,
+    ProviderRegistry, ProviderRequest, ProviderUsage, RequestChargeStatus, Result, RetryPolicy,
+    SignalError, Store, Story, SummarySettings, SummaryVariant, build_ai_summary_prompt,
+    summary_cache_key,
 };
 
 const RESERVATION_SAFETY_MARGIN_SECONDS: u64 = 60;
@@ -96,6 +97,19 @@ impl<'a> AiGenerationCoordinator<'a> {
         profile: Option<&ModelProfile>,
         now: DateTime<Utc>,
     ) -> Result<GenerationReport> {
+        let cancellation = CancellationToken::new();
+        self.generate_briefing_with_cancel(briefing, profile, now, &cancellation)
+            .await
+    }
+
+    pub async fn generate_briefing_with_cancel(
+        &self,
+        briefing: &mut Briefing,
+        profile: Option<&ModelProfile>,
+        now: DateTime<Utc>,
+        cancellation: &CancellationToken,
+    ) -> Result<GenerationReport> {
+        cancellation.check()?;
         let mut report = GenerationReport {
             eligible: briefing.items.len(),
             ..GenerationReport::default()
@@ -108,6 +122,7 @@ impl<'a> AiGenerationCoordinator<'a> {
         let mut outbound_requests = 0_u32;
         let maximum_requests = profile.limits.max_summaries_per_refresh;
         for item in &mut briefing.items {
+            cancellation.check()?;
             let generated = self
                 .generate_story(
                     &item.story,
@@ -120,6 +135,7 @@ impl<'a> AiGenerationCoordinator<'a> {
                             used: &mut outbound_requests,
                             maximum: maximum_requests,
                         }),
+                        cancellation: Some(cancellation),
                     },
                 )
                 .await?;
@@ -147,6 +163,7 @@ impl<'a> AiGenerationCoordinator<'a> {
                     force,
                     persist_variant: true,
                     refresh_cap: None,
+                    cancellation: None,
                 },
             )
             .await?;
@@ -179,6 +196,7 @@ impl<'a> AiGenerationCoordinator<'a> {
                     force: true,
                     persist_variant: false,
                     refresh_cap: None,
+                    cancellation: None,
                 },
             )
             .await?;
@@ -203,6 +221,9 @@ impl<'a> AiGenerationCoordinator<'a> {
         now: DateTime<Utc>,
         mut control: GenerationControl<'_>,
     ) -> Result<SingleGeneration> {
+        if let Some(cancellation) = control.cancellation {
+            cancellation.check()?;
+        }
         if !profile.enabled {
             return Ok(SingleGeneration::skipped(
                 ManualGenerationStatus::ProfileUnavailable,
@@ -314,6 +335,9 @@ impl<'a> AiGenerationCoordinator<'a> {
             });
         };
 
+        if let Some(cancellation) = control.cancellation {
+            cancellation.check()?;
+        }
         let response = match provider.generate(&request, &credential).await {
             Ok(response) => {
                 consume_refresh_cap(&mut control)?;
@@ -329,6 +353,9 @@ impl<'a> AiGenerationCoordinator<'a> {
                     ManualGenerationStatus::ProviderFailure
                 };
                 let attempt = self.finalize_failure(attempt_id, now, estimated_cost, failure)?;
+                if let Some(cancellation) = control.cancellation {
+                    cancellation.check()?;
+                }
                 return Ok(SingleGeneration {
                     status,
                     variant: None,
@@ -405,6 +432,10 @@ impl<'a> AiGenerationCoordinator<'a> {
             },
         )?;
 
+        if let Some(cancellation) = control.cancellation {
+            cancellation.check()?;
+        }
+
         let variant = control.persist_variant.then(|| SummaryVariant {
             id: Uuid::new_v4(),
             story_id: story.id.clone(),
@@ -459,6 +490,7 @@ struct GenerationControl<'a> {
     force: bool,
     persist_variant: bool,
     refresh_cap: Option<RefreshCap<'a>>,
+    cancellation: Option<&'a CancellationToken>,
 }
 
 struct SingleGeneration {
