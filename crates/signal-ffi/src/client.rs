@@ -1,23 +1,51 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use chrono::Utc;
 use secrecy::SecretString;
 use signal_core::{
-    AddModelCredential, AddModelInput, CredentialWarningKind, ManualGenerationStatus,
-    NewFeedSource, SignalApp, SignalError, SummarizeOptions, TestModelOptions,
+    AddModelCredential, AddModelInput, CancellationToken, CredentialWarningKind,
+    ManualGenerationStatus, NewFeedSource, RefreshOptions, RefreshReport, SignalApp, SignalError,
+    SummarizeOptions, TestModelOptions, TodayView,
 };
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{
     AddCredentialRequest, AddFeedSourceRequest, AddModelProfileRequest, CompanionError,
     CompanionSnapshot, FfiBriefing, FfiCollectionStatus, FfiCredentialDeletionStatus,
-    FfiModelMutation, FfiModelProfile, FfiModelRemoval, FfiModelTestMutation, FfiSource,
-    FfiSourceMutation, FfiStateRevision, FfiStory, FfiStoryMutation, FfiSummaryVariant, types,
+    FfiModelMutation, FfiModelProfile, FfiModelRemoval, FfiModelTestMutation, FfiRefreshResult,
+    FfiSource, FfiSourceMutation, FfiStateRevision, FfiStory, FfiStoryMutation, FfiSummaryVariant,
+    types,
 };
+
+struct ActiveRefresh {
+    id: String,
+    cancellation: CancellationToken,
+}
+
+struct ActiveRefreshGuard<'a> {
+    active_refresh: &'a Mutex<Option<ActiveRefresh>>,
+    id: String,
+}
+
+impl Drop for ActiveRefreshGuard<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .active_refresh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active.as_ref().is_some_and(|refresh| refresh.id == self.id) {
+            *active = None;
+        }
+    }
+}
 
 #[derive(uniffi::Object)]
 pub struct CompanionClient {
-    app: Mutex<SignalApp>,
+    app: AsyncMutex<SignalApp>,
+    active_refresh: Mutex<Option<ActiveRefresh>>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -25,8 +53,37 @@ impl CompanionClient {
     #[uniffi::constructor]
     pub fn new() -> Result<Arc<Self>, CompanionError> {
         Ok(Arc::new(Self {
-            app: Mutex::new(SignalApp::open().map_err(CompanionError::from)?),
+            app: AsyncMutex::new(SignalApp::open().map_err(CompanionError::from)?),
+            active_refresh: Mutex::new(None),
         }))
+    }
+
+    pub async fn refresh(
+        &self,
+        operation_id: String,
+        ai: bool,
+    ) -> Result<FfiRefreshResult, CompanionError> {
+        let (cancellation, _active_refresh) = self.begin_refresh(operation_id)?;
+        let mut app = self.app.lock().await;
+        match app
+            .refresh_with_control(Utc::now(), RefreshOptions { ai }, &cancellation)
+            .await
+        {
+            Ok(report) => refresh_result(&mut app, report),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn cancel_operation(&self, operation_id: String) -> bool {
+        let active = self
+            .active_refresh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(refresh) = active.as_ref().filter(|refresh| refresh.id == operation_id) else {
+            return false;
+        };
+        refresh.cancellation.cancel();
+        true
     }
 
     pub async fn snapshot(&self) -> Result<CompanionSnapshot, CompanionError> {
@@ -315,10 +372,37 @@ impl CompanionClient {
 }
 
 impl CompanionClient {
+    fn begin_refresh(
+        &self,
+        id: String,
+    ) -> Result<(CancellationToken, ActiveRefreshGuard<'_>), CompanionError> {
+        let cancellation = CancellationToken::new();
+        let mut active = self
+            .active_refresh
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active.is_some() {
+            return Err(CompanionError::RefreshAlreadyRunning);
+        }
+        *active = Some(ActiveRefresh {
+            id: id.clone(),
+            cancellation: cancellation.clone(),
+        });
+        drop(active);
+        Ok((
+            cancellation,
+            ActiveRefreshGuard {
+                active_refresh: &self.active_refresh,
+                id,
+            },
+        ))
+    }
+
     #[cfg(feature = "test-support")]
     pub fn for_test(app: SignalApp) -> Arc<Self> {
         Arc::new(Self {
-            app: Mutex::new(app),
+            app: AsyncMutex::new(app),
+            active_refresh: Mutex::new(None),
         })
     }
 }
@@ -340,6 +424,36 @@ fn today_snapshot(app: &SignalApp) -> Result<Option<FfiBriefing>, CompanionError
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(types::briefing(today, summary_variants)?))
+}
+
+fn refresh_result(
+    app: &mut SignalApp,
+    report: RefreshReport,
+) -> Result<FfiRefreshResult, CompanionError> {
+    let successful_sources =
+        u64::try_from(report.successful_sources).map_err(|_| CompanionError::StorageUnavailable)?;
+    let failed_sources =
+        u64::try_from(report.failures.len()).map_err(|_| CompanionError::StorageUnavailable)?;
+    let summary_variants = report
+        .briefing
+        .items
+        .iter()
+        .map(|item| {
+            app.summary_variants(&item.story.id)
+                .map(|variants| variants.into_iter().map(FfiSummaryVariant::from).collect())
+                .map_err(CompanionError::from)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let briefing = types::briefing(TodayView::fresh(report.briefing), summary_variants)?;
+    let generation = report.generation.try_into()?;
+    let revision = app.state_revision().map_err(CompanionError::from)?.into();
+    Ok(FfiRefreshResult {
+        briefing,
+        successful_sources,
+        failed_sources,
+        generation,
+        revision,
+    })
 }
 
 fn story_snapshot(

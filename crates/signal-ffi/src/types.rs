@@ -1,7 +1,7 @@
 use signal_core::{
-    AiSummaryFields, ApiDialect, BriefingItem, CredentialRef, ModelProfile, MoneyMicros,
-    ProfileLimits, ProviderKind, ScoreBreakdown, SourceKind, SourceOrigin, SourceRecord,
-    StateRevision, StoreStatus, Story, SummaryVariant, TodayView, display_safe_url,
+    AiSummaryFields, ApiDialect, BriefingItem, CredentialRef, GenerationReport, ModelProfile,
+    MoneyMicros, ProfileLimits, ProviderKind, ScoreBreakdown, SourceKind, SourceOrigin,
+    SourceRecord, StateRevision, StoreStatus, Story, SummaryVariant, TodayView, display_safe_url,
 };
 
 use crate::CompanionError;
@@ -231,6 +231,50 @@ pub struct FfiModelTestMutation {
     pub profile: FfiModelProfile,
     pub cost_may_apply: bool,
     pub revision: FfiStateRevision,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct FfiGenerationReport {
+    pub eligible: u64,
+    pub generated: u64,
+    pub cache_hits: u64,
+    pub skipped_cap: u64,
+    pub skipped_budget: u64,
+    pub missing_credentials: u64,
+    pub provider_failures: u64,
+    pub malformed_outputs: u64,
+    pub smart_fallbacks: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct FfiRefreshResult {
+    pub briefing: FfiBriefing,
+    pub successful_sources: u64,
+    pub failed_sources: u64,
+    pub generation: FfiGenerationReport,
+    pub revision: FfiStateRevision,
+}
+
+impl TryFrom<GenerationReport> for FfiGenerationReport {
+    type Error = CompanionError;
+
+    fn try_from(report: GenerationReport) -> Result<Self, Self::Error> {
+        Ok(Self {
+            eligible: ffi_count(report.eligible)?,
+            generated: ffi_count(report.generated)?,
+            cache_hits: ffi_count(report.cache_hits)?,
+            skipped_cap: ffi_count(report.skipped_cap)?,
+            skipped_budget: ffi_count(report.skipped_budget)?,
+            missing_credentials: ffi_count(report.missing_credentials)?,
+            provider_failures: ffi_count(report.provider_failures)?,
+            malformed_outputs: ffi_count(report.malformed_outputs)?,
+            smart_fallbacks: ffi_count(report.smart_fallbacks)?,
+        })
+    }
+}
+
+fn ffi_count(value: usize) -> Result<u64, CompanionError> {
+    u64::try_from(value).map_err(|_| CompanionError::StorageUnavailable)
 }
 
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]

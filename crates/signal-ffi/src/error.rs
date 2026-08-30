@@ -1,6 +1,6 @@
 use signal_core::{ProviderFailureKind, SignalError};
 
-#[derive(Clone, Debug, thiserror::Error, uniffi::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, uniffi::Error)]
 pub enum CompanionError {
     #[error("setup is incomplete")]
     NotInitialized,
