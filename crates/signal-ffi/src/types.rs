@@ -1,8 +1,10 @@
 use signal_core::{
     AiSummaryFields, ApiDialect, BriefingItem, CredentialRef, ModelProfile, ProfileLimits,
     ProviderKind, ScoreBreakdown, SourceKind, SourceOrigin, SourceRecord, StateRevision,
-    StoreStatus, Story, SummaryVariant, TodayView,
+    StoreStatus, Story, SummaryVariant, TodayView, display_safe_url,
 };
+
+use crate::CompanionError;
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct FfiStateRevision {
@@ -308,12 +310,14 @@ fn briefing_item(item: BriefingItem, summary_variants: Vec<FfiSummaryVariant>) -
     }
 }
 
-impl From<SourceRecord> for FfiSource {
-    fn from(record: SourceRecord) -> Self {
+impl TryFrom<SourceRecord> for FfiSource {
+    type Error = CompanionError;
+
+    fn try_from(record: SourceRecord) -> Result<Self, Self::Error> {
         let feed_url = match record.source.kind {
-            SourceKind::Feed { url } => url,
+            SourceKind::Feed { url } => display_safe_url(&url).map_err(CompanionError::from)?,
         };
-        Self {
+        Ok(Self {
             id: record.source.id,
             name: record.source.name,
             category: record.source.category,
@@ -324,7 +328,7 @@ impl From<SourceRecord> for FfiSource {
                 SourceOrigin::Standard => FfiSourceOrigin::Standard,
                 SourceOrigin::Personal => FfiSourceOrigin::Personal,
             },
-        }
+        })
     }
 }
 
@@ -342,14 +346,22 @@ impl From<ProfileLimits> for FfiProfileLimits {
     }
 }
 
-impl From<ModelProfile> for FfiModelProfile {
-    fn from(profile: ModelProfile) -> Self {
-        Self {
+impl TryFrom<ModelProfile> for FfiModelProfile {
+    type Error = CompanionError;
+
+    fn try_from(profile: ModelProfile) -> Result<Self, Self::Error> {
+        let endpoint = profile
+            .endpoint
+            .as_ref()
+            .map(|endpoint| display_safe_url(endpoint.as_str()))
+            .transpose()
+            .map_err(CompanionError::from)?;
+        Ok(Self {
             id: profile.id.hyphenated().to_string(),
             name: profile.name,
             provider: profile.provider.into(),
             model: profile.model,
-            endpoint: profile.endpoint.map(|endpoint| endpoint.to_string()),
+            endpoint,
             dialect: profile.dialect.map(Into::into),
             credential_source: match profile.credential {
                 CredentialRef::SystemStore { .. } => FfiCredentialSourceKind::SystemStore,
@@ -360,6 +372,6 @@ impl From<ModelProfile> for FfiModelProfile {
             limits: profile.limits.into(),
             created_at: profile.created_at.to_rfc3339(),
             updated_at: profile.updated_at.to_rfc3339(),
-        }
+        })
     }
 }

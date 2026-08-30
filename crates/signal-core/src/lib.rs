@@ -10,6 +10,7 @@ mod models;
 mod paths;
 mod pipeline;
 mod providers;
+mod safe_url;
 mod storage;
 mod summaries;
 
@@ -49,6 +50,7 @@ pub use providers::{
     SummaryProvider, TokioRetrySleeper, build_ai_summary_prompt, parse_ai_summary,
     retry_provider_operation, retry_provider_operation_with_cancel,
 };
+pub use safe_url::display_safe_url;
 pub use storage::{RefreshRun, Store, StoreStatus};
 pub use summaries::{
     AiSummaryFields, AttemptOutcome, BudgetDecision, BudgetReservation, GenerationAttempt,

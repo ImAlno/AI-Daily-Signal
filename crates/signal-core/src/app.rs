@@ -288,6 +288,19 @@ impl SignalApp {
         storage_result(self.store.list_model_profiles())
     }
 
+    pub fn has_usable_ai_profile(&self) -> Result<bool> {
+        let profiles = storage_result(self.store.list_model_profiles())?;
+        let resolver = crate::CredentialResolver::new(
+            self.credential_store.as_ref(),
+            self.environment_reader.as_ref(),
+        );
+        Ok(profiles.into_iter().any(|profile| {
+            profile.enabled
+                && profile.consented_at.is_some()
+                && resolver.resolve(&profile.credential).is_ok()
+        }))
+    }
+
     pub fn default_model_profile(&self) -> Result<Option<ModelProfile>> {
         storage_result(self.store.default_model_profile())
     }

@@ -59,16 +59,14 @@ impl CompanionClient {
             .list_source_records()
             .map_err(CompanionError::from)?
             .into_iter()
-            .map(FfiSource::from)
-            .collect();
+            .map(FfiSource::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        let has_usable_ai_profile = app.has_usable_ai_profile().map_err(CompanionError::from)?;
         let model_profiles = app.list_models().map_err(CompanionError::from)?;
-        let has_usable_ai_profile = model_profiles
-            .iter()
-            .any(|profile| profile.enabled && profile.consented_at.is_some());
         let model_profiles = model_profiles
             .into_iter()
-            .map(FfiModelProfile::from)
-            .collect();
+            .map(FfiModelProfile::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
         let default_model_profile_id = app
             .default_model_profile()
             .map_err(CompanionError::from)?

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use secrecy::SecretString;
 use signal_core::{
-    CredentialRef, CredentialStore, ProviderFailure, ProviderKind, ProviderRegistry,
-    RequestChargeStatus, SignalApp, SignalError, Store,
+    ApiDialect, CredentialRef, CredentialStore, ProviderFailure, ProviderKind, ProviderRegistry,
+    RequestChargeStatus, SignalApp, SignalError, SourceKind, Store,
     test_support::{MemoryCredentialStore, MemoryEnvironmentReader},
 };
 use signal_ffi::{CompanionClient, CompanionError, FfiCollectionState, FfiCredentialSourceKind};
@@ -21,6 +21,8 @@ mod test_support {
         credential_value: String,
         credential_account: String,
         provider_body: String,
+        feed_url: String,
+        provider_endpoint: String,
     }
 
     impl CompanionAppFixture {
@@ -50,6 +52,31 @@ mod test_support {
             self._root.path().to_str().expect("UTF-8 temporary root")
         }
 
+        pub fn feed_url_sentinel(&self) -> &str {
+            &self.feed_url
+        }
+
+        pub fn provider_endpoint_sentinel(&self) -> &str {
+            &self.provider_endpoint
+        }
+
+        pub fn stored_feed_url(&self) -> String {
+            let config = ConfigRepository::new(self.paths.clone())
+                .load()
+                .expect("stored config");
+            match &config.sources[0].kind {
+                SourceKind::Feed { url } => url.clone(),
+            }
+        }
+
+        pub fn stored_provider_endpoint(&self) -> String {
+            self.open_app().list_models().expect("stored models")[0]
+                .endpoint
+                .as_ref()
+                .expect("stored endpoint")
+                .to_string()
+        }
+
         pub fn save_story_in_another_app(&self) {
             self.open_app()
                 .set_saved("story-1", true)
@@ -61,19 +88,38 @@ mod test_support {
                 .set_source_enabled("primary", false)
                 .expect("disable source");
         }
+
+        pub fn remove_profile_credential(&self) {
+            let profile = self
+                .open_app()
+                .list_models()
+                .expect("stored models")
+                .remove(0);
+            self.credential_store
+                .delete(&profile.credential)
+                .expect("remove fixture credential");
+        }
     }
 
     pub fn companion_app_fixture() -> CompanionAppFixture {
         let root = tempfile::tempdir().expect("temporary fixture root");
         let paths = AppPaths::for_root(root.path());
+        let feed_url = "https://feeds.example.test/private/path?feed_query_name_sentinel=feed_query_value_sentinel#feed_fragment_sentinel".to_owned();
+        let mut config = signal_core::test_support::config_fixture();
+        match &mut config.sources[0].kind {
+            SourceKind::Feed { url } => *url = feed_url.clone(),
+        }
         ConfigRepository::new(paths.clone())
-            .save(&signal_core::test_support::config_fixture())
+            .save(&config)
             .expect("fixture config");
 
         let store = Store::open(paths.data_dir.join("signal.sqlite3")).expect("fixture store");
+        let provider_endpoint = "https://provider.example.test/v1?endpoint_query_name_sentinel=endpoint_query_value_sentinel#endpoint_fragment_sentinel".to_owned();
         let mut profile =
-            signal_core::test_support::model_profile("Companion", ProviderKind::OpenAi);
+            signal_core::test_support::model_profile("Companion", ProviderKind::OpenAiCompatible);
         profile.model = "companion-model".to_owned();
+        profile.endpoint = Some(provider_endpoint.parse().expect("fixture endpoint"));
+        profile.dialect = Some(ApiDialect::Responses);
         let credential_account = match &profile.credential {
             CredentialRef::SystemStore { account, .. } => account.clone(),
             CredentialRef::Environment { .. } => panic!("fixture must use the system store"),
@@ -119,6 +165,8 @@ mod test_support {
             credential_value,
             credential_account,
             provider_body: "ffi-provider-body-sentinel".to_owned(),
+            feed_url,
+            provider_endpoint,
         }
     }
 
@@ -136,8 +184,51 @@ mod test_support {
             credential_value: "empty-credential-sentinel".to_owned(),
             credential_account: "empty-account-sentinel".to_owned(),
             provider_body: "empty-provider-body-sentinel".to_owned(),
+            feed_url: "https://empty.example.test/feed".to_owned(),
+            provider_endpoint: "https://empty.example.test/v1".to_owned(),
         }
     }
+}
+
+#[tokio::test]
+async fn snapshot_projects_urls_without_query_userinfo_or_fragment_material() {
+    let fixture = test_support::companion_app_fixture();
+    let snapshot = CompanionClient::for_test(fixture.open_app())
+        .snapshot()
+        .await
+        .expect("snapshot");
+
+    assert_eq!(
+        snapshot.sources[0].feed_url,
+        "https://feeds.example.test/private/path"
+    );
+    assert_eq!(
+        snapshot.model_profiles[0].endpoint.as_deref(),
+        Some("https://provider.example.test/v1")
+    );
+
+    let exported = format!("{snapshot:?}");
+    for private_material in [
+        fixture.feed_url_sentinel(),
+        fixture.provider_endpoint_sentinel(),
+        "feed_query_name_sentinel",
+        "feed_query_value_sentinel",
+        "feed_fragment_sentinel",
+        "endpoint_query_name_sentinel",
+        "endpoint_query_value_sentinel",
+        "endpoint_fragment_sentinel",
+    ] {
+        assert!(
+            !exported.contains(private_material),
+            "snapshot leaked private URL material"
+        );
+    }
+
+    assert_eq!(fixture.stored_feed_url(), fixture.feed_url_sentinel());
+    assert_eq!(
+        fixture.stored_provider_endpoint(),
+        fixture.provider_endpoint_sentinel()
+    );
 }
 
 #[tokio::test]
@@ -265,6 +356,20 @@ async fn empty_store_maps_to_not_initialized_without_a_today_error() {
     assert!(snapshot.saved.is_empty());
     assert!(snapshot.model_profiles.is_empty());
     assert_eq!(snapshot.default_model_profile_id, None);
+    assert!(!snapshot.has_usable_ai_profile);
+}
+
+#[tokio::test]
+async fn snapshot_does_not_mark_a_missing_credential_profile_as_usable() {
+    let fixture = test_support::companion_app_fixture();
+    fixture.remove_profile_credential();
+
+    let snapshot = CompanionClient::for_test(fixture.open_app())
+        .snapshot()
+        .await
+        .expect("snapshot");
+
+    assert_eq!(snapshot.model_profiles.len(), 1);
     assert!(!snapshot.has_usable_ai_profile);
 }
 

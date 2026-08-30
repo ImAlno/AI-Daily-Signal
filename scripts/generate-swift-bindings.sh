@@ -23,7 +23,10 @@ generate_bindings "$first_output"
 generate_bindings "$second_output"
 diff -ru "$first_output" "$second_output"
 
-mkdir -p apps/macos/Generated/Swift apps/macos/Generated/CSignalFFI
-cp "$first_output/SignalFFIBindings.swift" apps/macos/Generated/Swift/
-cp "$first_output/CSignalFFI.h" apps/macos/Generated/CSignalFFI/
-cp "$first_output/CSignalFFI.modulemap" apps/macos/Generated/CSignalFFI/module.modulemap
+generated_swift="apps/macos/Generated/Swift"
+generated_c="apps/macos/Generated/CSignalFFI"
+rm -rf "$generated_swift" "$generated_c"
+mkdir -p "$generated_swift" "$generated_c"
+cp "$first_output/SignalFFIBindings.swift" "$generated_swift/"
+cp "$first_output/CSignalFFI.h" "$generated_c/"
+cp "$first_output/CSignalFFI.modulemap" "$generated_c/module.modulemap"
