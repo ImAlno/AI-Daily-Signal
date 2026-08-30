@@ -135,31 +135,19 @@ Pending mutations, validation errors, and removal confirmation stay adjacent to 
 
 Models become a first-class navigation destination rather than being buried inside general settings.
 
-The destination presents configured model profiles as a quiet list. Selecting a profile reveals a narrow inline editor containing provider, model identifier, API-key status, budgets, default selection, and connection test state.
+The destination presents configured model profiles as a quiet list. Each row exposes the existing test, default-selection, and removal actions beside provider, model identifier, API-key status, and budget information. Adding a profile reveals the existing creation form inline. Editing an existing profile remains outside the alpha contract because the bridge exposes no profile-update operation.
 
 API keys remain masked and stored through the existing credential boundary. Validation and cleanup warnings appear next to the relevant profile or field. Provider and model choice remain user-controlled.
 
 ## Preferences
 
-Preferences uses ordinary macOS settings rows for:
-
-- briefing schedule;
-- summary length or reading-depth preference;
-- launch behavior;
-- appearance and accessibility choices owned by the app;
-- CLI and shared-data status.
+Preferences uses ordinary macOS settings rows for the app-owned values that already exist, including local storage, optional AI-summary status, the fixed menu-bar launch behavior, and CLI/shared-data compatibility. Values without a persisted preference or bridge operation are presented as status, not as inoperative controls. Adding scheduling, summary-depth, or appearance persistence is outside this UI redesign.
 
 Controls size to their labels and values. The page must not be a grid of settings cards.
 
 ## Onboarding
 
-First launch uses the same typography and control language as the main app in a focused single-column flow:
-
-1. confirm or adjust the standard sources;
-2. optionally configure a model and API key;
-3. choose refresh timing and build the first briefing.
-
-The existing local-first and network-contact disclosures remain explicit. AI remains optional where the current product contract says it is optional.
+First launch uses the same typography and control language as the main app in a focused single-column welcome flow. It preserves the existing single `Build My First Briefing` action, local-first and network-contact disclosures, and optional-AI contract. Source and model configuration remain available from their first-class destinations after the first briefing is initialized; onboarding does not invent scheduling or bridge behavior.
 
 ## State and Data Flow
 
@@ -174,7 +162,7 @@ Required presentation changes:
 
 - add `models` to `Destination` and update destination persistence;
 - use `selectedStoryID` to drive inline expansion instead of a permanent detail pane;
-- replace source and model sheet-presentation booleans with an explicit `InlineEditorRoute?` presentation value whose cases cover adding a source, adding a model profile, and editing an existing model profile;
+- replace source and model sheet-presentation booleans with an explicit `InlineEditorRoute?` presentation value whose cases cover adding a source and adding a model profile;
 - add the pure layout-mode policy without moving bridge logic into views;
 - extract reusable expanded-story content from `StoryDetailView` rather than duplicating summary, source, save, and regeneration behavior.
 
@@ -266,7 +254,7 @@ The redesign is complete when:
 - ordinary content and controls are not wrapped in decorative cards;
 - toolbar and row controls size to their content and remain keyboard accessible;
 - only one signal is expanded at a time and all existing story actions still work;
-- source and model editing works inline with existing bridge-confirmed behavior;
+- source and model creation works inline, while existing toggle, test, default-selection, and removal actions retain bridge-confirmed behavior;
 - cached, loading, empty, offline, failure, and startup-failure states remain correct;
 - the macOS test suite, Rust workspace tests, packaging checks, and visual-size verification pass;
 - the cross-platform CLI remains unchanged and independently usable.
