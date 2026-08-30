@@ -25,8 +25,8 @@ public protocol BridgeClient: Sendable {
   func addSource(_ input: FeedSourceInput) async throws -> SourceMutationResult
   func setSourceEnabled(id: String, enabled: Bool) async throws -> SourceMutationResult
   func removeSource(id: String) async throws -> SourceMutationResult
-  func addModel(_ input: ModelProfileInput) async throws -> ModelProfile
-  func setDefaultModel(_ selector: String) async throws -> ModelProfile
+  func addModel(_ input: ModelProfileInput) async throws -> ModelMutationResult
+  func setDefaultModel(_ selector: String) async throws -> ModelMutationResult
   func testModel(_ selector: String) async throws -> ModelTestResult
   func removeModel(_ selector: String) async throws -> ModelRemovalResult
 }

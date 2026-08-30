@@ -214,26 +214,8 @@ public struct ReadingWindowView: View {
     case .sources:
       SourcesView(model: model)
     case .settings:
-      settingsOverview
+      SettingsView(model: model)
     }
-  }
-
-  private var settingsOverview: some View {
-    Form {
-      Section("Briefing") {
-        LabeledContent("Storage", value: "On this Mac")
-        LabeledContent(
-          "AI summaries", value: model.snapshot?.hasUsableAIProfile == true ? "Enabled" : "Optional"
-        )
-      }
-      Section("Models") {
-        LabeledContent(
-          "Configured profiles",
-          value: String(model.snapshot?.modelProfiles.count ?? 0)
-        )
-      }
-    }
-    .formStyle(.grouped)
   }
 
   @ViewBuilder

@@ -37,6 +37,18 @@ public enum SourceActionState: Sendable, Equatable {
   case inFlight
 }
 
+public enum ModelAction: Sendable, Hashable {
+  case adding
+  case settingDefault(profileID: String)
+  case testing(profileID: String)
+  case removing(profileID: String)
+}
+
+public enum ModelActionState: Sendable, Equatable {
+  case queued
+  case inFlight
+}
+
 private enum ReloadOrigin: Equatable {
   case requested
   case polling(generation: UInt64)
@@ -48,6 +60,7 @@ private enum BridgeActivity: Equatable {
   case refreshing(operationID: String)
   case mutating(token: UUID, action: StoryAction)
   case sourceMutating(token: UUID, action: SourceAction)
+  case modelMutating(token: UUID, action: ModelAction)
   case polling(token: UUID, generation: UInt64, revisionEpoch: UInt64)
 }
 
@@ -95,6 +108,12 @@ private struct SourceMutationConfirmation {
   let removesSource: Bool
 }
 
+private struct PendingModelTurn {
+  let token: UUID
+  let action: ModelAction
+  let continuation: CheckedContinuation<Void, Never>
+}
+
 @MainActor
 @Observable
 public final class AppModel {
@@ -103,8 +122,12 @@ public final class AppModel {
   public private(set) var activeOperationID: String?
   public private(set) var storyActionStates: [StoryAction: StoryActionState] = [:]
   public private(set) var sourceActionStates: [SourceAction: SourceActionState] = [:]
+  public private(set) var modelActionStates: [ModelAction: ModelActionState] = [:]
   public private(set) var sourceEditorError: String?
+  public private(set) var modelEditorError: String?
+  public private(set) var credentialCleanupWarning: String?
   public private(set) var isSourceEditorPresented = false
+  public private(set) var isModelEditorPresented = false
   public var destination: Destination {
     didSet {
       preferences.selectedDestination = destination
@@ -125,6 +148,7 @@ public final class AppModel {
   @ObservationIgnored private var pendingReloadWaiters: [CheckedContinuation<Void, Never>] = []
   @ObservationIgnored private var pendingStoryMutations: [PendingStoryMutation] = []
   @ObservationIgnored private var pendingSourceMutations: [PendingSourceMutation] = []
+  @ObservationIgnored private var pendingModelTurns: [PendingModelTurn] = []
   @ObservationIgnored private var isActive = false
   @ObservationIgnored private var pollGeneration: UInt64 = 0
   @ObservationIgnored private var revisionEpoch: UInt64 = 0
@@ -132,6 +156,7 @@ public final class AppModel {
   private var summarySelectionIntentEpochs: [String: UInt64] = [:]
   private var storyActionErrors: [StoryAction: String] = [:]
   private var sourceActionErrors: [String: String] = [:]
+  private var modelActionErrors: [String: String] = [:]
 
   public init(
     bridge: any BridgeClient,
@@ -200,6 +225,14 @@ public final class AppModel {
     sourceActionErrors[sourceID]
   }
 
+  public func modelActionState(for action: ModelAction) -> ModelActionState? {
+    modelActionStates[action]
+  }
+
+  public func modelActionError(for profileID: String) -> String? {
+    modelActionErrors[profileID]
+  }
+
   public func presentSourceEditor() {
     sourceEditorError = nil
     isSourceEditorPresented = true
@@ -208,6 +241,20 @@ public final class AppModel {
   public func dismissSourceEditor() {
     sourceEditorError = nil
     isSourceEditorPresented = false
+  }
+
+  public func presentModelEditor() {
+    modelEditorError = nil
+    isModelEditorPresented = true
+  }
+
+  public func dismissModelEditor() {
+    modelEditorError = nil
+    isModelEditorPresented = false
+  }
+
+  public func dismissCredentialCleanupWarning() {
+    credentialCleanupWarning = nil
   }
 
   public var selectedSummarySelection: ReadingSummarySelection? {
@@ -277,7 +324,7 @@ public final class AppModel {
     switch bridgeActivity {
     case .idle:
       beginRefresh(request)
-    case .reloading, .mutating, .sourceMutating, .polling:
+    case .reloading, .mutating, .sourceMutating, .modelMutating, .polling:
       pendingRefresh = request
     case .refreshing:
       assertionFailure("An active refresh must own activeOperationID")
@@ -514,6 +561,8 @@ public final class AppModel {
       beginStoryMutation(pendingStoryMutations.removeFirst())
     } else if !pendingSourceMutations.isEmpty {
       beginSourceMutation(pendingSourceMutations.removeFirst())
+    } else if !pendingModelTurns.isEmpty {
+      beginModelTurn(pendingModelTurns.removeFirst())
     } else if !pendingReloadWaiters.isEmpty {
       beginReload(origin: .requested)
     }
@@ -545,7 +594,7 @@ public final class AppModel {
       await reloadTask?.value
     case .refreshing:
       await refreshTask?.value
-    case .mutating, .sourceMutating, .polling:
+    case .mutating, .sourceMutating, .modelMutating, .polling:
       await withCheckedContinuation { continuation in
         pendingReloadWaiters.append(continuation)
       }
@@ -707,13 +756,233 @@ public final class AppModel {
   public func addModel(
     _ input: ModelProfileInput,
     clearSecret: @MainActor () -> Void
-  ) async -> ModelProfile? {
+  ) async -> Bool {
     defer { clearSecret() }
+    let action = ModelAction.adding
+    guard let token = await acquireModelTurn(action) else { return false }
     do {
-      return try await bridge.addModel(input)
+      let result = try await bridge.addModel(input)
+      let replacement = try await bridge.snapshot()
+      return finishModelTurn(
+        token: token,
+        action: action,
+        mutationRevision: result.revision,
+        replacement: replacement,
+        credentialDeletion: nil,
+        error: nil
+      )
     } catch {
-      apply(error)
-      return nil
+      return finishModelTurn(
+        token: token,
+        action: action,
+        mutationRevision: nil,
+        replacement: nil,
+        credentialDeletion: nil,
+        error: error
+      )
+    }
+  }
+
+  @discardableResult
+  public func setDefaultModel(id: String) async -> Bool {
+    guard let profile = snapshot?.modelProfiles.first(where: { $0.id == id }),
+      profile.enabled,
+      profile.consentedAt != nil,
+      !isModelMutationPending(for: id)
+    else { return false }
+    let action = ModelAction.settingDefault(profileID: id)
+    guard let token = await acquireModelTurn(action) else { return false }
+    do {
+      let result = try await bridge.setDefaultModel(id)
+      let replacement = try await bridge.snapshot()
+      return finishModelTurn(
+        token: token,
+        action: action,
+        mutationRevision: result.revision,
+        replacement: replacement,
+        credentialDeletion: nil,
+        error: nil
+      )
+    } catch {
+      return finishModelTurn(
+        token: token,
+        action: action,
+        mutationRevision: nil,
+        replacement: nil,
+        credentialDeletion: nil,
+        error: error
+      )
+    }
+  }
+
+  @discardableResult
+  public func testModel(id: String, confirmedCost: Bool) async -> Bool {
+    guard confirmedCost,
+      let profile = snapshot?.modelProfiles.first(where: { $0.id == id }),
+      profile.enabled,
+      profile.consentedAt != nil,
+      !isModelMutationPending(for: id)
+    else { return false }
+    let action = ModelAction.testing(profileID: id)
+    guard let token = await acquireModelTurn(action) else { return false }
+    do {
+      let result = try await bridge.testModel(id)
+      let replacement = try await bridge.snapshot()
+      return finishModelTurn(
+        token: token,
+        action: action,
+        mutationRevision: result.revision,
+        replacement: replacement,
+        credentialDeletion: nil,
+        error: nil
+      )
+    } catch {
+      return finishModelTurn(
+        token: token,
+        action: action,
+        mutationRevision: nil,
+        replacement: nil,
+        credentialDeletion: nil,
+        error: error
+      )
+    }
+  }
+
+  @discardableResult
+  public func removeModel(id: String, confirmed: Bool) async -> Bool {
+    guard confirmed,
+      snapshot?.modelProfiles.contains(where: { $0.id == id }) == true,
+      !isModelMutationPending(for: id)
+    else { return false }
+    let action = ModelAction.removing(profileID: id)
+    guard let token = await acquireModelTurn(action) else { return false }
+    do {
+      let result = try await bridge.removeModel(id)
+      let replacement = try await bridge.snapshot()
+      return finishModelTurn(
+        token: token,
+        action: action,
+        mutationRevision: result.revision,
+        replacement: replacement,
+        credentialDeletion: result.credentialDeletion,
+        error: nil
+      )
+    } catch {
+      return finishModelTurn(
+        token: token,
+        action: action,
+        mutationRevision: nil,
+        replacement: nil,
+        credentialDeletion: nil,
+        error: error
+      )
+    }
+  }
+
+  private func acquireModelTurn(_ action: ModelAction) async -> UUID? {
+    guard modelActionStates[action] == nil else { return nil }
+    invalidatePendingRevisionReads()
+    credentialCleanupWarning = nil
+    if let profileID = modelProfileID(for: action) {
+      modelActionErrors[profileID] = nil
+    } else {
+      modelEditorError = nil
+    }
+    let token = UUID()
+    modelActionStates[action] = .queued
+    await withCheckedContinuation { continuation in
+      pendingModelTurns.append(
+        PendingModelTurn(token: token, action: action, continuation: continuation)
+      )
+      beginNextBridgeActivityIfPossible()
+    }
+    return token
+  }
+
+  private func beginModelTurn(_ pending: PendingModelTurn) {
+    guard bridgeActivity == .idle else { return }
+    invalidatePendingRevisionReads()
+    modelActionStates[pending.action] = .inFlight
+    bridgeActivity = .modelMutating(token: pending.token, action: pending.action)
+    pending.continuation.resume()
+  }
+
+  private func finishModelTurn(
+    token: UUID,
+    action: ModelAction,
+    mutationRevision: StateRevision?,
+    replacement: AppSnapshot?,
+    credentialDeletion: CredentialDeletionStatus?,
+    error: (any Error)?
+  ) -> Bool {
+    guard bridgeActivity == .modelMutating(token: token, action: action) else { return false }
+    invalidatePendingRevisionReads()
+    var succeeded = false
+    if let mutationRevision, let replacement,
+      replacement.revision.dataGeneration >= mutationRevision.dataGeneration
+    {
+      replaceSnapshot(replacement)
+      succeeded = snapshot?.revision == replacement.revision
+      if succeeded, credentialDeletion == .deleteFailed {
+        credentialCleanupWarning = ModelSettingsCopy.credentialCleanupWarning
+      }
+    } else if mutationRevision != nil || replacement != nil {
+      recordModelActionError(
+        "The model state changed before it could be confirmed. Reload and try again.",
+        for: action
+      )
+    } else if let error {
+      recordModelActionError(modelActionMessage(for: action, error: error), for: action)
+    }
+    modelActionStates[action] = nil
+    bridgeActivity = .idle
+    beginNextBridgeActivityIfPossible()
+    return succeeded
+  }
+
+  private func isModelMutationPending(for profileID: String) -> Bool {
+    modelActionStates.keys.contains { modelProfileID(for: $0) == profileID }
+  }
+
+  private func recordModelActionError(_ message: String, for action: ModelAction) {
+    if let profileID = modelProfileID(for: action) {
+      modelActionErrors[profileID] = message
+    } else {
+      modelEditorError = message
+    }
+  }
+
+  private func modelProfileID(for action: ModelAction) -> String? {
+    switch action {
+    case .adding: nil
+    case .settingDefault(let profileID), .testing(let profileID), .removing(let profileID):
+      profileID
+    }
+  }
+
+  private func modelActionMessage(for action: ModelAction, error: any Error) -> String {
+    if case .testing = action, let bridgeError = error as? BridgeError {
+      switch bridgeError {
+      case .credentialUnavailable:
+        return
+          "The model credential is unavailable. Check its Keychain entry or environment variable."
+      case .consentRequired:
+        return "Provider data-sharing consent is required before testing this model."
+      case .budgetExhausted:
+        return "The model test was stopped by the configured budget."
+      case .providerUnavailable, .offline:
+        return "The provider could not complete the model test."
+      case .cancelled:
+        return "The model test was cancelled."
+      default:
+        break
+      }
+    }
+    switch action {
+    case .adding: return "The model profile could not be added."
+    case .settingDefault: return "The default model could not be changed."
+    case .testing: return "The model test could not be completed."
+    case .removing: return "The model profile could not be removed."
     }
   }
 

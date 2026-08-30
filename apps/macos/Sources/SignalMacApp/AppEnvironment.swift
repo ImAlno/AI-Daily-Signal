@@ -51,10 +51,10 @@ private final class StartupFailureBridgeClient: BridgeClient, Sendable {
   func removeSource(id: String) async throws -> SourceMutationResult {
     throw BridgeError.startupUnavailable
   }
-  func addModel(_ input: ModelProfileInput) async throws -> ModelProfile {
+  func addModel(_ input: ModelProfileInput) async throws -> ModelMutationResult {
     throw BridgeError.startupUnavailable
   }
-  func setDefaultModel(_ selector: String) async throws -> ModelProfile {
+  func setDefaultModel(_ selector: String) async throws -> ModelMutationResult {
     throw BridgeError.startupUnavailable
   }
   func testModel(_ selector: String) async throws -> ModelTestResult {

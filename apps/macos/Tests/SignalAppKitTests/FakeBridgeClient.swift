@@ -11,6 +11,9 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private typealias SourceMutationContinuation = CheckedContinuation<
     SourceMutationResult, any Error
   >
+  private typealias ModelMutationContinuation = CheckedContinuation<ModelMutationResult, any Error>
+  private typealias ModelTestContinuation = CheckedContinuation<ModelTestResult, any Error>
+  private typealias ModelRemovalContinuation = CheckedContinuation<ModelRemovalResult, any Error>
 
   private let lock = NSLock()
   private var snapshots: [AppSnapshot]
@@ -38,6 +41,13 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     [(SourceMutationContinuation, Result<SourceMutationResult, any Error>)] = []
   private var pendingSourceRemovals:
     [(SourceMutationContinuation, Result<SourceMutationResult, any Error>)] = []
+  private var pendingAddModels:
+    [(ModelMutationContinuation, Result<ModelMutationResult, any Error>)] = []
+  private var pendingDefaultModels:
+    [(ModelMutationContinuation, Result<ModelMutationResult, any Error>)] = []
+  private var pendingModelTests: [(ModelTestContinuation, Result<ModelTestResult, any Error>)] = []
+  private var pendingModelRemovals:
+    [(ModelRemovalContinuation, Result<ModelRemovalResult, any Error>)] = []
   private var cancellationRequests: Set<String> = []
   private var remembersCancellationBeforeRefreshRegistration = true
   private var storedRefreshIdentifiers: [String] = []
@@ -46,6 +56,9 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var storedStateRevisionCalls = 0
   private var storedRefreshEntryCalls = 0
   private var storedModelInputs: [ModelProfileInput] = []
+  private var storedDefaultModelRequests: [String] = []
+  private var storedTestModelRequests: [String] = []
+  private var storedRemoveModelRequests: [String] = []
   private var storedSavedRequests: [(storyID: String, saved: Bool)] = []
   private var storedReadRequests: [(storyID: String, read: Bool)] = []
   private var storedSummaryRequests: [SummaryRequest] = []
@@ -62,6 +75,10 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var storedAddSourceResult: SourceMutationResult?
   private var storedSourceToggleResult: SourceMutationResult?
   private var storedRemoveSourceResult: SourceMutationResult?
+  private var storedAddModelResult: ModelMutationResult?
+  private var storedDefaultModelResult: ModelMutationResult?
+  private var storedModelTestResult: ModelTestResult?
+  private var storedModelRemovalResult: ModelRemovalResult?
   private var storedAddSourceInputs: [FeedSourceInput] = []
   private var storedSourceToggleRequests: [(id: String, enabled: Bool)] = []
   private var storedSourceRemovalRequests: [String] = []
@@ -72,6 +89,10 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var suspendedAddSourceCount = 0
   private var suspendedSourceToggleCount = 0
   private var suspendedSourceRemovalCount = 0
+  private var suspendedAddModelCount = 0
+  private var suspendedDefaultModelCount = 0
+  private var suspendedModelTestCount = 0
+  private var suspendedModelRemovalCount = 0
   private var storedSnapshotError: (any Error)?
   private var storedRefreshError: (any Error)?
   private var storedModelError: (any Error)?
@@ -153,6 +174,26 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     set { lock.withLock { storedRemoveSourceResult = newValue } }
   }
 
+  var addModelResult: ModelMutationResult? {
+    get { lock.withLock { storedAddModelResult } }
+    set { lock.withLock { storedAddModelResult = newValue } }
+  }
+
+  var defaultModelResult: ModelMutationResult? {
+    get { lock.withLock { storedDefaultModelResult } }
+    set { lock.withLock { storedDefaultModelResult = newValue } }
+  }
+
+  var modelTestResult: ModelTestResult? {
+    get { lock.withLock { storedModelTestResult } }
+    set { lock.withLock { storedModelTestResult = newValue } }
+  }
+
+  var modelRemovalResult: ModelRemovalResult? {
+    get { lock.withLock { storedModelRemovalResult } }
+    set { lock.withLock { storedModelRemovalResult = newValue } }
+  }
+
   init(snapshot: AppSnapshot, revisions: [StateRevision] = []) {
     snapshots = [snapshot]
     self.revisions = revisions.isEmpty ? [snapshot.revision] : revisions
@@ -184,6 +225,22 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
 
   var modelInputs: [ModelProfileInput] {
     lock.withLock { storedModelInputs }
+  }
+
+  var addModelRequests: [ModelProfileInput] {
+    lock.withLock { storedModelInputs }
+  }
+
+  var defaultModelRequests: [String] {
+    lock.withLock { storedDefaultModelRequests }
+  }
+
+  var testModelRequests: [String] {
+    lock.withLock { storedTestModelRequests }
+  }
+
+  var removeModelRequests: [String] {
+    lock.withLock { storedRemoveModelRequests }
   }
 
   var savedRequests: [(storyID: String, saved: Bool)] {
@@ -261,6 +318,22 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
 
   func suspendNextSourceRemoval() {
     lock.withLock { suspendedSourceRemovalCount += 1 }
+  }
+
+  func suspendNextAddModel() {
+    lock.withLock { suspendedAddModelCount += 1 }
+  }
+
+  func suspendNextDefaultModel() {
+    lock.withLock { suspendedDefaultModelCount += 1 }
+  }
+
+  func suspendNextModelTest() {
+    lock.withLock { suspendedModelTestCount += 1 }
+  }
+
+  func suspendNextModelRemoval() {
+    lock.withLock { suspendedModelRemovalCount += 1 }
   }
 
   func discardCancellationBeforeRefreshRegistration() {
@@ -360,6 +433,46 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
 
   func releaseSourceRemovals() {
     releaseSourceMutations(&pendingSourceRemovals)
+  }
+
+  func releaseAddModels() {
+    let pending = lock.withLock {
+      let pending = pendingAddModels
+      pendingAddModels.removeAll()
+      for _ in pending { endBridgeCallLocked() }
+      return pending
+    }
+    for (continuation, result) in pending { continuation.resume(with: result) }
+  }
+
+  func releaseDefaultModels() {
+    let pending = lock.withLock {
+      let pending = pendingDefaultModels
+      pendingDefaultModels.removeAll()
+      for _ in pending { endBridgeCallLocked() }
+      return pending
+    }
+    for (continuation, result) in pending { continuation.resume(with: result) }
+  }
+
+  func releaseModelTests() {
+    let pending = lock.withLock {
+      let pending = pendingModelTests
+      pendingModelTests.removeAll()
+      for _ in pending { endBridgeCallLocked() }
+      return pending
+    }
+    for (continuation, result) in pending { continuation.resume(with: result) }
+  }
+
+  func releaseModelRemovals() {
+    let pending = lock.withLock {
+      let pending = pendingModelRemovals
+      pendingModelRemovals.removeAll()
+      for _ in pending { endBridgeCallLocked() }
+      return pending
+    }
+    for (continuation, result) in pending { continuation.resume(with: result) }
   }
 
   private func releaseSourceMutations(
@@ -665,22 +778,98 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     }
   }
 
-  func addModel(_ input: ModelProfileInput) async throws -> ModelProfile {
-    if let error = lock.withLock({ () -> (any Error)? in
-      storedModelInputs.append(input)
-      return storedModelError
-    }) {
-      throw error
+  func addModel(_ input: ModelProfileInput) async throws -> ModelMutationResult {
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<ModelMutationResult, any Error>? in
+        beginBridgeCallLocked()
+        storedModelInputs.append(input)
+        let result: Result<ModelMutationResult, any Error> =
+          storedModelError.map(Result.failure)
+          ?? .success(
+            storedAddModelResult ?? ModelMutationResult(profile: .fixture, revision: .fixture)
+          )
+        if suspendedAddModelCount > 0 {
+          suspendedAddModelCount -= 1
+          pendingAddModels.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate { continuation.resume(with: immediate) }
     }
-    return .fixture
   }
 
-  func setDefaultModel(_ selector: String) async throws -> ModelProfile { .fixture }
-  func testModel(_ selector: String) async throws -> ModelTestResult {
-    ModelTestResult(profile: .fixture, costMayApply: true)
+  func setDefaultModel(_ selector: String) async throws -> ModelMutationResult {
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<ModelMutationResult, any Error>? in
+        beginBridgeCallLocked()
+        storedDefaultModelRequests.append(selector)
+        let result: Result<ModelMutationResult, any Error> =
+          storedModelError.map(Result.failure)
+          ?? .success(
+            storedDefaultModelResult ?? ModelMutationResult(profile: .fixture, revision: .fixture)
+          )
+        if suspendedDefaultModelCount > 0 {
+          suspendedDefaultModelCount -= 1
+          pendingDefaultModels.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate { continuation.resume(with: immediate) }
+    }
   }
+
+  func testModel(_ selector: String) async throws -> ModelTestResult {
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<ModelTestResult, any Error>? in
+        beginBridgeCallLocked()
+        storedTestModelRequests.append(selector)
+        let result: Result<ModelTestResult, any Error> =
+          storedModelError.map(Result.failure)
+          ?? .success(
+            storedModelTestResult
+              ?? ModelTestResult(profile: .fixture, costMayApply: true, revision: .fixture)
+          )
+        if suspendedModelTestCount > 0 {
+          suspendedModelTestCount -= 1
+          pendingModelTests.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate { continuation.resume(with: immediate) }
+    }
+  }
+
   func removeModel(_ selector: String) async throws -> ModelRemovalResult {
-    ModelRemovalResult(profile: .fixture, credentialDeletion: .deleted)
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<ModelRemovalResult, any Error>? in
+        beginBridgeCallLocked()
+        storedRemoveModelRequests.append(selector)
+        let result: Result<ModelRemovalResult, any Error> =
+          storedModelError.map(Result.failure)
+          ?? .success(
+            storedModelRemovalResult
+              ?? ModelRemovalResult(
+                profile: .fixture,
+                credentialDeletion: .deleted,
+                revision: .fixture
+              )
+          )
+        if suspendedModelRemovalCount > 0 {
+          suspendedModelRemovalCount -= 1
+          pendingModelRemovals.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate { continuation.resume(with: immediate) }
+    }
   }
 
   private func beginBridgeCallLocked() {

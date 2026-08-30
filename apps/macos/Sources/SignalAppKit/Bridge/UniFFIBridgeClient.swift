@@ -112,15 +112,23 @@ public final class UniFFIBridgeClient: BridgeClient, Sendable {
     }
   }
 
-  public func addModel(_ input: ModelProfileInput) async throws -> ModelProfile {
+  public func addModel(_ input: ModelProfileInput) async throws -> ModelMutationResult {
     try await call {
-      try await client.addModelProfile(request: input.ffiValue).profile.localValue
+      let mutation = try await client.addModelProfile(request: input.ffiValue)
+      return ModelMutationResult(
+        profile: mutation.profile.localValue,
+        revision: mutation.revision.localValue
+      )
     }
   }
 
-  public func setDefaultModel(_ selector: String) async throws -> ModelProfile {
+  public func setDefaultModel(_ selector: String) async throws -> ModelMutationResult {
     try await call {
-      try await client.setDefaultModelProfile(profile: selector).profile.localValue
+      let mutation = try await client.setDefaultModelProfile(profile: selector)
+      return ModelMutationResult(
+        profile: mutation.profile.localValue,
+        revision: mutation.revision.localValue
+      )
     }
   }
 
@@ -129,7 +137,8 @@ public final class UniFFIBridgeClient: BridgeClient, Sendable {
       let result = try await client.testModelProfile(profile: selector)
       return ModelTestResult(
         profile: result.profile.localValue,
-        costMayApply: result.costMayApply
+        costMayApply: result.costMayApply,
+        revision: result.revision.localValue
       )
     }
   }
@@ -139,7 +148,8 @@ public final class UniFFIBridgeClient: BridgeClient, Sendable {
       let result = try await client.removeModelProfile(profile: selector)
       return ModelRemovalResult(
         profile: result.profile.localValue,
-        credentialDeletion: result.credentialDeletion.localValue
+        credentialDeletion: result.credentialDeletion.localValue,
+        revision: result.revision.localValue
       )
     }
   }

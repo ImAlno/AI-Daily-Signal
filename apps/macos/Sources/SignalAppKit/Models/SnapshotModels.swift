@@ -370,9 +370,16 @@ public struct FeedSourceInput: Sendable, Equatable {
   }
 }
 
-public enum ModelCredentialInput: Sendable, Equatable {
+public enum ModelCredentialInput: Sendable, Equatable, CustomDebugStringConvertible {
   case systemStore(secret: String)
   case environment(variable: String)
+
+  public var debugDescription: String {
+    switch self {
+    case .systemStore: "ModelCredentialInput.systemStore(<redacted>)"
+    case .environment: "ModelCredentialInput.environment(<redacted variable name>)"
+    }
+  }
 }
 
 public struct ProfileLimitsInput: Sendable, Equatable {
@@ -403,7 +410,7 @@ public struct ProfileLimitsInput: Sendable, Equatable {
   }
 }
 
-public struct ModelProfileInput: Sendable, Equatable {
+public struct ModelProfileInput: Sendable, Equatable, CustomDebugStringConvertible {
   public let name: String
   public let provider: ProviderKind
   public let model: String
@@ -431,6 +438,10 @@ public struct ModelProfileInput: Sendable, Equatable {
     self.credential = credential
     self.consentProviderDataSharing = consentProviderDataSharing
     self.limits = limits
+  }
+
+  public var debugDescription: String {
+    "ModelProfileInput(name: \(name.debugDescription), provider: \(provider.rawValue), model: \(model.debugDescription), credential: <redacted>)"
   }
 }
 
@@ -502,13 +513,25 @@ public struct GenerationResult: Sendable, Equatable {
   }
 }
 
+public struct ModelMutationResult: Sendable, Equatable {
+  public let profile: ModelProfile
+  public let revision: StateRevision
+
+  public init(profile: ModelProfile, revision: StateRevision) {
+    self.profile = profile
+    self.revision = revision
+  }
+}
+
 public struct ModelTestResult: Sendable, Equatable {
   public let profile: ModelProfile
   public let costMayApply: Bool
+  public let revision: StateRevision
 
-  public init(profile: ModelProfile, costMayApply: Bool) {
+  public init(profile: ModelProfile, costMayApply: Bool, revision: StateRevision) {
     self.profile = profile
     self.costMayApply = costMayApply
+    self.revision = revision
   }
 }
 
@@ -521,9 +544,15 @@ public enum CredentialDeletionStatus: String, Sendable, Equatable {
 public struct ModelRemovalResult: Sendable, Equatable {
   public let profile: ModelProfile
   public let credentialDeletion: CredentialDeletionStatus
+  public let revision: StateRevision
 
-  public init(profile: ModelProfile, credentialDeletion: CredentialDeletionStatus) {
+  public init(
+    profile: ModelProfile,
+    credentialDeletion: CredentialDeletionStatus,
+    revision: StateRevision
+  ) {
     self.profile = profile
     self.credentialDeletion = credentialDeletion
+    self.revision = revision
   }
 }
