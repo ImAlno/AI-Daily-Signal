@@ -73,7 +73,7 @@ struct AppPresentationTests {
   func requiredStatusesHaveDistinctSymbolsAndVoiceOverLabels() {
     // Break caught: encoding freshness only with color or collapsing offline and failed states.
     let statuses: [SignalStatus] = [
-      .current, .refreshing, .partiallyStale, .offline, .failed,
+      .current, .refreshing, .partiallyStale, .offline, .failed, .localDataUnavailable,
     ]
 
     #expect(Set(statuses.map(\.symbolName)).count == statuses.count)
@@ -156,6 +156,10 @@ struct AppPresentationTests {
       errorMessage: model.errorMessage,
       refreshInProgress: false
     )
+    let toolbarPresentation = ReadingToolbarPresentation(
+      phase: model.phase,
+      refreshInProgress: false
+    )
 
     #expect(
       model.phase
@@ -167,8 +171,38 @@ struct AppPresentationTests {
     #expect(presentation?.title == "Local data unavailable")
     #expect(presentation?.action == nil)
     #expect(!presentation.orEmptyMessage.contains("/"))
+    #expect(menuBarPresentation.status == .localDataUnavailable)
+    #expect(menuBarPresentation.status.title == "Local data unavailable")
+    #expect(menuBarPresentation.status.symbolName == "internaldrive.fill")
+    #expect(
+      menuBarPresentation.status.accessibilityLabel
+        == "AI Daily Signal, local data unavailable"
+    )
     #expect(menuBarPresentation.refreshControl == .unavailable)
     #expect(menuBarPresentation.actionSet == [.openBriefing, .settings, .quit])
+    #expect(toolbarPresentation.refreshControl == .unavailable)
+  }
+
+  @Test
+  func recoverableFailureRetainsRefreshInTheToolbarAndPopover() {
+    // Break caught: making every failure blocking when an ordinary failed refresh can be retried.
+    let phase = AppPhase.failure(message: "Something went wrong. Please try again.")
+    let menuBarPresentation = MenuBarPresentation(
+      phase: phase,
+      snapshot: nil,
+      errorMessage: "Something went wrong. Please try again.",
+      refreshInProgress: false
+    )
+    let toolbarPresentation = ReadingToolbarPresentation(
+      phase: phase,
+      refreshInProgress: false
+    )
+
+    #expect(menuBarPresentation.status == .failed)
+    #expect(menuBarPresentation.status.title == "Refresh failed")
+    #expect(menuBarPresentation.refreshControl == .refresh)
+    #expect(menuBarPresentation.actionSet.contains(.refreshOrCancel))
+    #expect(toolbarPresentation.refreshControl == .refresh)
   }
 }
 

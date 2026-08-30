@@ -17,6 +17,18 @@ public enum ReadingCommand: CaseIterable, Sendable, Equatable {
   }
 }
 
+public struct ReadingToolbarPresentation: Sendable, Equatable {
+  public let refreshControl: RefreshControlPresentation
+
+  public init(phase: AppPhase, refreshInProgress: Bool) {
+    if case .startupFailure = phase {
+      refreshControl = .unavailable
+    } else {
+      refreshControl = refreshInProgress ? .cancel : .refresh
+    }
+  }
+}
+
 public enum UnavailableContentAction: Sendable, Equatable {
   case retry
 
@@ -72,7 +84,11 @@ public struct ReadingWindowView: View {
   }
 
   private var readingShell: some View {
-    NavigationSplitView {
+    let toolbarPresentation = ReadingToolbarPresentation(
+      phase: model.phase,
+      refreshInProgress: model.activeOperationID != nil
+    )
+    return NavigationSplitView {
       List(selection: destinationSelection) {
         ForEach(Destination.allCases, id: \.self) { destination in
           Label(destination.title, systemImage: destination.systemImage)
@@ -87,7 +103,7 @@ public struct ReadingWindowView: View {
     }
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
-        refreshToolbarButton
+        refreshToolbarButton(toolbarPresentation.refreshControl)
         Button("Open Source", systemImage: "safari") {
           openSelectedSource()
         }
@@ -270,19 +286,21 @@ public struct ReadingWindowView: View {
     .formStyle(.grouped)
   }
 
-  private var refreshToolbarButton: some View {
-    Group {
-      if model.phase == .refreshing {
-        Button("Cancel Refresh", systemImage: "xmark") {
-          model.cancelRefresh()
-        }
-        .keyboardShortcut(ReadingCommand.refresh.keyEquivalent, modifiers: .command)
-      } else {
-        Button("Refresh", systemImage: "arrow.clockwise") {
-          Task { await model.refresh() }
-        }
-        .keyboardShortcut(ReadingCommand.refresh.keyEquivalent, modifiers: .command)
+  @ViewBuilder
+  private func refreshToolbarButton(_ control: RefreshControlPresentation) -> some View {
+    switch control {
+    case .cancel:
+      Button("Cancel Refresh", systemImage: "xmark") {
+        model.cancelRefresh()
       }
+      .keyboardShortcut(ReadingCommand.refresh.keyEquivalent, modifiers: .command)
+    case .refresh:
+      Button("Refresh", systemImage: "arrow.clockwise") {
+        Task { await model.refresh() }
+      }
+      .keyboardShortcut(ReadingCommand.refresh.keyEquivalent, modifiers: .command)
+    case .unavailable:
+      EmptyView()
     }
   }
 

@@ -6,6 +6,7 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
   case partiallyStale
   case offline
   case failed
+  case localDataUnavailable
   case settingUp
 
   public init(phase: AppPhase) {
@@ -14,7 +15,8 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
     case .refreshing: self = .refreshing
     case .stale: self = .partiallyStale
     case .offline: self = .offline
-    case .startupFailure, .failure: self = .failed
+    case .startupFailure: self = .localDataUnavailable
+    case .failure: self = .failed
     case .loading, .welcome, .buildingFirstBriefing: self = .settingUp
     }
   }
@@ -26,6 +28,7 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
     case .partiallyStale: "Partially stale"
     case .offline: "Offline"
     case .failed: "Refresh failed"
+    case .localDataUnavailable: "Local data unavailable"
     case .settingUp: "Setting up"
     }
   }
@@ -37,6 +40,7 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
     case .partiallyStale: "clock.badge.exclamationmark"
     case .offline: "wifi.slash"
     case .failed: "exclamationmark.triangle.fill"
+    case .localDataUnavailable: "internaldrive.fill"
     case .settingUp: "dot.radiowaves.left.and.right"
     }
   }
@@ -48,6 +52,7 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
     case .partiallyStale: "AI Daily Signal, briefing status: partially stale"
     case .offline: "AI Daily Signal, briefing status: offline"
     case .failed: "AI Daily Signal, briefing status: refresh failed"
+    case .localDataUnavailable: "AI Daily Signal, local data unavailable"
     case .settingUp: "AI Daily Signal, briefing status: setting up"
     }
   }
@@ -58,7 +63,7 @@ public enum SignalStatus: CaseIterable, Sendable, Equatable {
     case .refreshing, .settingUp: .accentColor
     case .partiallyStale: .orange
     case .offline: .secondary
-    case .failed: .red
+    case .failed, .localDataUnavailable: .red
     }
   }
 }
@@ -74,7 +79,7 @@ public enum MenuBarScrolling: Sendable, Equatable {
   case fixedContent
 }
 
-public enum MenuBarRefreshControl: Sendable, Equatable {
+public enum RefreshControlPresentation: Sendable, Equatable {
   case refresh
   case cancel
   case unavailable
@@ -101,7 +106,7 @@ public struct MenuBarPresentation: Sendable, Equatable {
   public let errorMessage: String?
   public let rows: [MenuBarRenderRow]
   public let scrolling = MenuBarScrolling.fixedContent
-  public let refreshControl: MenuBarRefreshControl
+  public let refreshControl: RefreshControlPresentation
 
   public init(
     phase: AppPhase,
@@ -313,7 +318,7 @@ public struct MenuBarContentView: View {
   }
 
   @ViewBuilder
-  private func refreshButton(_ control: MenuBarRefreshControl) -> some View {
+  private func refreshButton(_ control: RefreshControlPresentation) -> some View {
     switch control {
     case .cancel:
       Button("Cancel Refresh", systemImage: "xmark") {
