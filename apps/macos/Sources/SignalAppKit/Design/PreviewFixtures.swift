@@ -39,6 +39,8 @@ public struct PreviewFixture: Sendable, Equatable, Identifiable {
   public let appearance: SignalAppearance
   public let reduceTransparency: Bool
   public let increaseContrast: Bool
+  public let windowWidth: CGFloat
+  public let windowHeight: CGFloat
 
   public init(
     id: String,
@@ -48,7 +50,9 @@ public struct PreviewFixture: Sendable, Equatable, Identifiable {
     selectedStoryID: String? = nil,
     appearance: SignalAppearance = .light,
     reduceTransparency: Bool = false,
-    increaseContrast: Bool = false
+    increaseContrast: Bool = false,
+    windowWidth: CGFloat = 1_100,
+    windowHeight: CGFloat = 720
   ) {
     self.id = id
     self.phase = phase
@@ -58,6 +62,8 @@ public struct PreviewFixture: Sendable, Equatable, Identifiable {
     self.appearance = appearance
     self.reduceTransparency = reduceTransparency
     self.increaseContrast = increaseContrast
+    self.windowWidth = windowWidth
+    self.windowHeight = windowHeight
   }
 
   public var phaseKind: AppPhaseKind { phase.kind }
@@ -100,6 +106,35 @@ public enum PreviewFixtures {
     snapshot: populatedSnapshot,
     selectedStoryID: aiStory.id
   )
+
+  public static let expandedWindow = PreviewFixture(
+    id: "expanded-window",
+    phase: .ready,
+    snapshot: populatedSnapshot,
+    selectedStoryID: aiStory.id,
+    windowWidth: 1_100,
+    windowHeight: 720
+  )
+
+  public static let railWindow = PreviewFixture(
+    id: "rail-window",
+    phase: .ready,
+    snapshot: populatedSnapshot,
+    selectedStoryID: aiStory.id,
+    windowWidth: 760,
+    windowHeight: 640
+  )
+
+  public static let compactWindow = PreviewFixture(
+    id: "compact-window",
+    phase: .ready,
+    snapshot: populatedSnapshot,
+    selectedStoryID: aiStory.id,
+    windowWidth: 480,
+    windowHeight: 620
+  )
+
+  public static let responsive = [expandedWindow, railWindow, compactWindow]
 
   public static let smartFallback = PreviewFixture(
     id: "smart-fallback",

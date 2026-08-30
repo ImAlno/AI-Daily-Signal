@@ -6,6 +6,20 @@ import Testing
 @Suite(.serialized)
 struct PreviewFixtureTests {
   @Test
+  func responsivePreviewFixturesCoverEveryApprovedWindowClass() {
+    // Break caught: a visual-size fixture disappearing or drifting across a layout breakpoint.
+    let sizes = Set(PreviewFixtures.responsive.map { [$0.windowWidth, $0.windowHeight] })
+
+    #expect(sizes.contains([1_100, 720]))
+    #expect(sizes.contains([760, 640]))
+    #expect(sizes.contains([480, 620]))
+    #expect(
+      Set(PreviewFixtures.responsive.map { AppLayoutPolicy.mode(for: $0.windowWidth) })
+        == [.expanded, .rail, .compact]
+    )
+  }
+
+  @Test
   func requiredVisualStatesHaveUniqueStableIdentifiers() {
     // Break caught: a named preview disappearing or two deterministic states sharing cache identity.
     let required = [

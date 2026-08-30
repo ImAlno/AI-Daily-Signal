@@ -243,6 +243,18 @@ Render and inspect the main destinations at these representative sizes:
 
 Repeat the checks in light and dark appearances and with Reduce Transparency and Increase Contrast enabled. Verify that no text, toolbar action, editor field, list row, or status message clips or overlaps.
 
+## Implementation verification
+
+Verification performed on 2026-08-30:
+
+- Swift presentation and acceptance suites passed via `scripts/test-swift-testing.sh`: 136 tests in 9 suites, including `responsivePreviewFixturesCoverEveryApprovedWindowClass()` and `completePersonalAlphaFlowIsReachableThroughTheAppModel()`.
+- Swift package isolation passed via `scripts/test-swift-package-modes.sh`.
+- Rust workspace passed on a fresh rerun via `cargo test --workspace --all-features`, with no Rust changes. The first run had one transient wiremock-backed OpenAI test report `Transport` instead of `MalformedOutput`; the isolated test then passed six consecutive runs and the complete workspace rerun passed.
+- The standalone macOS bundle built and passed `scripts/verify-macos-app.sh` and `scripts/smoke-test-macos-app.sh`. The smoke test launched the bundle with an isolated home and path, no installed CLI dependency, and verified the created config and SQLite store.
+- Packaging hardening, smoke-process ownership, and Mach-O verifier adversarial suites passed.
+- The structural scan returned no matches for nested `HSplitView`, editor `.sheet` presentation, conflicting historical minimum widths, `sparkles`, or `LinearGradient` in the redesigned window views.
+- Visual-size inspection is blocked and is not recorded as passed. A deterministic `PreviewFixtures.selectedAI`/in-memory-bridge harness attempted 1100×720, 760×640, 480×620, and 420×520 in light/dark plus accessibility Dynamic Type. `NSView` capture omitted the detail/text layers, `ImageRenderer` emitted unsupported-content placeholders, and ScreenCaptureKit returned TCC error `-3801`. SwiftUI's Reduce Transparency and Increase Contrast environment keys are read-only on this SDK, so those modes could not be overridden without changing global macOS settings. No global accessibility or appearance setting was changed. The generated scratch PNGs were inspected, rejected as invalid visual evidence, and cannot establish clipping or overlap results.
+
 ## Acceptance Criteria
 
 The redesign is complete when:
