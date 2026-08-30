@@ -147,25 +147,27 @@ public struct StoryDetailView: View {
       selection: model.summarySelection(for: story.id)
     )
 
-    return ScrollView {
-      VStack(alignment: .leading, spacing: 0) {
-        if let error = model.storyActionError {
-          Label(error, systemImage: "exclamationmark.triangle")
-            .font(.callout)
-            .foregroundStyle(.red)
-            .padding(.bottom, 20)
-            .accessibilityLabel("Story action failed. \(error)")
+    return SignalReadingSurface {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          if let error = model.storyActionError {
+            Label(error, systemImage: "exclamationmark.triangle")
+              .font(.callout)
+              .foregroundStyle(.red)
+              .padding(.bottom, 20)
+              .accessibilityLabel("Story action failed. \(error)")
+              .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
+          }
+          ForEach(presentation.elements, id: \.self) { element in
+            detailElement(element, presentation: presentation, story: story)
+          }
         }
-        ForEach(presentation.elements, id: \.self) { element in
-          detailElement(element, presentation: presentation, story: story)
-        }
+        .frame(maxWidth: 720, alignment: .leading)
+        .padding(.horizontal, 42)
+        .padding(.vertical, 36)
+        .frame(maxWidth: .infinity, alignment: .center)
       }
-      .frame(maxWidth: 720, alignment: .leading)
-      .padding(.horizontal, 42)
-      .padding(.vertical, 36)
-      .frame(maxWidth: .infinity, alignment: .center)
     }
-    .background(Color(nsColor: .textBackgroundColor))
   }
 
   @ViewBuilder
@@ -184,11 +186,14 @@ public struct StoryDetailView: View {
       .foregroundStyle(.secondary)
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(presentation.accessibilityMetadata)
+      .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
       .padding(.bottom, 12)
     case .title:
       Text(presentation.title)
         .font(.system(.largeTitle, design: .serif, weight: .semibold))
         .textSelection(.enabled)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilitySortPriority(AccessibilityOrder.title.sortPriority)
         .padding(.bottom, 18)
     case .provenance:
       Text(presentation.provenance.shortLabel)
@@ -199,6 +204,7 @@ public struct StoryDetailView: View {
         .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
         .overlay(Capsule().stroke(Color(nsColor: .separatorColor), lineWidth: 0.5))
         .accessibilityLabel(presentation.provenance.accessibilityLabel)
+        .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
         .padding(.bottom, 28)
     case .originalExcerpt:
       readingSection("Original excerpt", body: presentation.originalExcerpt)
@@ -219,6 +225,7 @@ public struct StoryDetailView: View {
         .padding(.top, 8)
       }
       .font(.callout)
+      .accessibilitySortPriority(AccessibilityOrder.content.sortPriority)
       .padding(.top, 4)
       .padding(.bottom, 28)
     case .actions:
@@ -232,6 +239,7 @@ public struct StoryDetailView: View {
         actionContent(story, axis: .vertical)
       }
       .controlSize(.regular)
+      .accessibilitySortPriority(AccessibilityOrder.actions.sortPriority)
     }
   }
 
@@ -269,11 +277,13 @@ public struct StoryDetailView: View {
       }
       .keyboardShortcut("o", modifiers: .command)
       .disabled(!source.isEnabled)
+      .help(ReadingCommand.openSource.descriptor.help)
 
       Button(story.isSaved ? "Remove from Saved" : "Save", systemImage: "bookmark") {
         Task { await model.toggleSelectedStorySaved() }
       }
       .disabled(model.storyActionState(for: .saving(storyID: story.id)) != nil)
+      .help(ReadingCommand.save.descriptor.help)
 
       Button(story.isRead ? "Mark Unread" : "Mark Read", systemImage: "checkmark.circle") {
         Task { await model.toggleSelectedStoryRead() }
@@ -303,6 +313,7 @@ public struct StoryDetailView: View {
           .textSelection(.enabled)
       }
       .padding(.bottom, 26)
+      .accessibilitySortPriority(AccessibilityOrder.content.sortPriority)
     }
   }
 }

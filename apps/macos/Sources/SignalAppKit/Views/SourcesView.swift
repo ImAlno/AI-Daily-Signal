@@ -204,6 +204,7 @@ public struct SourcesView: View {
       )
       .labelsHidden()
       .disabled(isBusy)
+      .help(source.enabled ? "Disable this source" : "Enable this source")
 
       if presentation.canRemove {
         Button("Remove \(source.name)", systemImage: "trash", role: .destructive) {
@@ -213,7 +214,13 @@ public struct SourcesView: View {
         }
         .labelStyle(.iconOnly)
         .disabled(isBusy)
-        .help("Remove personal source")
+        .frame(
+          minWidth: VisualPolicy().minimumControlDimension,
+          minHeight: VisualPolicy().minimumControlDimension
+        )
+        .accessibilityLabel("Remove \(source.name)")
+        .accessibilityHint(IconControlDescriptor.removeSource.help)
+        .help(IconControlDescriptor.removeSource.help)
       }
     }
   }

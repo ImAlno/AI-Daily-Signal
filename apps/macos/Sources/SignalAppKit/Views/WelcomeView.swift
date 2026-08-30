@@ -38,6 +38,8 @@ public struct WelcomeView: View {
       VStack(spacing: 10) {
         Text("AI Daily Signal")
           .font(.largeTitle.weight(.semibold))
+          .accessibilityAddTraits(.isHeader)
+          .accessibilitySortPriority(AccessibilityOrder.title.sortPriority)
         Text("A focused daily briefing for understanding what changed in AI.")
           .font(.title3)
           .foregroundStyle(.secondary)
@@ -56,6 +58,7 @@ public struct WelcomeView: View {
       .controlSize(.large)
       .disabled(!presentation.primaryActionEnabled)
       .accessibilityHint("Initializes the standard source pack and refreshes it")
+      .accessibilitySortPriority(AccessibilityOrder.actions.sortPriority)
 
       if presentation.showsProgress {
         ProgressView("Building your briefing…")
@@ -66,6 +69,7 @@ public struct WelcomeView: View {
         .font(.caption)
         .foregroundStyle(.tertiary)
         .multilineTextAlignment(.center)
+        .accessibilitySortPriority(AccessibilityOrder.content.sortPriority)
     }
     .frame(maxWidth: 480)
     .padding(64)

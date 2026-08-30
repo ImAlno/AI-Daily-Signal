@@ -42,6 +42,7 @@ public struct GenerationPopover: View {
       isPresented = true
     }
     .disabled(model.storyActionState(for: .regenerating(storyID: story.id)) != nil)
+    .help("Regenerate this story with a configured AI model profile")
     .popover(isPresented: $isPresented, arrowEdge: .bottom) {
       popoverContent
         .padding(18)
@@ -60,6 +61,8 @@ public struct GenerationPopover: View {
     return VStack(alignment: .leading, spacing: 14) {
       Text("Regenerate summary")
         .font(.headline)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilitySortPriority(AccessibilityOrder.title.sortPriority)
       Text(
         "Creates an AI-generated variant through the selected model profile. Provider costs may apply."
       )
@@ -98,6 +101,7 @@ public struct GenerationPopover: View {
         .buttonStyle(.borderedProminent)
         .disabled(!presentation.canGenerate)
       }
+      .accessibilitySortPriority(AccessibilityOrder.actions.sortPriority)
     }
   }
 }

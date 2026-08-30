@@ -245,12 +245,23 @@ public struct MenuBarContentView: View {
           .fixedSize(horizontal: false, vertical: true)
       }
     case .primaryActions:
-      HStack {
-        refreshButton(presentation.refreshControl)
-        Spacer()
-        Button("Open Briefing", action: openBriefing)
-          .buttonStyle(.borderedProminent)
+      SignalGlassControlGroup {
+        HStack {
+          SignalGlass {
+            refreshButton(presentation.refreshControl)
+              .padding(.horizontal, 9)
+              .padding(.vertical, 6)
+          }
+          Spacer()
+          SignalGlass {
+            Button("Open Briefing", action: openBriefing)
+              .buttonStyle(.plain)
+              .padding(.horizontal, 11)
+              .padding(.vertical, 6)
+          }
+        }
       }
+      .accessibilitySortPriority(AccessibilityOrder.actions.sortPriority)
     case .utilityMenu:
       Divider()
       HStack {
@@ -267,7 +278,12 @@ public struct MenuBarContentView: View {
             .labelStyle(.iconOnly)
         }
         .menuStyle(.borderlessButton)
-        .accessibilityLabel("More actions")
+        .frame(
+          minWidth: VisualPolicy().minimumControlDimension,
+          minHeight: VisualPolicy().minimumControlDimension
+        )
+        .accessibilityLabel(IconControlDescriptor.moreActions.label)
+        .help(IconControlDescriptor.moreActions.help)
       }
     }
   }
@@ -278,6 +294,7 @@ public struct MenuBarContentView: View {
         .font(.headline)
         .foregroundStyle(presentation.status.tint)
         .accessibilityLabel(presentation.status.accessibilityLabel)
+        .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
       Spacer()
       Text(presentation.lastRefreshText)
         .font(.caption)
@@ -293,6 +310,7 @@ public struct MenuBarContentView: View {
           .font(.caption.weight(.semibold))
           .foregroundStyle(.secondary)
           .textCase(.uppercase)
+          .accessibilityAddTraits(.isHeader)
         Text(signal.title)
           .font(.headline)
           .lineLimit(3)
@@ -302,12 +320,14 @@ public struct MenuBarContentView: View {
           .lineLimit(1)
       }
       .accessibilityElement(children: .combine)
+      .accessibilitySortPriority(AccessibilityOrder.content.sortPriority)
     } else {
       VStack(alignment: .leading, spacing: 4) {
         Text("Top signal")
           .font(.caption.weight(.semibold))
           .foregroundStyle(.secondary)
           .textCase(.uppercase)
+          .accessibilityAddTraits(.isHeader)
         Text("No briefing yet")
           .font(.headline)
         Text("Refresh to check enabled sources.")

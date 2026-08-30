@@ -15,6 +15,27 @@ public enum ReadingCommand: CaseIterable, Sendable, Equatable {
     case .settings: ","
     }
   }
+
+  public var descriptor: KeyboardCommandDescriptor {
+    switch self {
+    case .refresh:
+      KeyboardCommandDescriptor(
+        key: "r", modifiers: [.command], help: "Refresh briefing (⌘R)"
+      )
+    case .openSource:
+      KeyboardCommandDescriptor(
+        key: "o", modifiers: [.command], help: "Open selected story source (⌘O)"
+      )
+    case .save:
+      KeyboardCommandDescriptor(
+        key: "s", modifiers: [.command], help: "Save selected story (⌘S)"
+      )
+    case .settings:
+      KeyboardCommandDescriptor(
+        key: ",", modifiers: [.command], help: "Open Settings (⌘,)"
+      )
+    }
+  }
 }
 
 public struct ReadingToolbarPresentation: Sendable, Equatable {
@@ -123,7 +144,7 @@ public struct ReadingWindowView: View {
         .disabled(
           model.selectedStory.map { !StorySourceActionPresentation(story: $0).isEnabled } ?? true
         )
-        .help("Open selected story source (⌘O)")
+        .help(ReadingCommand.openSource.descriptor.help)
 
         Button(
           model.selectedStory?.isSaved == true ? "Remove from Saved" : "Save Story",
@@ -137,13 +158,13 @@ public struct ReadingWindowView: View {
             model.storyActionState(for: .saving(storyID: $0.id)) != nil
           } ?? true
         )
-        .help("Save selected story (⌘S)")
+        .help(ReadingCommand.save.descriptor.help)
 
         Button("Settings", systemImage: "gearshape") {
           model.destination = .settings
         }
         .keyboardShortcut(ReadingCommand.settings.keyEquivalent, modifiers: .command)
-        .help("Open Settings (⌘,)")
+        .help(ReadingCommand.settings.descriptor.help)
       }
     }
   }
@@ -175,6 +196,10 @@ public struct ReadingWindowView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel(
+              "\(SignalStatus(phase: model.phase).title). \(error)"
+            )
+            .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
           Divider()
         }
         destinationBody
@@ -226,11 +251,13 @@ public struct ReadingWindowView: View {
         model.cancelRefresh()
       }
       .keyboardShortcut(ReadingCommand.refresh.keyEquivalent, modifiers: .command)
+      .help("Cancel the current refresh (⌘R)")
     case .refresh:
       Button("Refresh", systemImage: "arrow.clockwise") {
         Task { await model.refresh() }
       }
       .keyboardShortcut(ReadingCommand.refresh.keyEquivalent, modifiers: .command)
+      .help(ReadingCommand.refresh.descriptor.help)
     case .unavailable:
       EmptyView()
     }
