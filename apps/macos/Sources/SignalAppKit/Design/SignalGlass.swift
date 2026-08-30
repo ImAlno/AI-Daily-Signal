@@ -56,31 +56,3 @@ public struct SignalGlassControlGroup<Content: View>: View {
     }
   }
 }
-
-public struct SignalReadingSurface<Content: View>: View {
-  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-  @Environment(\.colorSchemeContrast) private var colorSchemeContrast
-  @Environment(\.colorScheme) private var colorScheme
-  private let content: Content
-
-  public init(@ViewBuilder content: () -> Content) {
-    self.content = content()
-  }
-
-  public var body: some View {
-    let policy = VisualPolicy(
-      reduceTransparency: reduceTransparency,
-      increaseContrast: colorSchemeContrast == .increased,
-      appearance: colorScheme == .dark ? .dark : .light
-    )
-
-    content
-      .background(Color(nsColor: .textBackgroundColor))
-      .overlay(alignment: .leading) {
-        Rectangle()
-          .fill(.separator)
-          .frame(width: policy.boundaryWidth)
-          .accessibilityHidden(true)
-      }
-  }
-}
