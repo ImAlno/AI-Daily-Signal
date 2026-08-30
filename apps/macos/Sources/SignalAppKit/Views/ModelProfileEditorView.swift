@@ -222,6 +222,52 @@ public struct ModelProfileEditorView: View {
     )
     let renderPlan = ModelProfileEditorRenderPlan(draft: draft)
 
+    VStack(alignment: .leading, spacing: 16) {
+      HStack {
+        Text("Add Model Profile")
+          .font(.title2.weight(.semibold))
+        Spacer()
+        Button("Cancel") {
+          draft.clearSecret()
+          model.dismissModelEditor()
+        }
+        .keyboardShortcut(.cancelAction)
+        .disabled(false)
+        Button {
+          save()
+        } label: {
+          if isSaving {
+            ProgressView()
+              .controlSize(.small)
+              .accessibilityLabel("Adding model profile")
+          } else {
+            Text("Add Model")
+          }
+        }
+        .keyboardShortcut(.defaultAction)
+        .disabled(!presentation.canSave)
+      }
+
+      modelForm(presentation: presentation, renderPlan: renderPlan)
+        .formStyle(.grouped)
+        .disabled(isSaving)
+    }
+    .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
+    .onChange(of: draft.validationMessage) { _, _ in
+      revealsValidation = true
+    }
+    .onChange(of: draft.credentialMode) { _, mode in
+      if mode == .environment { draft.clearSecret() }
+    }
+    .onDisappear {
+      draft.clearSecret()
+    }
+  }
+
+  private func modelForm(
+    presentation: ModelProfileEditorPresentation,
+    renderPlan: ModelProfileEditorRenderPlan
+  ) -> some View {
     Form {
       Section("Profile") {
         TextField("Name", text: $draft.name, prompt: Text("Daily summaries"))
@@ -306,45 +352,6 @@ public struct ModelProfileEditorView: View {
             .accessibilityLabel("Model form error: \(message)")
         }
       }
-    }
-    .formStyle(.grouped)
-    .disabled(isSaving)
-    .frame(minWidth: 500, idealWidth: 560, minHeight: 620)
-    .navigationTitle("Add Model Profile")
-    .safeAreaInset(edge: .bottom) {
-      HStack {
-        Spacer()
-        Button("Cancel") {
-          draft.clearSecret()
-          model.dismissModelEditor()
-        }
-        .keyboardShortcut(.cancelAction)
-        .disabled(false)
-        Button {
-          save()
-        } label: {
-          if isSaving {
-            ProgressView()
-              .controlSize(.small)
-              .accessibilityLabel("Adding model profile")
-          } else {
-            Text("Add Model")
-          }
-        }
-        .keyboardShortcut(.defaultAction)
-        .disabled(!presentation.canSave)
-      }
-      .padding()
-      .background(.bar)
-    }
-    .onChange(of: draft.validationMessage) { _, _ in
-      revealsValidation = true
-    }
-    .onChange(of: draft.credentialMode) { _, mode in
-      if mode == .environment { draft.clearSecret() }
-    }
-    .onDisappear {
-      draft.clearSecret()
     }
   }
 

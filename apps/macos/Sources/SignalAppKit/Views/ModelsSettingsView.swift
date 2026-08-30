@@ -60,48 +60,26 @@ public struct ModelsSettingsView: View {
   }
 
   public var body: some View {
-    List {
-      Section("Briefing") {
-        LabeledContent("Storage", value: "On this Mac")
-        LabeledContent(
-          "AI summaries",
-          value: model.snapshot?.hasUsableAIProfile == true ? "Enabled" : "Optional"
-        )
-      }
-
-      Section("Models") {
-        let profiles = model.snapshot?.modelProfiles ?? []
-        if profiles.isEmpty {
-          Label {
-            VStack(alignment: .leading, spacing: 3) {
-              Text("No model profiles")
-              Text("Raw and Smart summaries remain available without AI.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-          } icon: {
-            Image(systemName: "dot.radiowaves.left.and.right")
-              .foregroundStyle(.secondary)
-          }
-          .padding(.vertical, 6)
-        } else {
-          ForEach(profiles) { profile in
-            profileRow(profile)
-          }
+    VStack(spacing: 0) {
+      if model.inlineEditorRoute == .addModel {
+        ScrollView {
+          ModelProfileEditorView(model: model)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity)
         }
+      } else {
+        modelList
       }
     }
-    .listStyle(.inset)
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
         Button("Add Model", systemImage: "plus") {
           model.presentModelEditor()
         }
+        .disabled(model.inlineEditorRoute == .addModel)
         .help("Add model profile")
       }
-    }
-    .sheet(isPresented: modelEditorPresentation) {
-      ModelProfileEditorView(model: model)
     }
     .confirmationDialog(
       pendingTest.map { "Test \($0.name)?" } ?? "Test model profile?",
@@ -143,13 +121,31 @@ public struct ModelsSettingsView: View {
     }
   }
 
-  private var modelEditorPresentation: Binding<Bool> {
-    Binding(
-      get: { model.isModelEditorPresented },
-      set: { presented in
-        if presented { model.presentModelEditor() } else { model.dismissModelEditor() }
+  private var modelList: some View {
+    List {
+      Section("Models") {
+        let profiles = model.snapshot?.modelProfiles ?? []
+        if profiles.isEmpty {
+          Label {
+            VStack(alignment: .leading, spacing: 3) {
+              Text("No model profiles")
+              Text("Raw and Smart summaries remain available without AI.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+          } icon: {
+            Image(systemName: "cpu")
+              .foregroundStyle(.secondary)
+          }
+          .padding(.vertical, 6)
+        } else {
+          ForEach(profiles) { profile in
+            profileRow(profile)
+          }
+        }
       }
-    )
+    }
+    .listStyle(.inset)
   }
 
   private var testConfirmation: Binding<Bool> {

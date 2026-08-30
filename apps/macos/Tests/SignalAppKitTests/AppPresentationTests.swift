@@ -74,6 +74,19 @@ struct AppPresentationTests {
   }
 
   @Test
+  func preferencesDescribeOnlyCurrentLocalCompanionBehavior() {
+    // Break caught: showing invented settings or misreporting whether AI summaries are available.
+    let optional = PreferencesPresentation(hasUsableAIProfile: false)
+    let enabled = PreferencesPresentation(hasUsableAIProfile: true)
+
+    #expect(optional.storage == "On this Mac")
+    #expect(optional.aiSummaries == "Optional")
+    #expect(enabled.aiSummaries == "Enabled")
+    #expect(optional.launchBehavior == "Menu bar companion")
+    #expect(optional.cliCompatibility == "Shares local data and configuration")
+  }
+
+  @Test
   func requiredStatusesHaveDistinctSymbolsAndVoiceOverLabels() {
     // Break caught: encoding freshness only with color or collapsing offline and failed states.
     let statuses: [SignalStatus] = [
