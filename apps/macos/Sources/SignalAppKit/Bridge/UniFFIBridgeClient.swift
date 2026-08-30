@@ -82,21 +82,33 @@ public final class UniFFIBridgeClient: BridgeClient, Sendable {
     }
   }
 
-  public func addSource(_ input: FeedSourceInput) async throws -> Source {
+  public func addSource(_ input: FeedSourceInput) async throws -> SourceMutationResult {
     try await call {
-      try await client.addFeedSource(request: input.ffiValue).source.localValue
+      let mutation = try await client.addFeedSource(request: input.ffiValue)
+      return SourceMutationResult(
+        source: mutation.source.localValue,
+        revision: mutation.revision.localValue
+      )
     }
   }
 
-  public func setSourceEnabled(id: String, enabled: Bool) async throws -> Source {
+  public func setSourceEnabled(id: String, enabled: Bool) async throws -> SourceMutationResult {
     try await call {
-      try await client.setSourceEnabled(id: id, enabled: enabled).source.localValue
+      let mutation = try await client.setSourceEnabled(id: id, enabled: enabled)
+      return SourceMutationResult(
+        source: mutation.source.localValue,
+        revision: mutation.revision.localValue
+      )
     }
   }
 
-  public func removeSource(id: String) async throws -> Source {
+  public func removeSource(id: String) async throws -> SourceMutationResult {
     try await call {
-      try await client.removePersonalSource(id: id).source.localValue
+      let mutation = try await client.removePersonalSource(id: id)
+      return SourceMutationResult(
+        source: mutation.source.localValue,
+        revision: mutation.revision.localValue
+      )
     }
   }
 

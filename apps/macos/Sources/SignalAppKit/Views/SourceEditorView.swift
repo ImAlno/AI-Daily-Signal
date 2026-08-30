@@ -1,0 +1,163 @@
+import Foundation
+import SwiftUI
+
+public struct SourceEditorDraft: Sendable, Equatable {
+  public var name: String
+  public var feedURL: String
+  public var category: String
+  public var weight: Double
+  public var enabled: Bool
+
+  public init(
+    name: String = "",
+    feedURL: String = "",
+    category: String = "",
+    weight: Double = 0.8,
+    enabled: Bool = true
+  ) {
+    self.name = name
+    self.feedURL = feedURL
+    self.category = category
+    self.weight = weight
+    self.enabled = enabled
+  }
+
+  public var validationMessage: String? {
+    if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || category.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || feedURL.isEmpty
+    {
+      return "Complete every field."
+    }
+    guard weight.isFinite, (0.0...1.0).contains(weight) else {
+      return "Enter a weight from 0 to 1."
+    }
+    return nil
+  }
+
+  public var input: FeedSourceInput? {
+    guard validationMessage == nil else { return nil }
+    return FeedSourceInput(
+      name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+      category: category.trimmingCharacters(in: .whitespacesAndNewlines),
+      url: feedURL,
+      weight: weight,
+      enabled: enabled
+    )
+  }
+}
+
+public struct SourceEditorPresentation: Sendable, Equatable {
+  public let validationMessage: String?
+  public let canSave: Bool
+
+  public init(draft: SourceEditorDraft, isSaving: Bool) {
+    validationMessage = draft.validationMessage
+    canSave = !isSaving && draft.input != nil
+  }
+}
+
+public struct SourceEditorView: View {
+  private enum Field: Hashable {
+    case name
+    case feedURL
+    case category
+    case weight
+  }
+
+  @Bindable private var model: AppModel
+  @State private var draft = SourceEditorDraft()
+  @State private var weightText = "0.8"
+  @FocusState private var focusedField: Field?
+
+  public init(model: AppModel) {
+    self.model = model
+  }
+
+  public var body: some View {
+    let isSaving = model.sourceActionState(for: .adding) != nil
+    let presentation = SourceEditorPresentation(draft: validatedDraft, isSaving: isSaving)
+
+    Form {
+      Section("Feed") {
+        TextField("Name", text: $draft.name, prompt: Text("Publication or project"))
+          .focused($focusedField, equals: .name)
+          .textContentType(.name)
+        TextField("Feed URL", text: $draft.feedURL, prompt: Text("https://example.com/feed.xml"))
+          .focused($focusedField, equals: .feedURL)
+          .textContentType(.URL)
+        TextField("Category", text: $draft.category, prompt: Text("Research"))
+          .focused($focusedField, equals: .category)
+      }
+
+      Section {
+        TextField("Weight", text: $weightText, prompt: Text("0.8"))
+          .focused($focusedField, equals: .weight)
+          .accessibilityHint("Enter a number from 0 to 1")
+        Toggle("Enabled", isOn: $draft.enabled)
+      } header: {
+        Text("Briefing")
+      } footer: {
+        Text("Weight controls how strongly this feed contributes to story ranking.")
+      }
+
+      if let message = presentation.validationMessage ?? model.sourceEditorError {
+        Section {
+          Label(message, systemImage: "exclamationmark.circle")
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Source form error: \(message)")
+        }
+      }
+    }
+    .formStyle(.grouped)
+    .disabled(isSaving)
+    .frame(minWidth: 460, idealWidth: 520, minHeight: 390)
+    .navigationTitle("Add Personal Source")
+    .safeAreaInset(edge: .bottom) {
+      HStack {
+        Spacer()
+        Button("Cancel") {
+          model.isSourceEditorPresented = false
+        }
+        .keyboardShortcut(.cancelAction)
+        Button {
+          save()
+        } label: {
+          if isSaving {
+            ProgressView()
+              .controlSize(.small)
+              .accessibilityLabel("Adding source")
+          } else {
+            Text("Add Source")
+          }
+        }
+        .keyboardShortcut(.defaultAction)
+        .disabled(!presentation.canSave)
+      }
+      .padding()
+      .background(.bar)
+    }
+    .task {
+      focusedField = .name
+    }
+  }
+
+  private func save() {
+    guard let input = validatedDraft.input else { return }
+    Task {
+      if await model.addSource(input) {
+        model.isSourceEditorPresented = false
+      }
+    }
+  }
+
+  private var validatedDraft: SourceEditorDraft {
+    SourceEditorDraft(
+      name: draft.name,
+      feedURL: draft.feedURL,
+      category: draft.category,
+      weight: Double(weightText) ?? .nan,
+      enabled: draft.enabled
+    )
+  }
+}

@@ -26,6 +26,17 @@ public enum StoryActionState: Sendable, Equatable {
   case inFlight
 }
 
+public enum SourceAction: Sendable, Hashable {
+  case adding
+  case toggling(sourceID: String)
+  case removing(sourceID: String)
+}
+
+public enum SourceActionState: Sendable, Equatable {
+  case queued
+  case inFlight
+}
+
 private enum ReloadOrigin: Equatable {
   case requested
   case polling(generation: UInt64)
@@ -36,6 +47,7 @@ private enum BridgeActivity: Equatable {
   case reloading(token: UUID, origin: ReloadOrigin)
   case refreshing(operationID: String)
   case mutating(token: UUID, action: StoryAction)
+  case sourceMutating(token: UUID, action: SourceAction)
   case polling(token: UUID, generation: UInt64, revisionEpoch: UInt64)
 }
 
@@ -65,6 +77,24 @@ private struct StoryMutationConfirmation {
   let generatedSelectionID: String?
 }
 
+private enum SourceMutationPayload: Sendable {
+  case add(FeedSourceInput)
+  case toggle(id: String, enabled: Bool)
+  case remove(id: String)
+}
+
+private struct PendingSourceMutation {
+  let token: UUID
+  let action: SourceAction
+  let payload: SourceMutationPayload
+  let continuation: CheckedContinuation<Bool, Never>
+}
+
+private struct SourceMutationConfirmation {
+  let result: SourceMutationResult
+  let removesSource: Bool
+}
+
 @MainActor
 @Observable
 public final class AppModel {
@@ -72,6 +102,9 @@ public final class AppModel {
   public private(set) var phase: AppPhase = .loading
   public private(set) var activeOperationID: String?
   public private(set) var storyActionStates: [StoryAction: StoryActionState] = [:]
+  public private(set) var sourceActionStates: [SourceAction: SourceActionState] = [:]
+  public private(set) var sourceEditorError: String?
+  public var isSourceEditorPresented = false
   public var destination: Destination {
     didSet {
       preferences.selectedDestination = destination
@@ -91,12 +124,14 @@ public final class AppModel {
   @ObservationIgnored private var pendingRefresh: PendingRefresh?
   @ObservationIgnored private var pendingReloadWaiters: [CheckedContinuation<Void, Never>] = []
   @ObservationIgnored private var pendingStoryMutations: [PendingStoryMutation] = []
+  @ObservationIgnored private var pendingSourceMutations: [PendingSourceMutation] = []
   @ObservationIgnored private var isActive = false
   @ObservationIgnored private var pollGeneration: UInt64 = 0
   @ObservationIgnored private var revisionEpoch: UInt64 = 0
   private var summarySelections: [String: ReadingSummarySelection] = [:]
   private var summarySelectionIntentEpochs: [String: UInt64] = [:]
   private var storyActionErrors: [StoryAction: String] = [:]
+  private var sourceActionErrors: [String: String] = [:]
 
   public init(
     bridge: any BridgeClient,
@@ -155,6 +190,14 @@ public final class AppModel {
 
   public func storyActionError(for action: StoryAction) -> String? {
     storyActionErrors[action]
+  }
+
+  public func sourceActionState(for action: SourceAction) -> SourceActionState? {
+    sourceActionStates[action]
+  }
+
+  public func sourceActionError(for sourceID: String) -> String? {
+    sourceActionErrors[sourceID]
   }
 
   public var selectedSummarySelection: ReadingSummarySelection? {
@@ -224,7 +267,7 @@ public final class AppModel {
     switch bridgeActivity {
     case .idle:
       beginRefresh(request)
-    case .reloading, .mutating, .polling:
+    case .reloading, .mutating, .sourceMutating, .polling:
       pendingRefresh = request
     case .refreshing:
       assertionFailure("An active refresh must own activeOperationID")
@@ -459,6 +502,8 @@ public final class AppModel {
       beginRefresh(pendingRefresh)
     } else if !pendingStoryMutations.isEmpty {
       beginStoryMutation(pendingStoryMutations.removeFirst())
+    } else if !pendingSourceMutations.isEmpty {
+      beginSourceMutation(pendingSourceMutations.removeFirst())
     } else if !pendingReloadWaiters.isEmpty {
       beginReload(origin: .requested)
     }
@@ -490,10 +535,159 @@ public final class AppModel {
       await reloadTask?.value
     case .refreshing:
       await refreshTask?.value
-    case .mutating, .polling:
+    case .mutating, .sourceMutating, .polling:
       await withCheckedContinuation { continuation in
         pendingReloadWaiters.append(continuation)
       }
+    }
+  }
+
+  @discardableResult
+  public func addSource(_ input: FeedSourceInput) async -> Bool {
+    guard sourceActionStates[.adding] == nil else { return false }
+    return await enqueueSourceMutation(action: .adding, payload: .add(input))
+  }
+
+  public func setSourceEnabled(id: String, enabled: Bool) async {
+    guard snapshot?.sources.contains(where: { $0.id == id }) == true else { return }
+    guard !isSourceMutationPending(for: id) else { return }
+    let action = SourceAction.toggling(sourceID: id)
+    _ = await enqueueSourceMutation(
+      action: action,
+      payload: .toggle(id: id, enabled: enabled)
+    )
+  }
+
+  public func removePersonalSource(id: String) async {
+    guard snapshot?.sources.first(where: { $0.id == id })?.origin == .personal else { return }
+    guard !isSourceMutationPending(for: id) else { return }
+    let action = SourceAction.removing(sourceID: id)
+    _ = await enqueueSourceMutation(action: action, payload: .remove(id: id))
+  }
+
+  private func isSourceMutationPending(for sourceID: String) -> Bool {
+    sourceActionStates[.toggling(sourceID: sourceID)] != nil
+      || sourceActionStates[.removing(sourceID: sourceID)] != nil
+  }
+
+  private func enqueueSourceMutation(
+    action: SourceAction,
+    payload: SourceMutationPayload
+  ) async -> Bool {
+    invalidatePendingRevisionReads()
+    if let sourceID = sourceID(for: action) {
+      sourceActionErrors[sourceID] = nil
+    } else {
+      sourceEditorError = nil
+    }
+    sourceActionStates[action] = .queued
+    return await withCheckedContinuation { continuation in
+      pendingSourceMutations.append(
+        PendingSourceMutation(
+          token: UUID(),
+          action: action,
+          payload: payload,
+          continuation: continuation
+        )
+      )
+      beginNextBridgeActivityIfPossible()
+    }
+  }
+
+  private func beginSourceMutation(_ pending: PendingSourceMutation) {
+    guard bridgeActivity == .idle else { return }
+    invalidatePendingRevisionReads()
+    sourceActionStates[pending.action] = .inFlight
+    bridgeActivity = .sourceMutating(token: pending.token, action: pending.action)
+    let bridge = bridge
+    Task { [weak self, bridge] in
+      do {
+        let confirmation: SourceMutationConfirmation
+        switch pending.payload {
+        case .add(let input):
+          confirmation = SourceMutationConfirmation(
+            result: try await bridge.addSource(input),
+            removesSource: false
+          )
+        case .toggle(let id, let enabled):
+          confirmation = SourceMutationConfirmation(
+            result: try await bridge.setSourceEnabled(id: id, enabled: enabled),
+            removesSource: false
+          )
+        case .remove(let id):
+          confirmation = SourceMutationConfirmation(
+            result: try await bridge.removeSource(id: id),
+            removesSource: true
+          )
+        }
+        let requiresReconciliation =
+          confirmation.result.revision.dataGeneration
+          < (self?.snapshot?.revision.dataGeneration ?? 0)
+        if requiresReconciliation {
+          let replacement = try await bridge.snapshot()
+          self?.finishSourceMutation(
+            pending,
+            confirmation: confirmation,
+            reconciliationSnapshot: replacement,
+            error: nil
+          )
+        } else {
+          self?.finishSourceMutation(
+            pending,
+            confirmation: confirmation,
+            reconciliationSnapshot: nil,
+            error: nil
+          )
+        }
+      } catch {
+        self?.finishSourceMutation(
+          pending,
+          confirmation: nil,
+          reconciliationSnapshot: nil,
+          error: error
+        )
+      }
+    }
+  }
+
+  private func finishSourceMutation(
+    _ pending: PendingSourceMutation,
+    confirmation: SourceMutationConfirmation?,
+    reconciliationSnapshot: AppSnapshot?,
+    error: (any Error)?
+  ) {
+    guard bridgeActivity == .sourceMutating(token: pending.token, action: pending.action) else {
+      return
+    }
+    invalidatePendingRevisionReads()
+    var succeeded = false
+    if let reconciliationSnapshot {
+      replaceSnapshot(reconciliationSnapshot)
+      succeeded = snapshot?.revision == reconciliationSnapshot.revision
+    } else if let confirmation {
+      replaceSource(
+        confirmation.result.source,
+        revision: confirmation.result.revision,
+        removing: confirmation.removesSource
+      )
+      succeeded = snapshot?.revision == confirmation.result.revision
+    } else if error != nil {
+      if let sourceID = sourceID(for: pending.action) {
+        sourceActionErrors[sourceID] = "The source could not be updated."
+      } else {
+        sourceEditorError = "The source could not be updated."
+      }
+    }
+    sourceActionStates[pending.action] = nil
+    bridgeActivity = .idle
+    pending.continuation.resume(returning: succeeded)
+    beginNextBridgeActivityIfPossible()
+  }
+
+  private func sourceID(for action: SourceAction) -> String? {
+    switch action {
+    case .adding: nil
+    case .toggling(let sourceID), .removing(let sourceID): sourceID
     }
   }
 
@@ -861,6 +1055,29 @@ public final class AppModel {
       summarySelections.removeValue(forKey: selectedStoryID)
     }
     validateSelectedStoryForDestination()
+  }
+
+  private func replaceSource(_ replacement: Source, revision: StateRevision, removing: Bool) {
+    guard let snapshot else { return }
+    var sources = snapshot.sources
+    if removing {
+      sources.removeAll(where: { $0.id == replacement.id })
+    } else if let index = sources.firstIndex(where: { $0.id == replacement.id }) {
+      sources[index] = replacement
+    } else {
+      sources.append(replacement)
+    }
+    self.snapshot = AppSnapshot(
+      revision: revision,
+      status: snapshot.status,
+      today: snapshot.today,
+      latest: snapshot.latest,
+      saved: snapshot.saved,
+      sources: sources,
+      modelProfiles: snapshot.modelProfiles,
+      defaultModelProfileID: snapshot.defaultModelProfileID,
+      hasUsableAIProfile: snapshot.hasUsableAIProfile
+    )
   }
 
   private func isValid(_ selection: ReadingSummarySelection, for story: Story?) -> Bool {

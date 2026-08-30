@@ -22,9 +22,9 @@ public protocol BridgeClient: Sendable {
   func setRead(storyID: String, read: Bool) async throws -> StoryMutationResult
   func selectSummary(storyID: String, variantID: String) async throws -> StoryMutationResult
   func regenerate(storyID: String, profile: String?, force: Bool) async throws -> GenerationResult
-  func addSource(_ input: FeedSourceInput) async throws -> Source
-  func setSourceEnabled(id: String, enabled: Bool) async throws -> Source
-  func removeSource(id: String) async throws -> Source
+  func addSource(_ input: FeedSourceInput) async throws -> SourceMutationResult
+  func setSourceEnabled(id: String, enabled: Bool) async throws -> SourceMutationResult
+  func removeSource(id: String) async throws -> SourceMutationResult
   func addModel(_ input: ModelProfileInput) async throws -> ModelProfile
   func setDefaultModel(_ selector: String) async throws -> ModelProfile
   func testModel(_ selector: String) async throws -> ModelTestResult

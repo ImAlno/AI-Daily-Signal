@@ -8,6 +8,9 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private typealias RefreshContinuation = CheckedContinuation<RefreshResult, any Error>
   private typealias StoryMutationContinuation = CheckedContinuation<StoryMutationResult, any Error>
   private typealias GenerationContinuation = CheckedContinuation<GenerationResult, any Error>
+  private typealias SourceMutationContinuation = CheckedContinuation<
+    SourceMutationResult, any Error
+  >
 
   private let lock = NSLock()
   private var snapshots: [AppSnapshot]
@@ -29,6 +32,12 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     [(StoryMutationContinuation, Result<StoryMutationResult, any Error>)] = []
   private var pendingGenerations: [(GenerationContinuation, Result<GenerationResult, any Error>)] =
     []
+  private var pendingAddSources:
+    [(SourceMutationContinuation, Result<SourceMutationResult, any Error>)] = []
+  private var pendingSourceToggles:
+    [(SourceMutationContinuation, Result<SourceMutationResult, any Error>)] = []
+  private var pendingSourceRemovals:
+    [(SourceMutationContinuation, Result<SourceMutationResult, any Error>)] = []
   private var cancellationRequests: Set<String> = []
   private var remembersCancellationBeforeRefreshRegistration = true
   private var storedRefreshIdentifiers: [String] = []
@@ -49,10 +58,20 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var storedReadError: (any Error)?
   private var storedSummaryError: (any Error)?
   private var storedGenerationError: (any Error)?
+  private var storedSourceError: (any Error)?
+  private var storedAddSourceResult: SourceMutationResult?
+  private var storedSourceToggleResult: SourceMutationResult?
+  private var storedRemoveSourceResult: SourceMutationResult?
+  private var storedAddSourceInputs: [FeedSourceInput] = []
+  private var storedSourceToggleRequests: [(id: String, enabled: Bool)] = []
+  private var storedSourceRemovalRequests: [String] = []
   private var suspendedSavedMutationCount = 0
   private var suspendedReadMutationCount = 0
   private var suspendedSummaryMutationCount = 0
   private var suspendedGenerationCount = 0
+  private var suspendedAddSourceCount = 0
+  private var suspendedSourceToggleCount = 0
+  private var suspendedSourceRemovalCount = 0
   private var storedSnapshotError: (any Error)?
   private var storedRefreshError: (any Error)?
   private var storedModelError: (any Error)?
@@ -114,6 +133,26 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     set { lock.withLock { storedSummaryError = newValue } }
   }
 
+  var sourceError: (any Error)? {
+    get { lock.withLock { storedSourceError } }
+    set { lock.withLock { storedSourceError = newValue } }
+  }
+
+  var addSourceResult: SourceMutationResult? {
+    get { lock.withLock { storedAddSourceResult } }
+    set { lock.withLock { storedAddSourceResult = newValue } }
+  }
+
+  var sourceToggleResult: SourceMutationResult? {
+    get { lock.withLock { storedSourceToggleResult } }
+    set { lock.withLock { storedSourceToggleResult = newValue } }
+  }
+
+  var removeSourceResult: SourceMutationResult? {
+    get { lock.withLock { storedRemoveSourceResult } }
+    set { lock.withLock { storedRemoveSourceResult = newValue } }
+  }
+
   init(snapshot: AppSnapshot, revisions: [StateRevision] = []) {
     snapshots = [snapshot]
     self.revisions = revisions.isEmpty ? [snapshot.revision] : revisions
@@ -163,6 +202,18 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     lock.withLock { storedGenerationRequests }
   }
 
+  var addSourceInputs: [FeedSourceInput] {
+    lock.withLock { storedAddSourceInputs }
+  }
+
+  var sourceToggleRequests: [(id: String, enabled: Bool)] {
+    lock.withLock { storedSourceToggleRequests }
+  }
+
+  var sourceRemovalRequests: [String] {
+    lock.withLock { storedSourceRemovalRequests }
+  }
+
   let savedMutationRevision = StateRevision(
     dataGeneration: 2,
     sourceConfigRevision: "source-a"
@@ -198,6 +249,18 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
 
   func suspendNextGeneration() {
     lock.withLock { suspendedGenerationCount += 1 }
+  }
+
+  func suspendNextAddSource() {
+    lock.withLock { suspendedAddSourceCount += 1 }
+  }
+
+  func suspendNextSourceToggle() {
+    lock.withLock { suspendedSourceToggleCount += 1 }
+  }
+
+  func suspendNextSourceRemoval() {
+    lock.withLock { suspendedSourceRemovalCount += 1 }
   }
 
   func discardCancellationBeforeRefreshRegistration() {
@@ -279,6 +342,32 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     let pending = lock.withLock {
       let pending = pendingGenerations
       pendingGenerations.removeAll()
+      for _ in pending { endBridgeCallLocked() }
+      return pending
+    }
+    for (continuation, result) in pending {
+      continuation.resume(with: result)
+    }
+  }
+
+  func releaseAddSources() {
+    releaseSourceMutations(&pendingAddSources)
+  }
+
+  func releaseSourceToggles() {
+    releaseSourceMutations(&pendingSourceToggles)
+  }
+
+  func releaseSourceRemovals() {
+    releaseSourceMutations(&pendingSourceRemovals)
+  }
+
+  private func releaseSourceMutations(
+    _ storage: inout [(SourceMutationContinuation, Result<SourceMutationResult, any Error>)]
+  ) {
+    let pending = lock.withLock {
+      let pending = storage
+      storage.removeAll()
       for _ in pending { endBridgeCallLocked() }
       return pending
     }
@@ -522,9 +611,59 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
       if let immediate { continuation.resume(with: immediate) }
     }
   }
-  func addSource(_ input: FeedSourceInput) async throws -> Source { .fixture }
-  func setSourceEnabled(id: String, enabled: Bool) async throws -> Source { .fixture }
-  func removeSource(id: String) async throws -> Source { .fixture }
+  func addSource(_ input: FeedSourceInput) async throws -> SourceMutationResult {
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<SourceMutationResult, any Error>? in
+        beginBridgeCallLocked()
+        storedAddSourceInputs.append(input)
+        let result = sourceMutationResult(storedAddSourceResult)
+        if suspendedAddSourceCount > 0 {
+          suspendedAddSourceCount -= 1
+          pendingAddSources.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate { continuation.resume(with: immediate) }
+    }
+  }
+
+  func setSourceEnabled(id: String, enabled: Bool) async throws -> SourceMutationResult {
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<SourceMutationResult, any Error>? in
+        beginBridgeCallLocked()
+        storedSourceToggleRequests.append((id, enabled))
+        let result = sourceMutationResult(storedSourceToggleResult)
+        if suspendedSourceToggleCount > 0 {
+          suspendedSourceToggleCount -= 1
+          pendingSourceToggles.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate { continuation.resume(with: immediate) }
+    }
+  }
+
+  func removeSource(id: String) async throws -> SourceMutationResult {
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<SourceMutationResult, any Error>? in
+        beginBridgeCallLocked()
+        storedSourceRemovalRequests.append(id)
+        let result = sourceMutationResult(storedRemoveSourceResult)
+        if suspendedSourceRemovalCount > 0 {
+          suspendedSourceRemovalCount -= 1
+          pendingSourceRemovals.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate { continuation.resume(with: immediate) }
+    }
+  }
 
   func addModel(_ input: ModelProfileInput) async throws -> ModelProfile {
     if let error = lock.withLock({ () -> (any Error)? in
@@ -549,6 +688,17 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     storedMaximumConcurrentBridgeCalls = max(
       storedMaximumConcurrentBridgeCalls,
       activeBridgeCallCount
+    )
+  }
+
+  private func sourceMutationResult(
+    _ configured: SourceMutationResult?
+  ) -> Result<SourceMutationResult, any Error> {
+    if let storedSourceError {
+      return .failure(storedSourceError)
+    }
+    return .success(
+      configured ?? SourceMutationResult(source: .fixture, revision: .fixture)
     )
   }
 

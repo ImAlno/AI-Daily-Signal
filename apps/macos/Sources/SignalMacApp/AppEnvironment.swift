@@ -42,13 +42,13 @@ private final class StartupFailureBridgeClient: BridgeClient, Sendable {
   {
     throw BridgeError.startupUnavailable
   }
-  func addSource(_ input: FeedSourceInput) async throws -> Source {
+  func addSource(_ input: FeedSourceInput) async throws -> SourceMutationResult {
     throw BridgeError.startupUnavailable
   }
-  func setSourceEnabled(id: String, enabled: Bool) async throws -> Source {
+  func setSourceEnabled(id: String, enabled: Bool) async throws -> SourceMutationResult {
     throw BridgeError.startupUnavailable
   }
-  func removeSource(id: String) async throws -> Source {
+  func removeSource(id: String) async throws -> SourceMutationResult {
     throw BridgeError.startupUnavailable
   }
   func addModel(_ input: ModelProfileInput) async throws -> ModelProfile {

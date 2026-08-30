@@ -212,28 +212,9 @@ public struct ReadingWindowView: View {
     case .saved:
       StoryListView(kind: .saved, model: model)
     case .sources:
-      sourcesOverview
+      SourcesView(model: model)
     case .settings:
       settingsOverview
-    }
-  }
-
-  private var sourcesOverview: some View {
-    Group {
-      if let sources = model.snapshot?.sources, !sources.isEmpty {
-        List(sources) { source in
-          LabeledContent(source.name) {
-            Text(source.enabled ? "Enabled" : "Disabled")
-          }
-        }
-        .listStyle(.inset)
-      } else {
-        EmptyStateView(
-          title: "No sources configured",
-          message: "Build a briefing to initialize the standard source pack.",
-          systemImage: "dot.radiowaves.left.and.right"
-        )
-      }
     }
   }
 

@@ -344,6 +344,16 @@ public struct StoryMutationResult: Sendable, Equatable {
   }
 }
 
+public struct SourceMutationResult: Sendable, Equatable {
+  public let source: Source
+  public let revision: StateRevision
+
+  public init(source: Source, revision: StateRevision) {
+    self.source = source
+    self.revision = revision
+  }
+}
+
 public struct FeedSourceInput: Sendable, Equatable {
   public let name: String
   public let category: String
