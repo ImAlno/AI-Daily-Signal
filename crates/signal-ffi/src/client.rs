@@ -1,12 +1,18 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use chrono::Utc;
-use signal_core::{SignalApp, SignalError};
+use secrecy::SecretString;
+use signal_core::{
+    AddModelCredential, AddModelInput, ManualGenerationStatus, NewFeedSource, SignalApp,
+    SignalError, SummarizeOptions, TestModelOptions,
+};
 use tokio::sync::Mutex;
 
 use crate::{
-    CompanionError, CompanionSnapshot, FfiBriefing, FfiCollectionStatus, FfiModelProfile,
-    FfiSource, FfiStateRevision, FfiStory, FfiSummaryVariant, types,
+    AddCredentialRequest, AddFeedSourceRequest, AddModelProfileRequest, CompanionError,
+    CompanionSnapshot, FfiBriefing, FfiCollectionStatus, FfiModelMutation, FfiModelProfile,
+    FfiModelTestMutation, FfiSource, FfiSourceMutation, FfiStateRevision, FfiStory,
+    FfiStoryMutation, FfiSummaryVariant, types,
 };
 
 #[derive(uniffi::Object)]
@@ -93,6 +99,206 @@ impl CompanionClient {
             .map(Into::into)
             .map_err(CompanionError::from)
     }
+
+    pub async fn set_story_saved(
+        &self,
+        id: String,
+        saved: bool,
+    ) -> Result<FfiStoryMutation, CompanionError> {
+        let mut app = self.app.lock().await;
+        let story = app.set_saved(&id, saved).map_err(CompanionError::from)?;
+        let selected_summary = selected_summary_for_story(&app, &id)?;
+        story_mutation(&mut app, story, selected_summary)
+    }
+
+    pub async fn set_story_read(
+        &self,
+        id: String,
+        read: bool,
+    ) -> Result<FfiStoryMutation, CompanionError> {
+        let mut app = self.app.lock().await;
+        let story = app.set_read(&id, read).map_err(CompanionError::from)?;
+        let selected_summary = selected_summary_for_story(&app, &id)?;
+        story_mutation(&mut app, story, selected_summary)
+    }
+
+    pub async fn select_summary_variant(
+        &self,
+        story_id: String,
+        variant_id: String,
+    ) -> Result<FfiStoryMutation, CompanionError> {
+        let variant_id = variant_id
+            .parse()
+            .map_err(|_| CompanionError::InvalidInput)?;
+        let mut app = self.app.lock().await;
+        let selected = app
+            .select_summary_variant(&story_id, variant_id)
+            .map_err(CompanionError::from)?;
+        let story = app.show(&story_id).map_err(CompanionError::from)?;
+        story_mutation(&mut app, story, Some(selected.into()))
+    }
+
+    pub async fn regenerate_story(
+        &self,
+        story_id: String,
+        profile: Option<String>,
+        force: bool,
+    ) -> Result<FfiStoryMutation, CompanionError> {
+        let mut app = self.app.lock().await;
+        let report = app
+            .summarize_story(&story_id, SummarizeOptions { profile, force }, Utc::now())
+            .await
+            .map_err(CompanionError::from)?;
+        ensure_generation_succeeded(report.status)?;
+        let selected = report.summary.map(FfiSummaryVariant::from);
+        let story = app.show(&story_id).map_err(CompanionError::from)?;
+        story_mutation(&mut app, story, selected)
+    }
+
+    pub async fn add_feed_source(
+        &self,
+        request: AddFeedSourceRequest,
+    ) -> Result<FfiSourceMutation, CompanionError> {
+        let mut app = self.app.lock().await;
+        let source = app
+            .add_feed_source(NewFeedSource {
+                name: request.name,
+                category: request.category,
+                url: request.url,
+                weight: request.weight,
+                enabled: request.enabled,
+            })
+            .map_err(CompanionError::from)?;
+        source_mutation(&mut app, source.try_into()?)
+    }
+
+    pub async fn set_source_enabled(
+        &self,
+        id: String,
+        enabled: bool,
+    ) -> Result<FfiSourceMutation, CompanionError> {
+        let mut app = self.app.lock().await;
+        let updated = app
+            .set_source_enabled(&id, enabled)
+            .map_err(CompanionError::from)?;
+        let record = app
+            .list_source_records()
+            .map_err(CompanionError::from)?
+            .into_iter()
+            .find(|record| record.source.id == updated.id)
+            .ok_or(CompanionError::StorageUnavailable)?;
+        source_mutation(&mut app, record.try_into()?)
+    }
+
+    pub async fn remove_personal_source(
+        &self,
+        id: String,
+    ) -> Result<FfiSourceMutation, CompanionError> {
+        let mut app = self.app.lock().await;
+        let removed = app
+            .remove_personal_source(&id)
+            .map_err(CompanionError::from)?;
+        source_mutation(&mut app, removed.try_into()?)
+    }
+
+    pub async fn add_model_profile(
+        &self,
+        request: AddModelProfileRequest,
+    ) -> Result<FfiModelMutation, CompanionError> {
+        let AddModelProfileRequest {
+            name,
+            provider,
+            model,
+            endpoint,
+            dialect,
+            credential,
+            consent_provider_data_sharing,
+            limits,
+        } = request;
+        let credential = match credential {
+            AddCredentialRequest::SystemStore { secret } => AddModelCredential::SystemStore {
+                secret: SecretString::from(secret),
+            },
+            AddCredentialRequest::Environment { variable } => {
+                AddModelCredential::Environment { variable }
+            }
+        };
+        let endpoint = endpoint
+            .map(|value| value.parse())
+            .transpose()
+            .map_err(|_| CompanionError::InvalidInput)?;
+        let limits = limits.try_into()?;
+        let input = AddModelInput {
+            name,
+            provider: provider.into(),
+            model,
+            endpoint,
+            dialect: dialect.map(Into::into),
+            credential,
+            consented_at: consent_provider_data_sharing.then(Utc::now),
+            enabled: true,
+            limits,
+        };
+        let mut app = self.app.lock().await;
+        let report = app.add_model(input, Utc::now()).map_err(|error| {
+            if !consent_provider_data_sharing
+                && matches!(error, SignalError::InvalidConfiguration(_))
+            {
+                CompanionError::ConsentRequired
+            } else {
+                CompanionError::from(error)
+            }
+        })?;
+        model_mutation(&mut app, report.profile.try_into()?)
+    }
+
+    pub async fn set_default_model_profile(
+        &self,
+        profile: String,
+    ) -> Result<FfiModelMutation, CompanionError> {
+        let mut app = self.app.lock().await;
+        let profile = app.use_model(&profile).map_err(CompanionError::from)?;
+        model_mutation(&mut app, profile.try_into()?)
+    }
+
+    pub async fn test_model_profile(
+        &self,
+        profile: String,
+    ) -> Result<FfiModelTestMutation, CompanionError> {
+        let mut app = self.app.lock().await;
+        let report = app
+            .test_model(TestModelOptions { profile }, Utc::now())
+            .await
+            .map_err(CompanionError::from)?;
+        ensure_generation_succeeded(report.status)?;
+        let profile = app
+            .list_models()
+            .map_err(CompanionError::from)?
+            .into_iter()
+            .find(|profile| profile.id == report.profile_id)
+            .ok_or(CompanionError::StorageUnavailable)?
+            .try_into()?;
+        let revision = app.state_revision().map_err(CompanionError::from)?.into();
+        Ok(FfiModelTestMutation {
+            profile,
+            cost_may_apply: report.cost_may_apply,
+            revision,
+        })
+    }
+
+    pub async fn remove_model_profile(
+        &self,
+        profile: String,
+    ) -> Result<FfiModelMutation, CompanionError> {
+        let mut app = self.app.lock().await;
+        let profiles = app.list_models().map_err(CompanionError::from)?;
+        let report = app.remove_model(&profile).map_err(CompanionError::from)?;
+        let removed = profiles
+            .into_iter()
+            .find(|profile| profile.id == report.removed_profile_id)
+            .ok_or(CompanionError::StorageUnavailable)?;
+        model_mutation(&mut app, removed.try_into()?)
+    }
 }
 
 impl CompanionClient {
@@ -120,7 +326,7 @@ fn today_snapshot(app: &SignalApp) -> Result<Option<FfiBriefing>, CompanionError
                 .map_err(CompanionError::from)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Some(types::briefing(today, summary_variants)))
+    Ok(Some(types::briefing(today, summary_variants)?))
 }
 
 fn story_snapshot(
@@ -134,5 +340,63 @@ fn story_snapshot(
         .into_iter()
         .map(FfiSummaryVariant::from)
         .collect();
-    Ok(types::story(story, selected_summary, summary_variants))
+    types::story(story, selected_summary, summary_variants)
+}
+
+fn selected_summary_for_story(
+    app: &SignalApp,
+    story_id: &str,
+) -> Result<Option<FfiSummaryVariant>, CompanionError> {
+    match app.today(Utc::now()) {
+        Ok(today) => Ok(today
+            .briefing
+            .items
+            .into_iter()
+            .find(|item| item.story.id == story_id)
+            .and_then(|item| item.selected_summary)
+            .map(Into::into)),
+        Err(SignalError::NotFound(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn story_mutation(
+    app: &mut SignalApp,
+    story: signal_core::Story,
+    selected_summary: Option<FfiSummaryVariant>,
+) -> Result<FfiStoryMutation, CompanionError> {
+    let story = story_snapshot(app, story, selected_summary)?;
+    let revision = app.state_revision().map_err(CompanionError::from)?.into();
+    Ok(FfiStoryMutation { story, revision })
+}
+
+fn source_mutation(
+    app: &mut SignalApp,
+    source: FfiSource,
+) -> Result<FfiSourceMutation, CompanionError> {
+    let revision = app.state_revision().map_err(CompanionError::from)?.into();
+    Ok(FfiSourceMutation { source, revision })
+}
+
+fn model_mutation(
+    app: &mut SignalApp,
+    profile: FfiModelProfile,
+) -> Result<FfiModelMutation, CompanionError> {
+    let revision = app.state_revision().map_err(CompanionError::from)?.into();
+    Ok(FfiModelMutation { profile, revision })
+}
+
+fn ensure_generation_succeeded(status: ManualGenerationStatus) -> Result<(), CompanionError> {
+    match status {
+        ManualGenerationStatus::Generated | ManualGenerationStatus::CacheHit => Ok(()),
+        ManualGenerationStatus::BudgetExhausted => Err(CompanionError::BudgetExhausted),
+        ManualGenerationStatus::CredentialUnavailable => Err(CompanionError::CredentialUnavailable),
+        ManualGenerationStatus::ConsentRequired => Err(CompanionError::ConsentRequired),
+        ManualGenerationStatus::ProfileUnavailable | ManualGenerationStatus::RefreshCapReached => {
+            Err(CompanionError::InvalidInput)
+        }
+        ManualGenerationStatus::ProviderFailure | ManualGenerationStatus::MalformedOutput => {
+            Err(CompanionError::ProviderUnavailable)
+        }
+    }
 }

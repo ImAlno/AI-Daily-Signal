@@ -1,7 +1,7 @@
 use signal_core::{
-    AiSummaryFields, ApiDialect, BriefingItem, CredentialRef, ModelProfile, ProfileLimits,
-    ProviderKind, ScoreBreakdown, SourceKind, SourceOrigin, SourceRecord, StateRevision,
-    StoreStatus, Story, SummaryVariant, TodayView, display_safe_url,
+    AiSummaryFields, ApiDialect, BriefingItem, CredentialRef, ModelProfile, MoneyMicros,
+    ProfileLimits, ProviderKind, ScoreBreakdown, SourceKind, SourceOrigin, SourceRecord,
+    StateRevision, StoreStatus, Story, SummaryVariant, TodayView, display_safe_url,
 };
 
 use crate::CompanionError;
@@ -156,6 +156,69 @@ pub struct FfiModelProfile {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct AddFeedSourceRequest {
+    pub name: String,
+    pub category: String,
+    pub url: String,
+    pub weight: f64,
+    pub enabled: bool,
+}
+
+#[derive(Clone, uniffi::Enum)]
+pub enum AddCredentialRequest {
+    SystemStore { secret: String },
+    Environment { variable: String },
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct FfiProfileLimitsInput {
+    pub max_summaries_per_refresh: u32,
+    pub max_daily_cost_usd: Option<String>,
+    pub input_cost_usd_per_million: Option<String>,
+    pub output_cost_usd_per_million: Option<String>,
+    pub max_output_tokens: u32,
+    pub timeout_seconds: u64,
+    pub max_retries: u32,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AddModelProfileRequest {
+    pub name: String,
+    pub provider: FfiProviderKind,
+    pub model: String,
+    pub endpoint: Option<String>,
+    pub dialect: Option<FfiApiDialect>,
+    pub credential: AddCredentialRequest,
+    pub consent_provider_data_sharing: bool,
+    pub limits: FfiProfileLimitsInput,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct FfiStoryMutation {
+    pub story: FfiStory,
+    pub revision: FfiStateRevision,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct FfiSourceMutation {
+    pub source: FfiSource,
+    pub revision: FfiStateRevision,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct FfiModelMutation {
+    pub profile: FfiModelProfile,
+    pub revision: FfiStateRevision,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct FfiModelTestMutation {
+    pub profile: FfiModelProfile,
+    pub cost_may_apply: bool,
+    pub revision: FfiStateRevision,
+}
+
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct CompanionSnapshot {
     pub revision: FfiStateRevision,
@@ -212,11 +275,12 @@ pub(crate) fn story(
     story: Story,
     selected_summary: Option<FfiSummaryVariant>,
     summary_variants: Vec<FfiSummaryVariant>,
-) -> FfiStory {
-    FfiStory {
+) -> Result<FfiStory, CompanionError> {
+    let canonical_url = display_safe_url(&story.canonical_url).map_err(CompanionError::from)?;
+    Ok(FfiStory {
         id: story.id,
         title: story.title,
-        canonical_url: story.canonical_url,
+        canonical_url,
         excerpt: story.excerpt,
         category: story.category,
         published_at: story.published_at.map(|value| value.to_rfc3339()),
@@ -227,7 +291,7 @@ pub(crate) fn story(
         is_saved: story.is_saved,
         selected_summary,
         summary_variants,
-    }
+    })
 }
 
 impl From<AiSummaryFields> for FfiSummaryFields {
@@ -278,25 +342,28 @@ impl From<SummaryVariant> for FfiSummaryVariant {
 pub(crate) fn briefing(
     today: TodayView,
     summary_variants: Vec<Vec<FfiSummaryVariant>>,
-) -> FfiBriefing {
+) -> Result<FfiBriefing, CompanionError> {
     let TodayView { briefing, is_stale } = today;
     let items = briefing
         .items
         .into_iter()
         .zip(summary_variants)
         .map(|(item, summary_variants)| briefing_item(item, summary_variants))
-        .collect();
-    FfiBriefing {
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(FfiBriefing {
         date: briefing.date.to_string(),
         generated_at: briefing.generated_at.to_rfc3339(),
         is_stale,
         items,
-    }
+    })
 }
 
-fn briefing_item(item: BriefingItem, summary_variants: Vec<FfiSummaryVariant>) -> FfiBriefingItem {
+fn briefing_item(
+    item: BriefingItem,
+    summary_variants: Vec<FfiSummaryVariant>,
+) -> Result<FfiBriefingItem, CompanionError> {
     let selected_summary = item.selected_summary.map(FfiSummaryVariant::from);
-    FfiBriefingItem {
+    Ok(FfiBriefingItem {
         position: item.position,
         section: item.section,
         is_stale: item.is_stale,
@@ -304,10 +371,10 @@ fn briefing_item(item: BriefingItem, summary_variants: Vec<FfiSummaryVariant>) -
             item.story,
             selected_summary.clone(),
             summary_variants.clone(),
-        ),
+        )?,
         selected_summary,
         summary_variants,
-    }
+    })
 }
 
 impl TryFrom<SourceRecord> for FfiSource {
@@ -342,6 +409,51 @@ impl From<ProfileLimits> for FfiProfileLimits {
             max_output_tokens: limits.max_output_tokens,
             timeout_seconds: limits.timeout_seconds,
             max_retries: limits.max_retries,
+        }
+    }
+}
+
+impl TryFrom<FfiProfileLimitsInput> for ProfileLimits {
+    type Error = CompanionError;
+
+    fn try_from(limits: FfiProfileLimitsInput) -> Result<Self, Self::Error> {
+        Ok(Self {
+            max_summaries_per_refresh: limits.max_summaries_per_refresh,
+            max_daily_cost_microusd: parse_optional_usd(limits.max_daily_cost_usd)?,
+            input_cost_microusd_per_million: parse_optional_usd(limits.input_cost_usd_per_million)?,
+            output_cost_microusd_per_million: parse_optional_usd(
+                limits.output_cost_usd_per_million,
+            )?,
+            max_output_tokens: limits.max_output_tokens,
+            timeout_seconds: limits.timeout_seconds,
+            max_retries: limits.max_retries,
+        })
+    }
+}
+
+fn parse_optional_usd(value: Option<String>) -> Result<Option<u64>, CompanionError> {
+    value
+        .map(|value| MoneyMicros::parse_usd(&value).map(MoneyMicros::as_micros))
+        .transpose()
+        .map_err(CompanionError::from)
+}
+
+impl From<FfiProviderKind> for ProviderKind {
+    fn from(provider: FfiProviderKind) -> Self {
+        match provider {
+            FfiProviderKind::OpenAi => Self::OpenAi,
+            FfiProviderKind::Anthropic => Self::Anthropic,
+            FfiProviderKind::Gemini => Self::Gemini,
+            FfiProviderKind::OpenAiCompatible => Self::OpenAiCompatible,
+        }
+    }
+}
+
+impl From<FfiApiDialect> for ApiDialect {
+    fn from(dialect: FfiApiDialect) -> Self {
+        match dialect {
+            FfiApiDialect::Responses => Self::Responses,
+            FfiApiDialect::ChatCompletions => Self::ChatCompletions,
         }
     }
 }

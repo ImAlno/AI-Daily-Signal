@@ -14,6 +14,7 @@ test-support = ["signal-core/test-support"]
 
 [dependencies]
 chrono.workspace = true
+secrecy.workspace = true
 signal-core = { path = "../signal-core" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
