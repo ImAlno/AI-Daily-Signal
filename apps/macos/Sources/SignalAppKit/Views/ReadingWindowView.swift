@@ -98,8 +98,20 @@ public struct ReadingWindowView: View {
       .navigationTitle("AI Daily Signal")
       .navigationSplitViewColumnWidth(min: 180, ideal: 220)
     } detail: {
-      destinationContent
-        .navigationTitle(model.destination.title)
+      Group {
+        switch model.destination {
+        case .today, .latest, .saved:
+          HSplitView {
+            destinationContent
+              .frame(minWidth: 320, idealWidth: 390, maxWidth: 520)
+            StoryDetailView(model: model)
+              .frame(minWidth: 440, idealWidth: 680)
+          }
+        case .sources, .settings:
+          destinationContent
+        }
+      }
+      .navigationTitle(model.destination.title)
     }
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
@@ -118,7 +130,11 @@ public struct ReadingWindowView: View {
           Task { await model.toggleSelectedStorySaved() }
         }
         .keyboardShortcut(ReadingCommand.save.keyEquivalent, modifiers: .command)
-        .disabled(model.selectedStory == nil)
+        .disabled(
+          model.selectedStory == nil
+            || model.activeStoryAction
+              == model.selectedStory.map { StoryAction.saving(storyID: $0.id) }
+        )
         .help("Save selected story (⌘S)")
 
         Button("Settings", systemImage: "gearshape") {
@@ -188,64 +204,15 @@ public struct ReadingWindowView: View {
   private var destinationBody: some View {
     switch model.destination {
     case .today:
-      storyCollection(
-        model.snapshot?.today?.items.map(\.story) ?? [],
-        emptyTitle: "No briefing yet",
-        emptyMessage: "Refresh to build a finite briefing from your enabled sources."
-      )
+      TodayView(model: model)
     case .latest:
-      storyCollection(
-        model.snapshot?.latest ?? [],
-        emptyTitle: "No recent stories",
-        emptyMessage: "Refresh to check enabled sources for new stories."
-      )
+      StoryListView(kind: .latest, model: model)
     case .saved:
-      storyCollection(
-        model.snapshot?.saved ?? [],
-        emptyTitle: "No saved stories",
-        emptyMessage: "Saved stories stay available here for later reading."
-      )
+      StoryListView(kind: .saved, model: model)
     case .sources:
       sourcesOverview
     case .settings:
       settingsOverview
-    }
-  }
-
-  @ViewBuilder
-  private func storyCollection(
-    _ stories: [Story],
-    emptyTitle: String,
-    emptyMessage: String
-  ) -> some View {
-    if stories.isEmpty {
-      EmptyStateView(
-        title: emptyTitle,
-        message: emptyMessage,
-        systemImage: "newspaper"
-      )
-    } else {
-      List(stories) { story in
-        Button {
-          model.selectedStoryID = story.id
-        } label: {
-          VStack(alignment: .leading, spacing: 5) {
-            Text(story.title)
-              .font(.headline)
-              .foregroundStyle(.primary)
-              .multilineTextAlignment(.leading)
-            Text(story.smartSummary)
-              .font(.callout)
-              .foregroundStyle(.secondary)
-              .lineLimit(2)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.vertical, 6)
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(model.selectedStoryID == story.id ? .isSelected : [])
-      }
-      .listStyle(.inset)
     }
   }
 
@@ -306,8 +273,7 @@ public struct ReadingWindowView: View {
 
   private func openSelectedSource() {
     guard let value = model.selectedStory?.canonicalURL,
-      let url = URL(string: value),
-      url.scheme == "https" || url.scheme == "http"
+      let url = StorySourceURL.validated(value)
     else { return }
     NSWorkspace.shared.open(url)
   }

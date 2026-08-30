@@ -31,10 +31,10 @@ private final class StartupFailureBridgeClient: BridgeClient, Sendable {
   func setSaved(storyID: String, saved: Bool) async throws -> StoryMutationResult {
     throw BridgeError.startupUnavailable
   }
-  func setRead(storyID: String, read: Bool) async throws -> Story {
+  func setRead(storyID: String, read: Bool) async throws -> StoryMutationResult {
     throw BridgeError.startupUnavailable
   }
-  func selectSummary(storyID: String, variantID: String) async throws -> SummaryVariant {
+  func selectSummary(storyID: String, variantID: String) async throws -> StoryMutationResult {
     throw BridgeError.startupUnavailable
   }
   func regenerate(storyID: String, profile: String?, force: Bool) async throws

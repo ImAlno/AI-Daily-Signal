@@ -6,6 +6,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private typealias SnapshotContinuation = CheckedContinuation<AppSnapshot, any Error>
   private typealias RevisionContinuation = CheckedContinuation<StateRevision, any Error>
   private typealias RefreshContinuation = CheckedContinuation<RefreshResult, any Error>
+  private typealias StoryMutationContinuation = CheckedContinuation<StoryMutationResult, any Error>
 
   private let lock = NSLock()
   private var snapshots: [AppSnapshot]
@@ -19,6 +20,8 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var pendingRevisions: [(RevisionContinuation, Result<StateRevision, any Error>)] = []
   private var pendingRefreshStarts: [CheckedContinuation<Void, Never>] = []
   private var pendingRefreshes: [String: RefreshContinuation] = [:]
+  private var pendingSavedMutations:
+    [(StoryMutationContinuation, Result<StoryMutationResult, any Error>)] = []
   private var cancellationRequests: Set<String> = []
   private var remembersCancellationBeforeRefreshRegistration = true
   private var storedRefreshIdentifiers: [String] = []
@@ -28,6 +31,18 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var storedRefreshEntryCalls = 0
   private var storedModelInputs: [ModelProfileInput] = []
   private var storedSavedRequests: [(storyID: String, saved: Bool)] = []
+  private var storedReadRequests: [(storyID: String, read: Bool)] = []
+  private var storedSummaryRequests: [SummaryRequest] = []
+  private var storedGenerationRequests: [GenerationRequest] = []
+  private var storedSavedResult: StoryMutationResult?
+  private var storedReadResult: StoryMutationResult?
+  private var storedSummaryResult: StoryMutationResult?
+  private var storedGenerationResult: GenerationResult?
+  private var storedSavedError: (any Error)?
+  private var storedReadError: (any Error)?
+  private var storedSummaryError: (any Error)?
+  private var storedGenerationError: (any Error)?
+  private var suspendedSavedMutationCount = 0
   private var storedSnapshotError: (any Error)?
   private var storedRefreshError: (any Error)?
   private var storedModelError: (any Error)?
@@ -47,6 +62,31 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   var modelError: (any Error)? {
     get { lock.withLock { storedModelError } }
     set { lock.withLock { storedModelError = newValue } }
+  }
+
+  var savedResult: StoryMutationResult? {
+    get { lock.withLock { storedSavedResult } }
+    set { lock.withLock { storedSavedResult = newValue } }
+  }
+
+  var readResult: StoryMutationResult? {
+    get { lock.withLock { storedReadResult } }
+    set { lock.withLock { storedReadResult = newValue } }
+  }
+
+  var summaryResult: StoryMutationResult? {
+    get { lock.withLock { storedSummaryResult } }
+    set { lock.withLock { storedSummaryResult = newValue } }
+  }
+
+  var generationResult: GenerationResult? {
+    get { lock.withLock { storedGenerationResult } }
+    set { lock.withLock { storedGenerationResult = newValue } }
+  }
+
+  var generationError: (any Error)? {
+    get { lock.withLock { storedGenerationError } }
+    set { lock.withLock { storedGenerationError = newValue } }
   }
 
   init(snapshot: AppSnapshot, revisions: [StateRevision] = []) {
@@ -86,6 +126,18 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     lock.withLock { storedSavedRequests }
   }
 
+  var readRequests: [(storyID: String, read: Bool)] {
+    lock.withLock { storedReadRequests }
+  }
+
+  var summaryRequests: [SummaryRequest] {
+    lock.withLock { storedSummaryRequests }
+  }
+
+  var generationRequests: [GenerationRequest] {
+    lock.withLock { storedGenerationRequests }
+  }
+
   let savedMutationRevision = StateRevision(
     dataGeneration: 2,
     sourceConfigRevision: "source-after-save"
@@ -105,6 +157,10 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
 
   func suspendNextRefreshBeforeRegistration() {
     lock.withLock { suspendedRefreshStartCount += 1 }
+  }
+
+  func suspendNextSavedMutation() {
+    lock.withLock { suspendedSavedMutationCount += 1 }
   }
 
   func discardCancellationBeforeRefreshRegistration() {
@@ -143,6 +199,18 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     }
     for continuation in pending {
       continuation.resume()
+    }
+  }
+
+  func releaseSavedMutations() {
+    let pending = lock.withLock {
+      let pending = pendingSavedMutations
+      pendingSavedMutations.removeAll()
+      for _ in pending { endBridgeCallLocked() }
+      return pending
+    }
+    for (continuation, result) in pending {
+      continuation.resume(with: result)
     }
   }
 
@@ -258,31 +326,77 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   }
 
   func setSaved(storyID: String, saved: Bool) async throws -> StoryMutationResult {
-    lock.withLock { storedSavedRequests.append((storyID, saved)) }
-    let story = Story.fixture
-    return StoryMutationResult(
-      story: Story(
-        id: story.id,
-        title: story.title,
-        canonicalURL: story.canonicalURL,
-        excerpt: story.excerpt,
-        category: story.category,
-        publishedAt: story.publishedAt,
-        sourceIDs: story.sourceIDs,
-        score: story.score,
-        smartSummary: story.smartSummary,
-        isRead: story.isRead,
-        isSaved: saved,
-        selectedSummary: story.selectedSummary,
-        summaryVariants: story.summaryVariants
-      ),
-      revision: savedMutationRevision
-    )
+    try await withCheckedThrowingContinuation { continuation in
+      let immediate = lock.withLock { () -> Result<StoryMutationResult, any Error>? in
+        beginBridgeCallLocked()
+        storedSavedRequests.append((storyID, saved))
+        let result: Result<StoryMutationResult, any Error>
+        if let storedSavedError {
+          result = .failure(storedSavedError)
+        } else if let storedSavedResult {
+          result = .success(storedSavedResult)
+        } else {
+          let story = Story.fixture
+          result = .success(
+            StoryMutationResult(
+              story: Story(
+                id: story.id,
+                title: story.title,
+                canonicalURL: story.canonicalURL,
+                excerpt: story.excerpt,
+                category: story.category,
+                publishedAt: story.publishedAt,
+                sourceIDs: story.sourceIDs,
+                score: story.score,
+                smartSummary: story.smartSummary,
+                isRead: story.isRead,
+                isSaved: saved,
+                selectedSummary: story.selectedSummary,
+                summaryVariants: story.summaryVariants
+              ),
+              revision: savedMutationRevision
+            )
+          )
+        }
+        if suspendedSavedMutationCount > 0 {
+          suspendedSavedMutationCount -= 1
+          pendingSavedMutations.append((continuation, result))
+          return nil
+        }
+        endBridgeCallLocked()
+        return result
+      }
+      if let immediate { continuation.resume(with: immediate) }
+    }
   }
-  func setRead(storyID: String, read: Bool) async throws -> Story { .fixture }
-  func selectSummary(storyID: String, variantID: String) async throws -> SummaryVariant { .fixture }
+
+  func setRead(storyID: String, read: Bool) async throws -> StoryMutationResult {
+    try lock.withLock {
+      storedReadRequests.append((storyID, read))
+      if let storedReadError { throw storedReadError }
+      return storedReadResult
+        ?? StoryMutationResult(story: .fixture, revision: savedMutationRevision)
+    }
+  }
+
+  func selectSummary(storyID: String, variantID: String) async throws -> StoryMutationResult {
+    try lock.withLock {
+      storedSummaryRequests.append(SummaryRequest(storyID: storyID, variantID: variantID))
+      if let storedSummaryError { throw storedSummaryError }
+      return storedSummaryResult
+        ?? StoryMutationResult(story: .fixture, revision: savedMutationRevision)
+    }
+  }
+
   func regenerate(storyID: String, profile: String?, force: Bool) async throws -> GenerationResult {
-    GenerationResult(story: .fixture, selectedSummary: .fixture, revision: .fixture)
+    try lock.withLock {
+      storedGenerationRequests.append(
+        GenerationRequest(storyID: storyID, profileID: profile, force: force)
+      )
+      if let storedGenerationError { throw storedGenerationError }
+      return storedGenerationResult
+        ?? GenerationResult(story: .fixture, selectedSummary: .fixture, revision: .fixture)
+    }
   }
   func addSource(_ input: FeedSourceInput) async throws -> Source { .fixture }
   func setSourceEnabled(id: String, enabled: Bool) async throws -> Source { .fixture }
@@ -317,6 +431,17 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private func endBridgeCallLocked() {
     activeBridgeCallCount -= 1
   }
+}
+
+struct SummaryRequest: Sendable, Equatable {
+  let storyID: String
+  let variantID: String
+}
+
+struct GenerationRequest: Sendable, Equatable {
+  let storyID: String
+  let profileID: String?
+  let force: Bool
 }
 
 struct DetailedFakeError: Error, CustomStringConvertible, Sendable {

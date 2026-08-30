@@ -39,22 +39,28 @@ public final class UniFFIBridgeClient: BridgeClient, Sendable {
     }
   }
 
-  public func setRead(storyID: String, read: Bool) async throws -> Story {
+  public func setRead(storyID: String, read: Bool) async throws -> StoryMutationResult {
     try await call {
-      try await client.setStoryRead(id: storyID, read: read).story.localValue
+      let mutation = try await client.setStoryRead(id: storyID, read: read)
+      return StoryMutationResult(
+        story: mutation.story.localValue,
+        revision: mutation.revision.localValue
+      )
     }
   }
 
-  public func selectSummary(storyID: String, variantID: String) async throws -> SummaryVariant {
+  public func selectSummary(storyID: String, variantID: String) async throws
+    -> StoryMutationResult
+  {
     try await call {
       let mutation = try await client.selectSummaryVariant(
         storyId: storyID,
         variantId: variantID
       )
-      guard let selected = mutation.story.selectedSummary else {
-        throw BridgeError.storageUnavailable
-      }
-      return selected.localValue
+      return StoryMutationResult(
+        story: mutation.story.localValue,
+        revision: mutation.revision.localValue
+      )
     }
   }
 

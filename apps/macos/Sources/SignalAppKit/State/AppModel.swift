@@ -14,6 +14,13 @@ public enum AppPhase: Sendable, Equatable {
   case failure(message: String)
 }
 
+public enum StoryAction: Sendable, Equatable {
+  case saving(storyID: String)
+  case markingRead(storyID: String)
+  case selectingSummary(storyID: String)
+  case regenerating(storyID: String)
+}
+
 private enum ReloadOrigin: Equatable {
   case requested
   case polling(generation: UInt64)
@@ -36,6 +43,8 @@ public final class AppModel {
   public private(set) var snapshot: AppSnapshot?
   public private(set) var phase: AppPhase = .loading
   public private(set) var activeOperationID: String?
+  public private(set) var activeStoryAction: StoryAction?
+  public private(set) var storyActionError: String?
   public var destination: Destination {
     didSet { preferences.selectedDestination = destination }
   }
@@ -52,6 +61,7 @@ public final class AppModel {
   @ObservationIgnored private var isActive = false
   @ObservationIgnored private var pollGeneration: UInt64 = 0
   @ObservationIgnored private var revisionEpoch: UInt64 = 0
+  private var summarySelections: [String: ReadingSummarySelection] = [:]
 
   public init(
     bridge: any BridgeClient,
@@ -89,6 +99,48 @@ public final class AppModel {
       ?? snapshot?.saved.first(where: { $0.id == selectedStoryID })
   }
 
+  public var selectedSummarySelection: ReadingSummarySelection? {
+    guard let selectedStoryID else { return nil }
+    return summarySelection(for: selectedStoryID)
+  }
+
+  public func story(id: String) -> Story? {
+    if let story = snapshot?.today?.items.first(where: { $0.story.id == id })?.story {
+      return story
+    }
+    return snapshot?.latest.first(where: { $0.id == id })
+      ?? snapshot?.saved.first(where: { $0.id == id })
+  }
+
+  public func isStoryStale(id: String) -> Bool {
+    guard let today = snapshot?.today else { return false }
+    return today.isStale || today.items.first(where: { $0.story.id == id })?.isStale == true
+  }
+
+  public func summarySelection(for storyID: String) -> ReadingSummarySelection {
+    if let selection = summarySelections[storyID], isValid(selection, for: story(id: storyID)) {
+      return selection
+    }
+    if let variantID = story(id: storyID)?.selectedSummary?.id {
+      return .ai(variantID: variantID)
+    }
+    return .smart
+  }
+
+  public func showSummary(
+    _ selection: ReadingSummarySelection,
+    for storyID: String? = nil
+  ) {
+    guard let storyID = storyID ?? selectedStoryID, story(id: storyID) != nil else { return }
+    switch selection {
+    case .raw, .smart:
+      summarySelections[storyID] = selection
+      storyActionError = nil
+    case .ai:
+      break
+    }
+  }
+
   public func start() async {
     phase = .loading
     await reloadSnapshot()
@@ -104,7 +156,7 @@ public final class AppModel {
   }
 
   private func requestRefresh(ai: Bool, startingPhase: AppPhase) async {
-    guard activeOperationID == nil else { return }
+    guard activeOperationID == nil, activeStoryAction == nil else { return }
     invalidatePendingRevisionReads()
     let operationID = UUID().uuidString
     activeOperationID = operationID
@@ -134,7 +186,15 @@ public final class AppModel {
   }
 
   public func toggleSelectedStorySaved() async {
-    guard activeOperationID == nil, bridgeActivity == .idle, let selectedStory else { return }
+    guard activeOperationID == nil, bridgeActivity == .idle, activeStoryAction == nil,
+      let selectedStory
+    else { return }
+    let action = StoryAction.saving(storyID: selectedStory.id)
+    activeStoryAction = action
+    storyActionError = nil
+    defer {
+      if activeStoryAction == action { activeStoryAction = nil }
+    }
     do {
       let confirmed = try await bridge.setSaved(
         storyID: selectedStory.id,
@@ -142,7 +202,92 @@ public final class AppModel {
       )
       replaceStory(confirmed.story, revision: confirmed.revision)
     } catch {
-      apply(error)
+      applyStoryActionError(error)
+    }
+  }
+
+  public func toggleSelectedStoryRead() async {
+    guard activeOperationID == nil, bridgeActivity == .idle, activeStoryAction == nil,
+      let selectedStory
+    else { return }
+    let action = StoryAction.markingRead(storyID: selectedStory.id)
+    activeStoryAction = action
+    storyActionError = nil
+    defer {
+      if activeStoryAction == action { activeStoryAction = nil }
+    }
+    do {
+      let confirmed = try await bridge.setRead(
+        storyID: selectedStory.id,
+        read: !selectedStory.isRead
+      )
+      replaceStory(confirmed.story, revision: confirmed.revision)
+    } catch {
+      applyStoryActionError(error)
+    }
+  }
+
+  public func selectSummary(
+    _ selection: ReadingSummarySelection,
+    for storyID: String? = nil
+  ) async {
+    guard let storyID = storyID ?? selectedStoryID else { return }
+    switch selection {
+    case .raw, .smart:
+      showSummary(selection, for: storyID)
+    case .ai(let variantID):
+      guard activeOperationID == nil, bridgeActivity == .idle, activeStoryAction == nil,
+        let current = story(id: storyID),
+        current.summaryVariants.contains(where: { $0.id == variantID })
+      else { return }
+      let action = StoryAction.selectingSummary(storyID: storyID)
+      activeStoryAction = action
+      storyActionError = nil
+      defer {
+        if activeStoryAction == action { activeStoryAction = nil }
+      }
+      do {
+        let confirmed = try await bridge.selectSummary(
+          storyID: storyID,
+          variantID: variantID
+        )
+        replaceStory(confirmed.story, revision: confirmed.revision)
+        if confirmed.story.selectedSummary?.id == variantID {
+          summarySelections[storyID] = .ai(variantID: variantID)
+        }
+      } catch {
+        applyStoryActionError(error)
+      }
+    }
+  }
+
+  public func regenerateSelectedStory(profileID: String?, force: Bool) async {
+    guard activeOperationID == nil, bridgeActivity == .idle, activeStoryAction == nil,
+      let selectedStory
+    else { return }
+    let resolvedProfile = profileID ?? snapshot?.defaultModelProfileID
+    guard let resolvedProfile else {
+      storyActionError = "Choose a model profile before regenerating."
+      return
+    }
+    let action = StoryAction.regenerating(storyID: selectedStory.id)
+    activeStoryAction = action
+    storyActionError = nil
+    defer {
+      if activeStoryAction == action { activeStoryAction = nil }
+    }
+    do {
+      let confirmed = try await bridge.regenerate(
+        storyID: selectedStory.id,
+        profile: resolvedProfile,
+        force: force
+      )
+      replaceStory(confirmed.story, revision: confirmed.revision)
+      if let selected = confirmed.selectedSummary {
+        summarySelections[selectedStory.id] = .ai(variantID: selected.id)
+      }
+    } catch {
+      applyStoryActionError(error)
     }
   }
 
@@ -420,6 +565,10 @@ public final class AppModel {
 
   private func replaceSnapshot(_ replacement: AppSnapshot) {
     snapshot = replacement
+    summarySelections = summarySelections.filter { storyID, selection in
+      replacement.containsStory(id: storyID)
+        && isValid(selection, for: story(id: storyID))
+    }
     if let selectedStoryID, !replacement.containsStory(id: selectedStoryID) {
       self.selectedStoryID = nil
     }
@@ -447,8 +596,14 @@ public final class AppModel {
       )
     }
     let latest = snapshot.latest.map { $0.id == replacement.id ? replacement : $0 }
-    var saved = snapshot.saved.filter { $0.id != replacement.id }
-    if replacement.isSaved {
+    var saved = snapshot.saved
+    if let index = saved.firstIndex(where: { $0.id == replacement.id }) {
+      if replacement.isSaved {
+        saved[index] = replacement
+      } else {
+        saved.remove(at: index)
+      }
+    } else if replacement.isSaved {
       saved.append(replacement)
     }
     self.snapshot = AppSnapshot(
@@ -462,6 +617,23 @@ public final class AppModel {
       defaultModelProfileID: snapshot.defaultModelProfileID,
       hasUsableAIProfile: snapshot.hasUsableAIProfile
     )
+    if let selectedStoryID, self.snapshot?.containsStory(id: selectedStoryID) != true {
+      summarySelections.removeValue(forKey: selectedStoryID)
+      self.selectedStoryID = nil
+    }
+  }
+
+  private func isValid(_ selection: ReadingSummarySelection, for story: Story?) -> Bool {
+    guard let story else { return false }
+    switch selection {
+    case .raw, .smart: return true
+    case .ai(let variantID):
+      return story.summaryVariants.contains(where: { $0.id == variantID })
+    }
+  }
+
+  private func applyStoryActionError(_ error: any Error) {
+    storyActionError = userFacingMessage(for: error)
   }
 
   private func presentationPhase(for snapshot: AppSnapshot) -> AppPhase {
@@ -481,7 +653,7 @@ public final class AppModel {
 
   private func apply(_ error: any Error) {
     guard let error = error as? BridgeError else {
-      phase = .failure(message: "Something went wrong. Please try again.")
+      phase = .failure(message: userFacingMessage(for: error))
       return
     }
     switch error {
@@ -516,6 +688,38 @@ public final class AppModel {
       phase = .failure(message: "The AI provider is unavailable. Smart summaries were kept.")
     case .refreshAlreadyRunning:
       phase = .failure(message: "A refresh is already running.")
+    }
+  }
+
+  private func userFacingMessage(for error: any Error) -> String {
+    guard let error = error as? BridgeError else {
+      return "Something went wrong. Please try again."
+    }
+    switch error {
+    case .startupUnavailable:
+      return "Local data is unavailable. Quit and reopen the app."
+    case .cancelled:
+      return "The action was cancelled. Your previous content was kept."
+    case .offline:
+      return "The network is unavailable. Your previous content was kept."
+    case .storageUnavailable:
+      return "AI Daily Signal cannot access local storage."
+    case .notInitialized:
+      return "Setup is incomplete."
+    case .invalidInput:
+      return "Check the information and try again."
+    case .notFound:
+      return "That item is no longer available."
+    case .credentialUnavailable:
+      return "The model credential is unavailable."
+    case .consentRequired:
+      return "Provider data-sharing consent is required."
+    case .budgetExhausted:
+      return "The daily AI budget has been reached."
+    case .providerUnavailable:
+      return "The AI provider is unavailable. Smart summaries were kept."
+    case .refreshAlreadyRunning:
+      return "A refresh is already running."
     }
   }
 }
