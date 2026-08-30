@@ -114,7 +114,7 @@ pub trait SummaryProvider: Send + Sync {
     ) -> Result<ProviderResponse, ProviderFailure> {
         if cancellation.is_cancelled() {
             return Err(ProviderFailure::new(
-                ProviderFailureKind::Transport,
+                ProviderFailureKind::Cancelled,
                 RequestChargeStatus::NotSent,
             ));
         }
