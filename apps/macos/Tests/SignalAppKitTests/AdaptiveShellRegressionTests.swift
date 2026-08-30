@@ -61,20 +61,60 @@ struct AdaptiveShellRegressionTests {
     }
   }
 
-  @Test
-  func railNavigationMarksOnlyTheCurrentDestinationSelected() {
-    // Break caught: color is the only indication of the current destination in the icon rail.
-    let selected = AppNavigationItemPresentation(
+  @Test @MainActor
+  func railNavigationMakesTheCurrentDestinationVisiblySelected() throws {
+    // Break caught: rendering the active rail item as an icon tint only, without a selected surface.
+    let model = AppModel(
+      bridge: FakeBridgeClient(snapshot: .fixture),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    let coordinator = WindowCoordinator(model: model) { window in
+      window.makeKeyAndOrderFront(nil)
+    }
+    coordinator.open(destination: .today)
+    let window = try #require(coordinator.managedWindow)
+    defer { coordinator.close() }
+    settleLayout()
+    window.setContentSize(NSSize(width: 760, height: 620))
+    settleLayout()
+
+    let hosted = try #require(window.contentView)
+    let selectedPresentation = AppNavigationItemPresentation(
       destination: .today,
       selection: .today
     )
-    let unselected = AppNavigationItemPresentation(
+    let unselectedPresentation = AppNavigationItemPresentation(
       destination: .latest,
       selection: .today
     )
+    let sidebar = try #require(
+      descendants(of: NSView.self, in: hosted).first {
+        String(describing: type(of: $0)).contains("SidebarStyleContext")
+      }
+    )
 
-    #expect(selected.accessibilityTraits.contains(.isSelected))
-    #expect(!unselected.accessibilityTraits.contains(.isSelected))
+    let targets = descendants(of: NSView.self, in: sidebar).filter {
+      String(describing: type(of: $0)).contains("KeyViewProxy")
+    }
+    let selectedTarget = try #require(targets.first)
+    let unselectedTarget = try #require(targets.dropFirst().first)
+    let layers = descendantLayers(of: try #require(sidebar.layer))
+    let selectionSurface = try #require(
+      layers.first {
+        $0.frame.equalTo(selectedTarget.frame)
+          && ($0.backgroundColor?.alpha ?? 0) > 0
+      }
+    )
+
+    #expect(selectedPresentation.accessibilityTraits.contains(.isSelected))
+    #expect(!unselectedPresentation.accessibilityTraits.contains(.isSelected))
+    #expect(selectionSurface.cornerRadius == 7)
+    #expect(
+      !layers.contains {
+        $0.frame.equalTo(unselectedTarget.frame)
+          && ($0.backgroundColor?.alpha ?? 0) > 0
+      }
+    )
   }
 
   @Test
@@ -110,4 +150,9 @@ private func descendants<T: NSView>(of type: T.Type, in root: NSView) -> [T] {
   root.subviews.flatMap { view in
     ((view as? T).map { [$0] } ?? []) + descendants(of: type, in: view)
   }
+}
+
+@MainActor
+private func descendantLayers(of root: CALayer) -> [CALayer] {
+  [root] + (root.sublayers ?? []).flatMap(descendantLayers(of:))
 }

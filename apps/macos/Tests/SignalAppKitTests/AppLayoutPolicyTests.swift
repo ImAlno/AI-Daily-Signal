@@ -12,16 +12,17 @@ struct AppLayoutPolicyTests {
   }
 
   @Test
-  func navigationAndReadingMetricsMatchTheApprovedShell() {
+  func navigationAndReadingMetricsMatchTheApprovedEditorialColumn() {
+    // Break caught: letting the reading measure or responsive gutters drift from the approved editorial layout.
     #expect(AppLayoutPolicy.navigationWidth(for: .expanded) == 228)
     #expect(AppLayoutPolicy.navigationWidth(for: .rail) == 58)
     #expect(AppLayoutPolicy.navigationWidth(for: .compact) == nil)
-    #expect(ReadingColumnMetrics.maximumWidth == 720)
+    #expect(ReadingColumnMetrics.maximumWidth == 680)
     #expect(ReadingColumnMetrics.minimumWindowWidth == 420)
     #expect(ReadingColumnMetrics.minimumWindowHeight == 520)
-    #expect(ReadingColumnMetrics.horizontalPadding(for: 480) == 20)
-    #expect(ReadingColumnMetrics.horizontalPadding(for: 760) == 28)
-    #expect(ReadingColumnMetrics.horizontalPadding(for: 1_100) == 36)
+    #expect(ReadingColumnMetrics.horizontalPadding(for: 480) == 18)
+    #expect(ReadingColumnMetrics.horizontalPadding(for: 760) == 24)
+    #expect(ReadingColumnMetrics.horizontalPadding(for: 1_100) == 28)
   }
 
   @Test(arguments: [AppLayoutMode.expanded, .rail, .compact])

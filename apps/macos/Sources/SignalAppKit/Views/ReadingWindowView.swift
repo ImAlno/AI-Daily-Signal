@@ -40,6 +40,8 @@ public enum ReadingCommand: CaseIterable, Sendable, Equatable {
 
 public struct ReadingToolbarPresentation: Sendable, Equatable {
   public let refreshControl: RefreshControlPresentation
+  public let windowTitle = "AI Daily Signal"
+  public let directCommands: [ReadingCommand] = [.refresh]
 
   public init(phase: AppPhase, refreshInProgress: Bool) {
     if case .startupFailure = phase {
@@ -47,6 +49,10 @@ public struct ReadingToolbarPresentation: Sendable, Equatable {
     } else {
       refreshControl = refreshInProgress ? .cancel : .refresh
     }
+  }
+
+  public func overflowCommands(storyCommandsAvailable: Bool) -> [ReadingCommand] {
+    storyCommandsAvailable ? [.openSource, .save, .settings] : [.settings]
   }
 }
 
@@ -111,6 +117,10 @@ public struct ReadingWindowView: View {
     GeometryReader { proxy in
       let mode = AppLayoutPolicy.mode(for: proxy.size.width)
       let navigationWidth = AppLayoutPolicy.navigationWidth(for: mode) ?? 58
+      let toolbarPresentation = ReadingToolbarPresentation(
+        phase: model.phase,
+        refreshInProgress: model.activeOperationID != nil
+      )
 
       NavigationSplitView(columnVisibility: columnVisibility(for: mode)) {
         AppNavigationView(mode: mode, selection: destinationSelection)
@@ -122,11 +132,11 @@ public struct ReadingWindowView: View {
           .toolbar(removing: .sidebarToggle)
       } detail: {
         destinationContent
-          .navigationTitle(model.destination.title)
+          .navigationTitle(toolbarPresentation.windowTitle)
           .background(Color(nsColor: .textBackgroundColor))
       }
       .toolbar {
-        toolbarContent(mode: mode)
+        toolbarContent(mode: mode, presentation: toolbarPresentation)
       }
     }
     .safeAreaInset(edge: .top) {
@@ -148,7 +158,10 @@ public struct ReadingWindowView: View {
   }
 
   @ToolbarContentBuilder
-  private func toolbarContent(mode: AppLayoutMode) -> some ToolbarContent {
+  private func toolbarContent(
+    mode: AppLayoutMode,
+    presentation: ReadingToolbarPresentation
+  ) -> some ToolbarContent {
     if AppNavigationPresentation(mode: mode).usesToolbarMenu {
       ToolbarItem(placement: .navigation) {
         CompactNavigationPicker(selection: destinationPickerSelection)
@@ -156,35 +169,23 @@ public struct ReadingWindowView: View {
     }
 
     ToolbarItem(placement: .primaryAction) {
-      refreshToolbarButton(
-        ReadingToolbarPresentation(
-          phase: model.phase,
-          refreshInProgress: model.activeOperationID != nil
-        ).refreshControl
-      )
+      ForEach(presentation.directCommands, id: \.self) { command in
+        toolbarButton(for: command, presentation: presentation)
+      }
     }
 
-    if AppNavigationPresentation(mode: mode).usesToolbarMenu {
-      ToolbarItem(placement: .primaryAction) {
-        Menu {
-          if storyCommandsAvailable {
-            openSourceToolbarButton
-            saveToolbarButton
-          }
-          preferencesToolbarButton
-        } label: {
-          Label("More", systemImage: "ellipsis.circle")
+    ToolbarItem(placement: .primaryAction) {
+      Menu {
+        ForEach(
+          presentation.overflowCommands(storyCommandsAvailable: storyCommandsAvailable),
+          id: \.self
+        ) { command in
+          toolbarButton(for: command, presentation: presentation)
         }
-        .help("Open story actions and Preferences")
+      } label: {
+        Label("More", systemImage: "ellipsis.circle")
       }
-    } else {
-      ToolbarItemGroup(placement: .primaryAction) {
-        if storyCommandsAvailable {
-          openSourceToolbarButton
-          saveToolbarButton
-        }
-        preferencesToolbarButton
-      }
+      .help("Open story actions and Preferences")
     }
   }
 
@@ -222,6 +223,23 @@ public struct ReadingWindowView: View {
     }
     .keyboardShortcut(ReadingCommand.settings.keyEquivalent, modifiers: .command)
     .help(ReadingCommand.settings.descriptor.help)
+  }
+
+  @ViewBuilder
+  private func toolbarButton(
+    for command: ReadingCommand,
+    presentation: ReadingToolbarPresentation
+  ) -> some View {
+    switch command {
+    case .refresh:
+      refreshToolbarButton(presentation.refreshControl)
+    case .openSource:
+      openSourceToolbarButton
+    case .save:
+      saveToolbarButton
+    case .settings:
+      preferencesToolbarButton
+    }
   }
 
   private var destinationSelection: Binding<Destination?> {

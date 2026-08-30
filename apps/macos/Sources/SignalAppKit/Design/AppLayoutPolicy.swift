@@ -26,13 +26,13 @@ public enum AppLayoutPolicy {
 }
 
 public enum ReadingColumnMetrics {
-  public static let maximumWidth: CGFloat = 720
+  public static let maximumWidth: CGFloat = 680
   public static let minimumWindowWidth: CGFloat = 420
   public static let minimumWindowHeight: CGFloat = 520
 
   public static func horizontalPadding(for availableWidth: CGFloat) -> CGFloat {
-    if availableWidth >= 820 { return 36 }
-    if availableWidth >= 560 { return 28 }
-    return 20
+    if availableWidth >= 820 { return 28 }
+    if availableWidth >= 560 { return 24 }
+    return 18
   }
 }

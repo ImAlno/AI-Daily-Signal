@@ -92,12 +92,15 @@ public struct AppNavigationView: View {
             selection = destination
           } label: {
             Image(systemName: presentation.systemImage)
-              .frame(
-                minWidth: VisualPolicy().minimumControlDimension,
-                minHeight: VisualPolicy().minimumControlDimension
-              )
+              .frame(width: 36, height: 36)
           }
           .buttonStyle(.plain)
+          .background {
+            if presentation.isSelected {
+              RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
+            }
+          }
           .foregroundStyle(
             presentation.isSelected
               ? Color.accentColor

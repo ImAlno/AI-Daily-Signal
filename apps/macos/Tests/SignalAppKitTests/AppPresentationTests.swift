@@ -74,6 +74,23 @@ struct AppPresentationTests {
   }
 
   @Test
+  func toolbarKeepsOnlyRefreshDirectAndPlacesContextInOverflow() {
+    // Break caught: exposing story actions beside Refresh or hiding contextual commands when no story is selected.
+    let presentation = ReadingToolbarPresentation(phase: .ready, refreshInProgress: false)
+
+    #expect(presentation.windowTitle == "AI Daily Signal")
+    #expect(presentation.directCommands == [.refresh])
+    #expect(
+      presentation.overflowCommands(storyCommandsAvailable: true)
+        == [.openSource, .save, .settings]
+    )
+    #expect(
+      presentation.overflowCommands(storyCommandsAvailable: false)
+        == [.settings]
+    )
+  }
+
+  @Test
   func preferencesDescribeOnlyCurrentLocalCompanionBehavior() {
     // Break caught: showing invented settings or misreporting whether AI summaries are available.
     let optional = PreferencesPresentation(hasUsableAIProfile: false)
