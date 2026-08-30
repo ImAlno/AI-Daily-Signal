@@ -6,6 +6,36 @@ import Testing
 @Suite(.serialized)
 struct ReadingFlowTests {
   @Test
+  func briefingHeadersExposeCompactIdentityAndCounts() {
+    // Break caught: header identity or counts drifting from the loaded destination snapshot.
+    let today = BriefingHeaderPresentation(
+      destination: .today,
+      snapshot: .fixture,
+      calendarDate: "Sunday, August 30, 2026"
+    )
+    let latest = BriefingHeaderPresentation(
+      destination: .latest,
+      snapshot: .fixture,
+      calendarDate: "Sunday, August 30, 2026"
+    )
+
+    #expect(today.title == "Today")
+    #expect(latest.title == "Latest")
+    #expect(today.dateText == "Sunday, August 30, 2026")
+    #expect(today.signalCount == 1)
+    #expect(today.enabledSourceCount == 1)
+    #expect(today.metadataText == "1 signal · 1 source")
+  }
+
+  @Test
+  func signalDisclosureExpansionIsDerivedOnlyFromSelectedStoryID() {
+    // Break caught: expanding a row independently of the model's single selected story.
+    #expect(SignalDisclosurePresentation(storyID: "a", selectedStoryID: "a").isExpanded)
+    #expect(!SignalDisclosurePresentation(storyID: "b", selectedStoryID: "a").isExpanded)
+    #expect(!SignalDisclosurePresentation(storyID: "a", selectedStoryID: nil).isExpanded)
+  }
+
+  @Test
   func todayRenderPlanPreservesContiguousSectionRunsAndExactFlatOrder() {
     // Break caught: globally grouping a repeated section and moving its later stories earlier.
     let first = story(id: "first", title: "First")

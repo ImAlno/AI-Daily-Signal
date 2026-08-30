@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 public struct TodaySectionPresentation: Identifiable, Sendable, Equatable {
@@ -90,52 +89,39 @@ public struct TodayView: View {
           Task { await model.refresh() }
         }
       } else {
-        List(selection: $model.selectedStoryID) {
-          ForEach(presentation.sections) { section in
-            Section {
-              ForEach(section.rows) { row in
-                StoryRowView(presentation: row)
-                  .tag(row.storyID)
-                  .contextMenu { storyContextMenu(storyID: row.storyID) }
+        GeometryReader { proxy in
+          ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+              BriefingHeaderView(
+                presentation: BriefingHeaderPresentation(
+                  destination: model.destination,
+                  snapshot: model.snapshot,
+                  calendarDate: Date.now.formatted(
+                    .dateTime.weekday(.wide).month(.wide).day().year()
+                  )
+                )
+              )
+              ForEach(presentation.sections) { section in
+                Text(section.title)
+                  .font(.caption.weight(.semibold))
+                  .foregroundStyle(.secondary)
+                  .padding(.top, 12)
+                  .padding(.bottom, 6)
+                  .accessibilityAddTraits(.isHeader)
+                ForEach(section.rows) { row in
+                  SignalDisclosureView(presentation: row, model: model)
+                }
               }
-            } header: {
-              Text(section.title)
-                .font(.caption)
-                .fontWeight(.semibold)
-                .textCase(nil)
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
             }
+            .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
+            .padding(.horizontal, ReadingColumnMetrics.horizontalPadding(for: proxy.size.width))
+            .padding(.vertical, 30)
+            .frame(maxWidth: .infinity, alignment: .center)
           }
+          .background(Color(nsColor: .textBackgroundColor))
         }
-        .listStyle(.inset)
         .accessibilityLabel("Today's ranked briefing")
       }
     }
-  }
-
-  @ViewBuilder
-  private func storyContextMenu(storyID: String) -> some View {
-    let story = model.story(id: storyID)
-    Button("Open Source", systemImage: "safari") {
-      if let value = story?.canonicalURL, let url = StorySourceURL.validated(value) {
-        NSWorkspace.shared.open(url)
-      }
-    }
-    .disabled(story.map { !StorySourceActionPresentation(story: $0).isEnabled } ?? true)
-    Button(story?.isSaved == true ? "Remove from Saved" : "Save Story", systemImage: "bookmark") {
-      model.selectedStoryID = storyID
-      Task { await model.toggleSelectedStorySaved() }
-    }
-    .disabled(
-      story.map { model.storyActionState(for: .saving(storyID: $0.id)) != nil } ?? true
-    )
-    Button(story?.isRead == true ? "Mark Unread" : "Mark Read", systemImage: "checkmark.circle") {
-      model.selectedStoryID = storyID
-      Task { await model.toggleSelectedStoryRead() }
-    }
-    .disabled(
-      story.map { model.storyActionState(for: .markingRead(storyID: $0.id)) != nil } ?? true
-    )
   }
 }
