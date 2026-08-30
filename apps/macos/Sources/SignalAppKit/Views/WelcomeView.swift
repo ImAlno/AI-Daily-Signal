@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 public struct WelcomePresentation: Sendable, Equatable {
@@ -29,49 +30,55 @@ public struct WelcomeView: View {
 
   public var body: some View {
     let presentation = WelcomePresentation(phase: model.phase)
-    VStack(spacing: 24) {
-      Image(systemName: "dot.radiowaves.left.and.right")
-        .font(.system(size: 44, weight: .medium))
-        .foregroundStyle(.tint)
-        .accessibilityHidden(true)
+    ScrollView {
+      VStack(alignment: .leading, spacing: 22) {
+        Image(systemName: "dot.radiowaves.left.and.right")
+          .font(.title2.weight(.medium))
+          .foregroundStyle(.tint)
+          .accessibilityHidden(true)
 
-      VStack(spacing: 10) {
-        Text("AI Daily Signal")
-          .font(.largeTitle.weight(.semibold))
-          .accessibilityAddTraits(.isHeader)
-          .accessibilitySortPriority(AccessibilityOrder.title.sortPriority)
-        Text("A focused daily briefing for understanding what changed in AI.")
-          .font(.title3)
+        VStack(alignment: .leading, spacing: 8) {
+          Text("AI Daily Signal")
+            .font(.largeTitle.weight(.semibold))
+            .accessibilityAddTraits(.isHeader)
+            .accessibilitySortPriority(AccessibilityOrder.title.sortPriority)
+          Text("A focused daily briefing for understanding what changed in AI.")
+            .font(.title3)
+            .foregroundStyle(.secondary)
+        }
+
+        Divider()
+
+        Text(WelcomeContent.localFirstExplanation)
+          .font(.body)
           .foregroundStyle(.secondary)
-          .multilineTextAlignment(.center)
+
+        Button(WelcomeContent.primaryAction) {
+          Task { await model.buildFirstBriefing() }
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.regular)
+        .frame(minHeight: CGFloat(VisualPolicy().minimumControlDimension))
+        .disabled(!presentation.primaryActionEnabled)
+        .accessibilityHint("Initializes the standard source pack and refreshes it")
+        .accessibilitySortPriority(AccessibilityOrder.actions.sortPriority)
+
+        if presentation.showsProgress {
+          ProgressView("Building your briefing…")
+            .controlSize(.small)
+        }
+
+        Label(WelcomeContent.refreshDisclosure, systemImage: "network")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .accessibilitySortPriority(AccessibilityOrder.content.sortPriority)
       }
-
-      Text(WelcomeContent.localFirstExplanation)
-        .font(.body)
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-
-      Button(WelcomeContent.primaryAction) {
-        Task { await model.buildFirstBriefing() }
-      }
-      .buttonStyle(.borderedProminent)
-      .controlSize(.large)
-      .disabled(!presentation.primaryActionEnabled)
-      .accessibilityHint("Initializes the standard source pack and refreshes it")
-      .accessibilitySortPriority(AccessibilityOrder.actions.sortPriority)
-
-      if presentation.showsProgress {
-        ProgressView("Building your briefing…")
-          .controlSize(.small)
-      }
-
-      Label(WelcomeContent.refreshDisclosure, systemImage: "network")
-        .font(.caption)
-        .foregroundStyle(.tertiary)
-        .multilineTextAlignment(.center)
-        .accessibilitySortPriority(AccessibilityOrder.content.sortPriority)
+      .multilineTextAlignment(.leading)
+      .frame(maxWidth: min(520, ReadingColumnMetrics.maximumWidth), alignment: .leading)
+      .padding(.horizontal, 28)
+      .padding(.vertical, 44)
+      .frame(maxWidth: .infinity, alignment: .center)
     }
-    .frame(maxWidth: 480)
-    .padding(64)
+    .background(Color(nsColor: .textBackgroundColor))
   }
 }
