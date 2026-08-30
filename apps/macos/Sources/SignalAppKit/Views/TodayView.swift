@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 public struct TodaySectionPresentation: Identifiable, Sendable, Equatable {
-  public var id: String { title }
+  public let id: String
   public let title: String
   public let rows: [StoryRowPresentation]
 }
@@ -28,33 +28,39 @@ public struct TodayPresentation: Sendable, Equatable {
       return
     }
 
-    var orderedTitles: [String] = []
-    var rowsBySection: [String: [StoryRowPresentation]] = [:]
+    var values: [TodaySectionPresentation] = []
     for item in briefing.items {
-      if rowsBySection[item.section] == nil {
-        orderedTitles.append(item.section)
-        rowsBySection[item.section] = []
-      }
-      rowsBySection[item.section]?.append(
-        StoryRowPresentation(
-          story: item.story,
-          primarySource: ReaderPresentationSupport.primarySource(
-            for: item.story,
-            sources: sources
-          ),
-          relativeTime: SignalFormatters.relativeDate(
-            item.story.publishedAt,
-            relativeTo: reference
-          ),
-          isStale: briefing.isStale || item.isStale,
-          rank: item.position,
-          summarySelection: selectionForStory(item.story.id)
-        )
+      let row = StoryRowPresentation(
+        story: item.story,
+        primarySource: ReaderPresentationSupport.primarySource(
+          for: item.story,
+          sources: sources
+        ),
+        relativeTime: SignalFormatters.relativeDate(
+          item.story.publishedAt,
+          relativeTo: reference
+        ),
+        isStale: briefing.isStale || item.isStale,
+        rank: item.position,
+        summarySelection: selectionForStory(item.story.id)
       )
+      if let last = values.last, last.title == item.section {
+        values[values.count - 1] = TodaySectionPresentation(
+          id: last.id,
+          title: last.title,
+          rows: last.rows + [row]
+        )
+      } else {
+        values.append(
+          TodaySectionPresentation(
+            id: "\(values.count)-\(item.section)",
+            title: item.section,
+            rows: [row]
+          )
+        )
+      }
     }
-    sections = orderedTitles.map {
-      TodaySectionPresentation(title: $0, rows: rowsBySection[$0] ?? [])
-    }
+    sections = values
     emptyState = nil
   }
 }
@@ -116,13 +122,20 @@ public struct TodayView: View {
         NSWorkspace.shared.open(url)
       }
     }
+    .disabled(story.map { !StorySourceActionPresentation(story: $0).isEnabled } ?? true)
     Button(story?.isSaved == true ? "Remove from Saved" : "Save Story", systemImage: "bookmark") {
       model.selectedStoryID = storyID
       Task { await model.toggleSelectedStorySaved() }
     }
+    .disabled(
+      story.map { model.storyActionState(for: .saving(storyID: $0.id)) != nil } ?? true
+    )
     Button(story?.isRead == true ? "Mark Unread" : "Mark Read", systemImage: "checkmark.circle") {
       model.selectedStoryID = storyID
       Task { await model.toggleSelectedStoryRead() }
     }
+    .disabled(
+      story.map { model.storyActionState(for: .markingRead(storyID: $0.id)) != nil } ?? true
+    )
   }
 }

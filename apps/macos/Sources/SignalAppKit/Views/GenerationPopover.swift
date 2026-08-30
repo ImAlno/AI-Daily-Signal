@@ -15,8 +15,13 @@ public struct GenerationPopoverPresentation: Sendable, Equatable {
     self.profiles = profiles.filter(\.enabled)
     self.defaultProfileID = defaultProfileID
     self.selectedProfileID = selectedProfileID
-    requiresExplicitSelection = defaultProfileID == nil
-    canGenerate = defaultProfileID != nil || selectedProfileID != nil
+    let enabledIDs = Set(self.profiles.map(\.id))
+    requiresExplicitSelection = defaultProfileID.map { !enabledIDs.contains($0) } ?? true
+    if let selectedProfileID {
+      canGenerate = enabledIDs.contains(selectedProfileID)
+    } else {
+      canGenerate = defaultProfileID.map(enabledIDs.contains) ?? false
+    }
   }
 }
 
@@ -36,7 +41,7 @@ public struct GenerationPopover: View {
     Button("Regenerate…", systemImage: "arrow.triangle.2.circlepath") {
       isPresented = true
     }
-    .disabled(model.activeStoryAction == .regenerating(storyID: story.id))
+    .disabled(model.storyActionState(for: .regenerating(storyID: story.id)) != nil)
     .popover(isPresented: $isPresented, arrowEdge: .bottom) {
       popoverContent
         .padding(18)

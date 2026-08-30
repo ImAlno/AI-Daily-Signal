@@ -120,7 +120,9 @@ public struct ReadingWindowView: View {
           openSelectedSource()
         }
         .keyboardShortcut(ReadingCommand.openSource.keyEquivalent, modifiers: .command)
-        .disabled(model.selectedStory == nil)
+        .disabled(
+          model.selectedStory.map { !StorySourceActionPresentation(story: $0).isEnabled } ?? true
+        )
         .help("Open selected story source (⌘O)")
 
         Button(
@@ -131,9 +133,9 @@ public struct ReadingWindowView: View {
         }
         .keyboardShortcut(ReadingCommand.save.keyEquivalent, modifiers: .command)
         .disabled(
-          model.selectedStory == nil
-            || model.activeStoryAction
-              == model.selectedStory.map { StoryAction.saving(storyID: $0.id) }
+          model.selectedStory.map {
+            model.storyActionState(for: .saving(storyID: $0.id)) != nil
+          } ?? true
         )
         .help("Save selected story (⌘S)")
 

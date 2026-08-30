@@ -6,8 +6,8 @@ import Testing
 @Suite(.serialized)
 struct ReadingFlowTests {
   @Test
-  func todayRenderPlanPreservesFirstSeenSectionAndStoryOrder() {
-    // Break caught: alphabetizing editorial sections or sorting items by a derived field.
+  func todayRenderPlanPreservesContiguousSectionRunsAndExactFlatOrder() {
+    // Break caught: globally grouping a repeated section and moving its later stories earlier.
     let first = story(id: "first", title: "First")
     let second = story(id: "second", title: "Second")
     let third = story(id: "third", title: "Third")
@@ -29,10 +29,10 @@ struct ReadingFlowTests {
       relativeTo: referenceDate
     )
 
-    #expect(presentation.sections.map(\.title) == ["Research", "Top Signals"])
+    #expect(presentation.sections.map(\.title) == ["Research", "Top Signals", "Research"])
     #expect(
-      presentation.sections.map { $0.rows.map(\.storyID) } == [["first", "third"], ["second"]])
-    #expect(presentation.sections[0].rows.map(\.rank) == [8, 4])
+      presentation.sections.flatMap { $0.rows.map(\.storyID) } == ["first", "second", "third"])
+    #expect(presentation.sections.flatMap { $0.rows.map(\.rank) } == [8, 2, 4])
   }
 
   @Test
@@ -97,12 +97,14 @@ struct ReadingFlowTests {
     #expect(row.rank == 3)
     #expect(row.provenance == .smart)
     #expect(row.accessibilitySummary.contains("stale"))
+    #expect(row.accessibilitySummary.contains("Rank 3"))
+    #expect(row.provenance.shortLabel == "Smart · local algorithmic summary")
   }
 
   @Test
   func detailRenderPlanUsesApprovedHierarchyAndDoesNotInventStructuredSmartFields() {
     // Break caught: rearranging reading hierarchy or presenting Smart text as validated AI fields.
-    let value = story(id: "story", title: "A signal")
+    let value = story(id: "story", title: "A signal", saved: true)
     let detail = StoryDetailPresentation(
       story: value,
       sourceNames: ["Signal Research", "AI Lab Notes"],
@@ -119,6 +121,9 @@ struct ReadingFlowTests {
     #expect(detail.whatHappened == value.smartSummary)
     #expect(detail.whyItMatters == nil)
     #expect(detail.caveat == nil)
+    #expect(detail.stateLabels == ["Unread", "Saved"])
+    #expect(detail.accessibilityMetadata.contains("Unread"))
+    #expect(detail.accessibilityMetadata.contains("Saved"))
   }
 
   @Test
@@ -159,6 +164,8 @@ struct ReadingFlowTests {
         .raw, .smart, .ai(variantID: "variant-new"), .ai(variantID: "variant-old"),
       ])
     #expect(picker.options[1].provenance == .smart)
+    #expect(picker.options[1].detail == "Local algorithmic summary")
+    #expect(picker.options[1].displayLabel == "Smart · local algorithmic summary")
     #expect(picker.options[2].provenance == .ai(provider: "Anthropic", model: "claude-signal"))
     #expect(picker.options[3].provenance == .ai(provider: "OpenAI", model: "gpt-signal"))
   }
@@ -172,6 +179,67 @@ struct ReadingFlowTests {
     #expect(StorySourceURL.validated("javascript:alert(1)") == nil)
     #expect(StorySourceURL.validated("https:relative") == nil)
     #expect(StorySourceURL.validated("/relative") == nil)
+    #expect(
+      !StorySourceActionPresentation(
+        story: story(id: "unsafe", title: "Unsafe", url: "file:///tmp/story")
+      ).isEnabled)
+    #expect(StorySourceActionPresentation(story: story(id: "safe", title: "Safe")).isEnabled)
+  }
+
+  @Test
+  func wholeBriefingStalenessMarksEveryLatestAndSavedRow() {
+    // Break caught: propagating only item-level staleness when the entire briefing is stale.
+    let first = story(id: "first", title: "First")
+    let second = story(id: "second", title: "Second")
+    let value = AppSnapshot(
+      revision: .fixture,
+      status: AppSnapshot.fixture.status,
+      today: Briefing(
+        date: "2026-08-30",
+        generatedAt: referenceDate,
+        isStale: true,
+        items: [
+          item(first, position: 1, section: "Signals"),
+          item(second, position: 2, section: "Signals"),
+        ]
+      ),
+      latest: [first, second],
+      saved: [second],
+      sources: sourceFixtures,
+      modelProfiles: [.fixture],
+      defaultModelProfileID: "profile-1",
+      hasUsableAIProfile: true
+    )
+
+    #expect(ReaderPresentationSupport.staleStoryIDs(in: value) == ["first", "second"])
+  }
+
+  @Test
+  func generationRequiresAnEnabledResolvedDefaultOrSelection() {
+    // Break caught: treating a missing/disabled profile identifier as authorization to generate.
+    let enabled = modelProfile(id: "enabled", enabled: true)
+    let disabled = modelProfile(id: "disabled", enabled: false)
+
+    let invalidDefault = GenerationPopoverPresentation(
+      profiles: [enabled, disabled],
+      defaultProfileID: "disabled",
+      selectedProfileID: nil
+    )
+    let invalidSelection = GenerationPopoverPresentation(
+      profiles: [enabled, disabled],
+      defaultProfileID: "enabled",
+      selectedProfileID: "disabled"
+    )
+    let validSelection = GenerationPopoverPresentation(
+      profiles: [enabled, disabled],
+      defaultProfileID: nil,
+      selectedProfileID: "enabled"
+    )
+
+    #expect(invalidDefault.requiresExplicitSelection)
+    #expect(!invalidDefault.canGenerate)
+    #expect(!invalidSelection.canGenerate)
+    #expect(validSelection.canGenerate)
   }
 
   @Test @MainActor
@@ -187,7 +255,7 @@ struct ReadingFlowTests {
     bridge.suspendNextSavedMutation()
     let model = AppModel(
       bridge: bridge,
-      preferences: MemoryAppPreferences(welcomeCompleted: true)
+      preferences: MemoryAppPreferences(welcomeCompleted: true, selectedDestination: .saved)
     )
     await model.start()
     model.selectedStoryID = "story"
@@ -247,7 +315,7 @@ struct ReadingFlowTests {
     )
     let model = AppModel(
       bridge: bridge,
-      preferences: MemoryAppPreferences(welcomeCompleted: true)
+      preferences: MemoryAppPreferences(welcomeCompleted: true, selectedDestination: .saved)
     )
     await model.start()
     model.selectedStoryID = "story"
@@ -256,6 +324,252 @@ struct ReadingFlowTests {
 
     #expect(model.snapshot?.saved.isEmpty == true)
     #expect(model.selectedStoryID == nil)
+  }
+
+  @Test @MainActor
+  func unsavingInSavedClearsSelectionEvenWhenTheStoryRemainsInLatest() async {
+    // Break caught: validating detail selection against the global snapshot instead of Saved.
+    let savedStory = story(id: "story", title: "Saved", saved: true)
+    let initial = snapshot(todayStories: [], latest: [savedStory], saved: [savedStory])
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.savedResult = StoryMutationResult(
+      story: copy(savedStory, saved: false),
+      revision: mutationRevision
+    )
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true, selectedDestination: .saved)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+
+    await model.toggleSelectedStorySaved()
+
+    #expect(model.snapshot?.latest.first?.id == "story")
+    #expect(model.snapshot?.saved.isEmpty == true)
+    #expect(model.selectedStoryID == nil)
+  }
+
+  @Test @MainActor
+  func destinationChangeAndSnapshotReplacementPruneSelectionByVisibleMembership() async {
+    // Break caught: retaining a Latest selection after switching to Saved or after Saved removal.
+    let latestOnly = story(id: "latest", title: "Latest only")
+    let savedStory = story(id: "saved", title: "Saved", saved: true)
+    let initial = snapshot(
+      todayStories: [], latest: [latestOnly, savedStory], saved: [savedStory])
+    let replacement = snapshot(
+      revision: mutationRevision,
+      todayStories: [],
+      latest: [latestOnly, savedStory],
+      saved: []
+    )
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.enqueueSnapshot(replacement)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true, selectedDestination: .latest)
+    )
+    await model.start()
+    model.selectedStoryID = "latest"
+
+    model.destination = .saved
+    #expect(model.selectedStoryID == nil)
+
+    model.selectedStoryID = "saved"
+    await model.reloadSnapshot()
+    #expect(model.selectedStoryID == nil)
+  }
+
+  @Test @MainActor
+  func enabledCrossActionQueuesBehindTheInFlightMutationAndBothApplyInRevisionOrder() async {
+    // Break caught: showing Mark Read enabled during Save but silently dropping its action.
+    let initialStory = story(id: "story", title: "Signal")
+    let savedStory = copy(initialStory, saved: true)
+    let readSavedStory = copy(savedStory, read: true)
+    let initial = snapshot(todayStories: [initialStory], latest: [initialStory], saved: [])
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.savedResult = StoryMutationResult(story: savedStory, revision: mutationRevision)
+    bridge.readResult = StoryMutationResult(
+      story: readSavedStory,
+      revision: StateRevision(dataGeneration: 3, sourceConfigRevision: "source-a")
+    )
+    bridge.suspendNextSavedMutation()
+    bridge.suspendNextReadMutation()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+
+    let saveTask = Task { await model.toggleSelectedStorySaved() }
+    await eventually { bridge.savedRequests.count == 1 }
+    let readTask = Task { await model.toggleSelectedStoryRead() }
+    await eventually {
+      model.storyActionState(for: .markingRead(storyID: "story")) == .queued
+    }
+
+    #expect(model.storyActionState(for: .saving(storyID: "story")) == .inFlight)
+    #expect(bridge.readRequests.isEmpty)
+    bridge.releaseSavedMutations()
+    await eventually { bridge.readRequests.count == 1 }
+    #expect(model.selectedStory?.isSaved == true)
+    #expect(model.storyActionState(for: .markingRead(storyID: "story")) == .inFlight)
+
+    bridge.releaseReadMutations()
+    await saveTask.value
+    await readTask.value
+    #expect(model.selectedStory?.isSaved == true)
+    #expect(model.selectedStory?.isRead == true)
+    #expect(model.snapshot?.revision.dataGeneration == 3)
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
+  }
+
+  @Test @MainActor
+  func saveInvalidatesARevisionReadStartedBeforeTheMutation() async {
+    // Break caught: a late polling revision launching a stale reload after confirmed Save.
+    let initialStory = story(id: "story", title: "Signal")
+    let savedStory = copy(initialStory, saved: true)
+    let futureRevision = StateRevision(dataGeneration: 9, sourceConfigRevision: "external")
+    let bridge = FakeBridgeClient(
+      snapshot: snapshot(todayStories: [initialStory], latest: [initialStory], saved: []),
+      revisions: [futureRevision]
+    )
+    bridge.savedResult = StoryMutationResult(story: savedStory, revision: mutationRevision)
+    bridge.suspendNextStateRevision()
+    bridge.suspendNextSavedMutation()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+    model.setActive(true)
+    await eventually { bridge.stateRevisionCalls == 1 }
+
+    let saveTask = Task { await model.toggleSelectedStorySaved() }
+    await eventually { bridge.savedRequests.count == 1 }
+    bridge.releaseSavedMutations()
+    await saveTask.value
+    model.stopPolling()
+    bridge.releaseStateRevisions()
+    try? await Task.sleep(for: .milliseconds(20))
+
+    #expect(model.selectedStory?.isSaved == true)
+    #expect(model.snapshot?.revision == mutationRevision)
+    #expect(bridge.snapshotCalls == 1)
+  }
+
+  @Test @MainActor
+  func readBlocksReloadAndRejectsItsOlderSnapshotAfterConfirmation() async {
+    // Break caught: overlapping Read with reload, then overwriting the confirmed record.
+    let initialStory = story(id: "story", title: "Signal")
+    let readStory = copy(initialStory, read: true)
+    let initial = snapshot(todayStories: [initialStory], latest: [initialStory], saved: [])
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.readResult = StoryMutationResult(story: readStory, revision: mutationRevision)
+    bridge.enqueueSnapshot(initial)
+    bridge.suspendNextReadMutation()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    bridge.suspendNextSnapshot()
+    model.selectedStoryID = "story"
+
+    let readTask = Task { await model.toggleSelectedStoryRead() }
+    await eventually { bridge.readRequests.count == 1 }
+    let reloadTask = Task { await model.reloadSnapshot() }
+    try? await Task.sleep(for: .milliseconds(10))
+    #expect(bridge.snapshotCalls == 1)
+    #expect(model.selectedStory?.isRead == false)
+
+    bridge.releaseReadMutations()
+    await eventually { bridge.snapshotCalls == 2 }
+    bridge.releaseSnapshots()
+    await readTask.value
+    await reloadTask.value
+    #expect(model.selectedStory?.isRead == true)
+    #expect(model.snapshot?.revision == mutationRevision)
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
+  }
+
+  @Test @MainActor
+  func summarySelectionBlocksReloadAndRejectsItsOlderSnapshotAfterConfirmation() async {
+    // Break caught: a stale reload replacing a confirmed AI variant selection.
+    let initialStory = story(id: "story", title: "Signal")
+    let selectedStory = copy(initialStory, selectedVariantID: "variant-new")
+    let initial = snapshot(todayStories: [initialStory], latest: [initialStory], saved: [])
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.summaryResult = StoryMutationResult(story: selectedStory, revision: mutationRevision)
+    bridge.enqueueSnapshot(initial)
+    bridge.suspendNextSummaryMutation()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    bridge.suspendNextSnapshot()
+    model.selectedStoryID = "story"
+
+    let selectTask = Task { await model.selectSummary(.ai(variantID: "variant-new")) }
+    await eventually { bridge.summaryRequests.count == 1 }
+    let reloadTask = Task { await model.reloadSnapshot() }
+    try? await Task.sleep(for: .milliseconds(10))
+    #expect(bridge.snapshotCalls == 1)
+    #expect(model.selectedSummarySelection == .ai(variantID: "variant-old"))
+
+    bridge.releaseSummaryMutations()
+    await eventually { bridge.snapshotCalls == 2 }
+    bridge.releaseSnapshots()
+    await selectTask.value
+    await reloadTask.value
+    #expect(model.selectedSummarySelection == .ai(variantID: "variant-new"))
+    #expect(model.snapshot?.revision == mutationRevision)
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
+  }
+
+  @Test @MainActor
+  func regenerationBlocksReloadAndRejectsItsOlderSnapshotAfterConfirmation() async {
+    // Break caught: a stale reload replacing a newly generated confirmed variant.
+    let initialStory = story(id: "story", title: "Signal")
+    let generatedStory = copy(initialStory, selectedVariantID: "variant-new")
+    let initial = snapshot(todayStories: [initialStory], latest: [initialStory], saved: [])
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.generationResult = GenerationResult(
+      story: generatedStory,
+      selectedSummary: variantNew,
+      revision: mutationRevision
+    )
+    bridge.enqueueSnapshot(initial)
+    bridge.suspendNextGeneration()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    bridge.suspendNextSnapshot()
+    model.selectedStoryID = "story"
+
+    let generationTask = Task {
+      await model.regenerateSelectedStory(profileID: "profile-1", force: false)
+    }
+    await eventually { bridge.generationRequests.count == 1 }
+    let reloadTask = Task { await model.reloadSnapshot() }
+    try? await Task.sleep(for: .milliseconds(10))
+    #expect(bridge.snapshotCalls == 1)
+    #expect(model.selectedSummarySelection == .ai(variantID: "variant-old"))
+
+    bridge.releaseGenerations()
+    await eventually { bridge.snapshotCalls == 2 }
+    bridge.releaseSnapshots()
+    await generationTask.value
+    await reloadTask.value
+    #expect(model.selectedSummarySelection == .ai(variantID: "variant-new"))
+    #expect(model.snapshot?.revision == mutationRevision)
+    #expect(bridge.maximumConcurrentBridgeCalls == 1)
   }
 
   @Test @MainActor
@@ -336,8 +650,63 @@ struct ReadingFlowTests {
     await model.regenerateSelectedStory(profileID: nil, force: false)
 
     #expect(bridge.generationRequests.isEmpty)
-    #expect(model.storyActionError == "Choose a model profile before regenerating.")
+    #expect(model.storyActionError == "Choose an enabled model profile before regenerating.")
     #expect(model.selectedSummarySelection == .ai(variantID: "variant-old"))
+  }
+
+  @Test @MainActor
+  func regenerationRejectsMissingDisabledAndDanglingProfileIdentifiers() async {
+    // Break caught: sending a provider request through a profile that is absent or disabled.
+    let initialStory = story(id: "story", title: "Signal")
+    let enabled = modelProfile(id: "enabled", enabled: true)
+    let disabled = modelProfile(id: "disabled", enabled: false)
+    let initial = snapshot(
+      todayStories: [initialStory],
+      latest: [initialStory],
+      saved: [],
+      defaultProfileID: "missing",
+      modelProfiles: [enabled, disabled]
+    )
+    let bridge = FakeBridgeClient(snapshot: initial)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.selectedStoryID = "story"
+
+    await model.regenerateSelectedStory(profileID: nil, force: false)
+    await model.regenerateSelectedStory(profileID: "disabled", force: false)
+    await model.regenerateSelectedStory(profileID: "missing", force: false)
+
+    #expect(bridge.generationRequests.isEmpty)
+    #expect(model.storyActionError == "Choose an enabled model profile before regenerating.")
+  }
+
+  @Test @MainActor
+  func storyActionErrorsStayWithTheirStoryAndAction() async {
+    // Break caught: showing story A's provider failure while reading story B.
+    let first = story(id: "first", title: "First")
+    let second = story(id: "second", title: "Second")
+    let initial = snapshot(todayStories: [first, second], latest: [first, second], saved: [])
+    let bridge = FakeBridgeClient(snapshot: initial)
+    bridge.generationError = BridgeError.providerUnavailable
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.selectedStoryID = "first"
+
+    await model.regenerateSelectedStory(profileID: "profile-1", force: false)
+    #expect(
+      model.storyActionError(for: .regenerating(storyID: "first"))
+        == "The AI provider is unavailable. Smart summaries were kept."
+    )
+
+    model.selectedStoryID = "second"
+    #expect(model.storyActionError == nil)
+    #expect(model.storyActionError(for: .regenerating(storyID: "first")) != nil)
   }
 }
 
@@ -412,6 +781,7 @@ private let variantNew = SummaryVariant(
 private func story(
   id: String,
   title: String,
+  url: String? = nil,
   publishedAt: Date? = referenceDate,
   read: Bool = false,
   saved: Bool = false
@@ -419,7 +789,7 @@ private func story(
   Story(
     id: id,
     title: title,
-    canonicalURL: "https://example.test/\(id)",
+    canonicalURL: url ?? "https://example.test/\(id)",
     excerpt: "Original excerpt",
     category: "research",
     publishedAt: publishedAt,
@@ -478,7 +848,8 @@ private func snapshot(
   todayStories: [Story],
   latest: [Story],
   saved: [Story],
-  defaultProfileID: String? = "profile-1"
+  defaultProfileID: String? = "profile-1",
+  modelProfiles: [ModelProfile] = [.fixture]
 ) -> AppSnapshot {
   AppSnapshot(
     revision: revision,
@@ -494,8 +865,26 @@ private func snapshot(
     latest: latest,
     saved: saved,
     sources: sourceFixtures,
-    modelProfiles: [.fixture],
+    modelProfiles: modelProfiles,
     defaultModelProfileID: defaultProfileID,
     hasUsableAIProfile: true
+  )
+}
+
+private func modelProfile(id: String, enabled: Bool) -> ModelProfile {
+  let fixture = ModelProfile.fixture
+  return ModelProfile(
+    id: id,
+    name: id.capitalized,
+    provider: fixture.provider,
+    model: fixture.model,
+    endpoint: fixture.endpoint,
+    dialect: fixture.dialect,
+    credentialSource: fixture.credentialSource,
+    consentedAt: fixture.consentedAt,
+    enabled: enabled,
+    limits: fixture.limits,
+    createdAt: fixture.createdAt,
+    updatedAt: fixture.updatedAt
   )
 }

@@ -78,9 +78,7 @@ public struct StoryListView: View {
   public var body: some View {
     let snapshot = model.snapshot
     let stories = kind == .latest ? snapshot?.latest ?? [] : snapshot?.saved ?? []
-    let staleIDs = Set(
-      snapshot?.today?.items.filter(\.isStale).map { $0.story.id } ?? []
-    )
+    let staleIDs = snapshot.map(ReaderPresentationSupport.staleStoryIDs(in:)) ?? []
     let presentation = StoryListPresentation(
       kind: kind,
       stories: stories,
@@ -138,18 +136,33 @@ public struct StoryListView: View {
         NSWorkspace.shared.open(url)
       }
     }
+    .disabled(story.map { !StorySourceActionPresentation(story: $0).isEnabled } ?? true)
     Button(story?.isSaved == true ? "Remove from Saved" : "Save Story", systemImage: "bookmark") {
       model.selectedStoryID = storyID
       Task { await model.toggleSelectedStorySaved() }
     }
+    .disabled(
+      story.map { model.storyActionState(for: .saving(storyID: $0.id)) != nil } ?? true
+    )
     Button(story?.isRead == true ? "Mark Unread" : "Mark Read", systemImage: "checkmark.circle") {
       model.selectedStoryID = storyID
       Task { await model.toggleSelectedStoryRead() }
     }
+    .disabled(
+      story.map { model.storyActionState(for: .markingRead(storyID: $0.id)) != nil } ?? true
+    )
   }
 }
 
 enum ReaderPresentationSupport {
+  static func staleStoryIDs(in snapshot: AppSnapshot) -> Set<String> {
+    guard let today = snapshot.today else { return [] }
+    if today.isStale {
+      return Set(today.items.map { $0.story.id })
+    }
+    return Set(today.items.filter(\.isStale).map { $0.story.id })
+  }
+
   static func primarySource(for story: Story, sources: [Source]) -> String {
     guard let sourceID = story.sourceIDs.first else { return "Unknown source" }
     return sources.first(where: { $0.id == sourceID })?.name ?? sourceID

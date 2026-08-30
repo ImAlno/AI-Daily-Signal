@@ -14,7 +14,7 @@ public enum SummaryProvenance: Sendable, Equatable {
   public var shortLabel: String {
     switch self {
     case .raw: "Original excerpt"
-    case .smart: "Smart · local summary"
+    case .smart: "Smart · local algorithmic summary"
     case .ai(let provider, let model): "\(provider) · \(model)"
     }
   }
@@ -69,6 +69,7 @@ public struct StoryRowPresentation: Identifiable, Sendable, Equatable {
       category,
       provenance.accessibilityLabel,
     ]
+    if let rank { values.insert("Rank \(rank)", at: 0) }
     if isStale { values.append("stale") }
     if isSaved { values.append("saved") }
     if isRead { values.append("read") }
@@ -90,21 +91,16 @@ public struct StoryRowView: View {
       }
 
       VStack(alignment: .leading, spacing: 6) {
-        HStack(spacing: 5) {
-          Text(presentation.primarySource)
-            .foregroundStyle(.primary)
-          Text("·")
-          Text(presentation.relativeTime)
-          Text("·")
-          Text(presentation.category)
-          if presentation.isStale {
-            Label("Stale", systemImage: "clock.badge.exclamationmark")
-              .foregroundStyle(.orange)
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 5) {
+            metadata
+          }
+          VStack(alignment: .leading, spacing: 3) {
+            metadata
           }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
-        .lineLimit(1)
 
         Text(presentation.title)
           .font(.headline)
@@ -131,6 +127,20 @@ public struct StoryRowView: View {
     .contentShape(Rectangle())
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(presentation.accessibilitySummary)
+  }
+
+  @ViewBuilder
+  private var metadata: some View {
+    Text(presentation.primarySource)
+      .foregroundStyle(.primary)
+    Text("·")
+    Text(presentation.relativeTime)
+    Text("·")
+    Text(presentation.category)
+    if presentation.isStale {
+      Label("Stale", systemImage: "clock.badge.exclamationmark")
+        .foregroundStyle(.orange)
+    }
   }
 
   private func rankRail(_ rank: UInt32) -> some View {

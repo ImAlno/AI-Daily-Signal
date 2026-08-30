@@ -17,6 +17,8 @@ public struct StoryDetailPresentation: Sendable, Equatable {
   public let storyID: String
   public let title: String
   public let metadata: String
+  public let stateLabels: [String]
+  public let accessibilityMetadata: String
   public let isStale: Bool
   public let provenance: SummaryProvenance
   public let originalExcerpt: String?
@@ -42,6 +44,8 @@ public struct StoryDetailPresentation: Sendable, Equatable {
       SignalFormatters.relativeDate(story.publishedAt, relativeTo: reference),
       story.category,
     ].joined(separator: " · ")
+    stateLabels = [story.isRead ? "Read" : "Unread", story.isSaved ? "Saved" : "Not saved"]
+    accessibilityMetadata = ([metadata] + stateLabels).joined(separator: ", ")
     self.isStale = isStale
     self.sourceNames = sourceNames
     scoreExplanation = String(
@@ -100,6 +104,15 @@ public enum StorySourceURL {
       let url = components.url
     else { return nil }
     return url
+  }
+}
+
+public struct StorySourceActionPresentation: Sendable, Equatable {
+  public let url: URL?
+  public var isEnabled: Bool { url != nil }
+
+  public init(story: Story) {
+    url = StorySourceURL.validated(story.canonicalURL)
   }
 }
 
@@ -163,15 +176,14 @@ public struct StoryDetailView: View {
   ) -> some View {
     switch element {
     case .metadata:
-      HStack(spacing: 8) {
-        Text(presentation.metadata)
-        if presentation.isStale {
-          Label("Stale", systemImage: "clock.badge.exclamationmark")
-            .foregroundStyle(.orange)
-        }
+      ViewThatFits(in: .horizontal) {
+        metadataContent(presentation, axis: .horizontal)
+        metadataContent(presentation, axis: .vertical)
       }
       .font(.callout)
       .foregroundStyle(.secondary)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(presentation.accessibilityMetadata)
       .padding(.bottom, 12)
     case .title:
       Text(presentation.title)
@@ -215,27 +227,65 @@ public struct StoryDetailView: View {
       SummaryVariantPicker(story: story, model: model)
         .frame(maxWidth: 340, alignment: .leading)
         .padding(.bottom, 14)
-      HStack(spacing: 10) {
-        Button("Open Source", systemImage: "safari") {
-          if let url = StorySourceURL.validated(story.canonicalURL) {
-            NSWorkspace.shared.open(url)
-          }
-        }
-        .keyboardShortcut("o", modifiers: .command)
-
-        Button(story.isSaved ? "Remove from Saved" : "Save", systemImage: "bookmark") {
-          Task { await model.toggleSelectedStorySaved() }
-        }
-        .disabled(model.activeStoryAction == .saving(storyID: story.id))
-
-        Button(story.isRead ? "Mark Unread" : "Mark Read", systemImage: "checkmark.circle") {
-          Task { await model.toggleSelectedStoryRead() }
-        }
-        .disabled(model.activeStoryAction == .markingRead(storyID: story.id))
-
-        GenerationPopover(model: model, story: story)
+      ViewThatFits(in: .horizontal) {
+        actionContent(story, axis: .horizontal)
+        actionContent(story, axis: .vertical)
       }
       .controlSize(.regular)
+    }
+  }
+
+  @ViewBuilder
+  private func metadataContent(
+    _ presentation: StoryDetailPresentation,
+    axis: Axis
+  ) -> some View {
+    let content = Group {
+      Text(presentation.metadata)
+        .fixedSize(horizontal: false, vertical: true)
+      ForEach(presentation.stateLabels, id: \.self) { label in
+        Text(label)
+      }
+      if presentation.isStale {
+        Label("Stale", systemImage: "clock.badge.exclamationmark")
+          .foregroundStyle(.orange)
+      }
+    }
+    if axis == .horizontal {
+      HStack(spacing: 8) { content }
+    } else {
+      VStack(alignment: .leading, spacing: 5) { content }
+    }
+  }
+
+  @ViewBuilder
+  private func actionContent(_ story: Story, axis: Axis) -> some View {
+    let source = StorySourceActionPresentation(story: story)
+    let content = Group {
+      Button("Open Source", systemImage: "safari") {
+        if let url = source.url {
+          NSWorkspace.shared.open(url)
+        }
+      }
+      .keyboardShortcut("o", modifiers: .command)
+      .disabled(!source.isEnabled)
+
+      Button(story.isSaved ? "Remove from Saved" : "Save", systemImage: "bookmark") {
+        Task { await model.toggleSelectedStorySaved() }
+      }
+      .disabled(model.storyActionState(for: .saving(storyID: story.id)) != nil)
+
+      Button(story.isRead ? "Mark Unread" : "Mark Read", systemImage: "checkmark.circle") {
+        Task { await model.toggleSelectedStoryRead() }
+      }
+      .disabled(model.storyActionState(for: .markingRead(storyID: story.id)) != nil)
+
+      GenerationPopover(model: model, story: story)
+    }
+    if axis == .horizontal {
+      HStack(spacing: 10) { content }
+    } else {
+      VStack(alignment: .leading, spacing: 10) { content }
     }
   }
 

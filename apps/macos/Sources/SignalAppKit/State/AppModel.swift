@@ -14,11 +14,16 @@ public enum AppPhase: Sendable, Equatable {
   case failure(message: String)
 }
 
-public enum StoryAction: Sendable, Equatable {
+public enum StoryAction: Sendable, Hashable {
   case saving(storyID: String)
   case markingRead(storyID: String)
   case selectingSummary(storyID: String)
   case regenerating(storyID: String)
+}
+
+public enum StoryActionState: Sendable, Equatable {
+  case queued
+  case inFlight
 }
 
 private enum ReloadOrigin: Equatable {
@@ -30,11 +35,32 @@ private enum BridgeActivity: Equatable {
   case idle
   case reloading(token: UUID, origin: ReloadOrigin)
   case refreshing(operationID: String)
+  case mutating(token: UUID, action: StoryAction)
 }
 
 private struct PendingRefresh: Equatable {
   let operationID: String
   let ai: Bool
+}
+
+private enum StoryMutationPayload: Sendable {
+  case save(storyID: String, saved: Bool)
+  case read(storyID: String, read: Bool)
+  case select(storyID: String, variantID: String)
+  case regenerate(storyID: String, profileID: String, force: Bool)
+}
+
+private struct PendingStoryMutation {
+  let token: UUID
+  let action: StoryAction
+  let payload: StoryMutationPayload
+  let continuation: CheckedContinuation<Void, Never>
+}
+
+private struct StoryMutationConfirmation {
+  let story: Story
+  let revision: StateRevision
+  let generatedSelectionID: String?
 }
 
 @MainActor
@@ -43,10 +69,12 @@ public final class AppModel {
   public private(set) var snapshot: AppSnapshot?
   public private(set) var phase: AppPhase = .loading
   public private(set) var activeOperationID: String?
-  public private(set) var activeStoryAction: StoryAction?
-  public private(set) var storyActionError: String?
+  public private(set) var storyActionStates: [StoryAction: StoryActionState] = [:]
   public var destination: Destination {
-    didSet { preferences.selectedDestination = destination }
+    didSet {
+      preferences.selectedDestination = destination
+      validateSelectedStoryForDestination()
+    }
   }
   public var selectedStoryID: String?
 
@@ -58,10 +86,13 @@ public final class AppModel {
   @ObservationIgnored private var reloadTask: Task<Void, Never>?
   @ObservationIgnored private var bridgeActivity = BridgeActivity.idle
   @ObservationIgnored private var pendingRefresh: PendingRefresh?
+  @ObservationIgnored private var pendingReloadWaiters: [CheckedContinuation<Void, Never>] = []
+  @ObservationIgnored private var pendingStoryMutations: [PendingStoryMutation] = []
   @ObservationIgnored private var isActive = false
   @ObservationIgnored private var pollGeneration: UInt64 = 0
   @ObservationIgnored private var revisionEpoch: UInt64 = 0
   private var summarySelections: [String: ReadingSummarySelection] = [:]
+  private var storyActionErrors: [StoryAction: String] = [:]
 
   public init(
     bridge: any BridgeClient,
@@ -92,11 +123,33 @@ public final class AppModel {
 
   public var selectedStory: Story? {
     guard let selectedStoryID else { return nil }
-    if let story = snapshot?.today?.items.first(where: { $0.story.id == selectedStoryID })?.story {
-      return story
+    switch destination {
+    case .today:
+      return snapshot?.today?.items.first(where: { $0.story.id == selectedStoryID })?.story
+    case .latest:
+      return snapshot?.latest.first(where: { $0.id == selectedStoryID })
+    case .saved:
+      return snapshot?.saved.first(where: { $0.id == selectedStoryID })
+    case .sources, .settings:
+      return nil
     }
-    return snapshot?.latest.first(where: { $0.id == selectedStoryID })
-      ?? snapshot?.saved.first(where: { $0.id == selectedStoryID })
+  }
+
+  public var activeStoryAction: StoryAction? {
+    storyActionStates.first(where: { $0.value == .inFlight })?.key
+  }
+
+  public var storyActionError: String? {
+    guard let selectedStoryID else { return nil }
+    return storyActionErrors.first(where: { actionStoryID($0.key) == selectedStoryID })?.value
+  }
+
+  public func storyActionState(for action: StoryAction) -> StoryActionState? {
+    storyActionStates[action]
+  }
+
+  public func storyActionError(for action: StoryAction) -> String? {
+    storyActionErrors[action]
   }
 
   public var selectedSummarySelection: ReadingSummarySelection? {
@@ -135,7 +188,7 @@ public final class AppModel {
     switch selection {
     case .raw, .smart:
       summarySelections[storyID] = selection
-      storyActionError = nil
+      storyActionErrors = storyActionErrors.filter { actionStoryID($0.key) != storyID }
     case .ai:
       break
     }
@@ -156,7 +209,7 @@ public final class AppModel {
   }
 
   private func requestRefresh(ai: Bool, startingPhase: AppPhase) async {
-    guard activeOperationID == nil, activeStoryAction == nil else { return }
+    guard activeOperationID == nil else { return }
     invalidatePendingRevisionReads()
     let operationID = UUID().uuidString
     activeOperationID = operationID
@@ -165,7 +218,7 @@ public final class AppModel {
     switch bridgeActivity {
     case .idle:
       beginRefresh(request)
-    case .reloading:
+    case .reloading, .mutating:
       pendingRefresh = request
     case .refreshing:
       assertionFailure("An active refresh must own activeOperationID")
@@ -186,45 +239,23 @@ public final class AppModel {
   }
 
   public func toggleSelectedStorySaved() async {
-    guard activeOperationID == nil, bridgeActivity == .idle, activeStoryAction == nil,
-      let selectedStory
-    else { return }
+    guard let selectedStory else { return }
     let action = StoryAction.saving(storyID: selectedStory.id)
-    activeStoryAction = action
-    storyActionError = nil
-    defer {
-      if activeStoryAction == action { activeStoryAction = nil }
-    }
-    do {
-      let confirmed = try await bridge.setSaved(
-        storyID: selectedStory.id,
-        saved: !selectedStory.isSaved
-      )
-      replaceStory(confirmed.story, revision: confirmed.revision)
-    } catch {
-      applyStoryActionError(error)
-    }
+    guard storyActionStates[action] == nil else { return }
+    await enqueueStoryMutation(
+      action: action,
+      payload: .save(storyID: selectedStory.id, saved: !selectedStory.isSaved)
+    )
   }
 
   public func toggleSelectedStoryRead() async {
-    guard activeOperationID == nil, bridgeActivity == .idle, activeStoryAction == nil,
-      let selectedStory
-    else { return }
+    guard let selectedStory else { return }
     let action = StoryAction.markingRead(storyID: selectedStory.id)
-    activeStoryAction = action
-    storyActionError = nil
-    defer {
-      if activeStoryAction == action { activeStoryAction = nil }
-    }
-    do {
-      let confirmed = try await bridge.setRead(
-        storyID: selectedStory.id,
-        read: !selectedStory.isRead
-      )
-      replaceStory(confirmed.story, revision: confirmed.revision)
-    } catch {
-      applyStoryActionError(error)
-    }
+    guard storyActionStates[action] == nil else { return }
+    await enqueueStoryMutation(
+      action: action,
+      payload: .read(storyID: selectedStory.id, read: !selectedStory.isRead)
+    )
   }
 
   public func selectSummary(
@@ -236,58 +267,139 @@ public final class AppModel {
     case .raw, .smart:
       showSummary(selection, for: storyID)
     case .ai(let variantID):
-      guard activeOperationID == nil, bridgeActivity == .idle, activeStoryAction == nil,
-        let current = story(id: storyID),
+      guard let current = story(id: storyID),
         current.summaryVariants.contains(where: { $0.id == variantID })
       else { return }
       let action = StoryAction.selectingSummary(storyID: storyID)
-      activeStoryAction = action
-      storyActionError = nil
-      defer {
-        if activeStoryAction == action { activeStoryAction = nil }
-      }
-      do {
-        let confirmed = try await bridge.selectSummary(
-          storyID: storyID,
-          variantID: variantID
-        )
-        replaceStory(confirmed.story, revision: confirmed.revision)
-        if confirmed.story.selectedSummary?.id == variantID {
-          summarySelections[storyID] = .ai(variantID: variantID)
-        }
-      } catch {
-        applyStoryActionError(error)
-      }
+      guard storyActionStates[action] == nil else { return }
+      await enqueueStoryMutation(
+        action: action,
+        payload: .select(storyID: storyID, variantID: variantID)
+      )
     }
   }
 
   public func regenerateSelectedStory(profileID: String?, force: Bool) async {
-    guard activeOperationID == nil, bridgeActivity == .idle, activeStoryAction == nil,
-      let selectedStory
-    else { return }
+    guard let selectedStory else { return }
     let resolvedProfile = profileID ?? snapshot?.defaultModelProfileID
-    guard let resolvedProfile else {
-      storyActionError = "Choose a model profile before regenerating."
+    let enabledProfileIDs = Set(snapshot?.modelProfiles.filter(\.enabled).map(\.id) ?? [])
+    let action = StoryAction.regenerating(storyID: selectedStory.id)
+    guard let resolvedProfile, enabledProfileIDs.contains(resolvedProfile) else {
+      storyActionErrors[action] = "Choose an enabled model profile before regenerating."
       return
     }
-    let action = StoryAction.regenerating(storyID: selectedStory.id)
-    activeStoryAction = action
-    storyActionError = nil
-    defer {
-      if activeStoryAction == action { activeStoryAction = nil }
-    }
-    do {
-      let confirmed = try await bridge.regenerate(
+    guard storyActionStates[action] == nil else { return }
+    await enqueueStoryMutation(
+      action: action,
+      payload: .regenerate(
         storyID: selectedStory.id,
-        profile: resolvedProfile,
+        profileID: resolvedProfile,
         force: force
       )
-      replaceStory(confirmed.story, revision: confirmed.revision)
-      if let selected = confirmed.selectedSummary {
-        summarySelections[selectedStory.id] = .ai(variantID: selected.id)
+    )
+  }
+
+  private func enqueueStoryMutation(
+    action: StoryAction,
+    payload: StoryMutationPayload
+  ) async {
+    storyActionErrors[action] = nil
+    storyActionStates[action] = .queued
+    await withCheckedContinuation { continuation in
+      pendingStoryMutations.append(
+        PendingStoryMutation(
+          token: UUID(),
+          action: action,
+          payload: payload,
+          continuation: continuation
+        )
+      )
+      beginNextBridgeActivityIfPossible()
+    }
+  }
+
+  private func beginStoryMutation(_ pending: PendingStoryMutation) {
+    guard bridgeActivity == .idle else { return }
+    invalidatePendingRevisionReads()
+    storyActionStates[pending.action] = .inFlight
+    bridgeActivity = .mutating(token: pending.token, action: pending.action)
+    let bridge = bridge
+    Task { [weak self, bridge] in
+      do {
+        let confirmation: StoryMutationConfirmation
+        switch pending.payload {
+        case .save(let storyID, let saved):
+          let result = try await bridge.setSaved(storyID: storyID, saved: saved)
+          confirmation = StoryMutationConfirmation(
+            story: result.story,
+            revision: result.revision,
+            generatedSelectionID: nil
+          )
+        case .read(let storyID, let read):
+          let result = try await bridge.setRead(storyID: storyID, read: read)
+          confirmation = StoryMutationConfirmation(
+            story: result.story,
+            revision: result.revision,
+            generatedSelectionID: nil
+          )
+        case .select(let storyID, let variantID):
+          let result = try await bridge.selectSummary(storyID: storyID, variantID: variantID)
+          confirmation = StoryMutationConfirmation(
+            story: result.story,
+            revision: result.revision,
+            generatedSelectionID: result.story.selectedSummary?.id == variantID ? variantID : nil
+          )
+        case .regenerate(let storyID, let profileID, let force):
+          let result = try await bridge.regenerate(
+            storyID: storyID,
+            profile: profileID,
+            force: force
+          )
+          confirmation = StoryMutationConfirmation(
+            story: result.story,
+            revision: result.revision,
+            generatedSelectionID: result.selectedSummary?.id
+          )
+        }
+        self?.finishStoryMutation(pending, confirmation: confirmation, error: nil)
+      } catch {
+        self?.finishStoryMutation(pending, confirmation: nil, error: error)
       }
-    } catch {
-      applyStoryActionError(error)
+    }
+  }
+
+  private func finishStoryMutation(
+    _ pending: PendingStoryMutation,
+    confirmation: StoryMutationConfirmation?,
+    error: (any Error)?
+  ) {
+    guard bridgeActivity == .mutating(token: pending.token, action: pending.action) else { return }
+    invalidatePendingRevisionReads()
+    if let confirmation,
+      confirmation.revision.dataGeneration > (snapshot?.revision.dataGeneration ?? 0)
+    {
+      replaceStory(confirmation.story, revision: confirmation.revision)
+      if let variantID = confirmation.generatedSelectionID {
+        summarySelections[confirmation.story.id] = .ai(variantID: variantID)
+      }
+    } else if let error {
+      storyActionErrors[pending.action] = userFacingMessage(for: error)
+    }
+    storyActionStates[pending.action] = nil
+    bridgeActivity = .idle
+    pending.continuation.resume()
+    beginNextBridgeActivityIfPossible()
+  }
+
+  private func beginNextBridgeActivityIfPossible() {
+    guard bridgeActivity == .idle else { return }
+    if let pendingRefresh {
+      self.pendingRefresh = nil
+      beginRefresh(pendingRefresh)
+    } else if !pendingStoryMutations.isEmpty {
+      beginStoryMutation(pendingStoryMutations.removeFirst())
+    } else if !pendingReloadWaiters.isEmpty {
+      beginReload(origin: .requested)
     }
   }
 
@@ -317,6 +429,10 @@ public final class AppModel {
       await reloadTask?.value
     case .refreshing:
       await refreshTask?.value
+    case .mutating:
+      await withCheckedContinuation { continuation in
+        pendingReloadWaiters.append(continuation)
+      }
     }
   }
 
@@ -481,10 +597,12 @@ public final class AppModel {
       apply(error)
     }
 
-    if let pendingRefresh {
-      self.pendingRefresh = nil
-      beginRefresh(pendingRefresh)
+    let waiters = pendingReloadWaiters
+    pendingReloadWaiters.removeAll()
+    for waiter in waiters {
+      waiter.resume()
     }
+    beginNextBridgeActivityIfPossible()
   }
 
   private func beginRefresh(_ request: PendingRefresh) {
@@ -557,6 +675,7 @@ public final class AppModel {
     } else if let error {
       apply(error)
     }
+    beginNextBridgeActivityIfPossible()
   }
 
   private func invalidatePendingRevisionReads() {
@@ -564,14 +683,17 @@ public final class AppModel {
   }
 
   private func replaceSnapshot(_ replacement: AppSnapshot) {
+    if let current = snapshot,
+      replacement.revision.dataGeneration < current.revision.dataGeneration
+    {
+      return
+    }
     snapshot = replacement
     summarySelections = summarySelections.filter { storyID, selection in
       replacement.containsStory(id: storyID)
         && isValid(selection, for: story(id: storyID))
     }
-    if let selectedStoryID, !replacement.containsStory(id: selectedStoryID) {
-      self.selectedStoryID = nil
-    }
+    validateSelectedStoryForDestination()
     phase = presentationPhase(for: replacement)
   }
 
@@ -619,8 +741,8 @@ public final class AppModel {
     )
     if let selectedStoryID, self.snapshot?.containsStory(id: selectedStoryID) != true {
       summarySelections.removeValue(forKey: selectedStoryID)
-      self.selectedStoryID = nil
     }
+    validateSelectedStoryForDestination()
   }
 
   private func isValid(_ selection: ReadingSummarySelection, for story: Story?) -> Bool {
@@ -632,8 +754,19 @@ public final class AppModel {
     }
   }
 
-  private func applyStoryActionError(_ error: any Error) {
-    storyActionError = userFacingMessage(for: error)
+  private func validateSelectedStoryForDestination() {
+    guard selectedStoryID != nil else { return }
+    if selectedStory == nil {
+      selectedStoryID = nil
+    }
+  }
+
+  private func actionStoryID(_ action: StoryAction) -> String {
+    switch action {
+    case .saving(let storyID), .markingRead(let storyID), .selectingSummary(let storyID),
+      .regenerating(let storyID):
+      return storyID
+    }
   }
 
   private func presentationPhase(for snapshot: AppSnapshot) -> AppPhase {

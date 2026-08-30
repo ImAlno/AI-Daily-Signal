@@ -6,6 +6,11 @@ public struct SummaryVariantOption: Identifiable, Sendable, Equatable {
   public let title: String
   public let detail: String
   public let provenance: SummaryProvenance
+
+  public var displayLabel: String {
+    if selection == .smart { return provenance.shortLabel }
+    return "\(title) — \(detail)"
+  }
 }
 
 public struct SummaryVariantPickerPresentation: Sendable, Equatable {
@@ -29,7 +34,7 @@ public struct SummaryVariantPickerPresentation: Sendable, Equatable {
       SummaryVariantOption(
         selection: .smart,
         title: "Smart",
-        detail: "Local signal summary",
+        detail: "Local algorithmic summary",
         provenance: .smart
       ),
     ]
@@ -65,32 +70,39 @@ public struct SummaryVariantPicker: View {
       story: story,
       selection: model.summarySelection(for: story.id)
     )
-    Picker("Summary", selection: selectionBinding) {
+    Menu {
       ForEach(presentation.options) { option in
-        VStack(alignment: .leading) {
-          Text(option.title)
-          Text(option.detail)
+        Button {
+          choose(option.selection)
+        } label: {
+          Label(
+            option.displayLabel,
+            systemImage: option.selection == presentation.selection ? "checkmark" : "circle"
+          )
         }
-        .tag(option.selection)
+        .disabled(
+          isAI(option.selection)
+            && model.storyActionState(for: .selectingSummary(storyID: story.id)) != nil
+        )
         .accessibilityLabel("\(option.title), \(option.detail)")
       }
+    } label: {
+      Label("Summary", systemImage: "text.quote")
     }
-    .pickerStyle(.menu)
-    .disabled(model.activeStoryAction == .selectingSummary(storyID: story.id))
     .accessibilityHint("Choose the original excerpt, Smart summary, or a cached AI summary")
   }
 
-  private var selectionBinding: Binding<ReadingSummarySelection> {
-    Binding(
-      get: { model.summarySelection(for: story.id) },
-      set: { selection in
-        switch selection {
-        case .raw, .smart:
-          model.showSummary(selection, for: story.id)
-        case .ai:
-          Task { await model.selectSummary(selection, for: story.id) }
-        }
-      }
-    )
+  private func choose(_ selection: ReadingSummarySelection) {
+    switch selection {
+    case .raw, .smart:
+      model.showSummary(selection, for: story.id)
+    case .ai:
+      Task { await model.selectSummary(selection, for: story.id) }
+    }
+  }
+
+  private func isAI(_ selection: ReadingSummarySelection) -> Bool {
+    if case .ai = selection { return true }
+    return false
   }
 }
