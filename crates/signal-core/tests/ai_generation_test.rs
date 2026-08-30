@@ -103,11 +103,15 @@ async fn pre_dispatch_cancellation_finalizes_the_reserved_attempt_uncharged() {
 
     assert!(matches!(result, Err(signal_core::SignalError::Cancelled)));
     assert_eq!(fixture.provider.request_count(), 0);
-    let attempt = fixture
-        .store()
-        .list_generation_attempts()
-        .unwrap()
-        .remove(0);
+    let attempts = fixture.store().list_generation_attempts().unwrap();
+    assert_eq!(attempts.len(), 1);
+    assert!(
+        attempts
+            .iter()
+            .all(|attempt| attempt.status != signal_core::GenerationStatus::Reserved)
+    );
+    let attempt = &attempts[0];
+    assert_eq!(attempt.status, signal_core::GenerationStatus::Failed);
     assert_eq!(
         attempt.final_outcome,
         Some(GenerationOutcomeKind::FailedUncharged)
