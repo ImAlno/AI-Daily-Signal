@@ -51,45 +51,54 @@ public struct SourcesView: View {
     let standard = sources.filter { $0.origin == .standard }
     let personal = sources.filter { $0.origin == .personal }
 
-    List {
-      Section("Standard Sources") {
-        if standard.isEmpty {
-          sourceEmptyRow(
-            "No standard sources",
-            detail: "Build a briefing to initialize the standard source set."
-          )
-        } else {
-          ForEach(standard) { source in
-            sourceRow(source)
-          }
+    VStack(spacing: 0) {
+      if model.inlineEditorRoute == .addSource {
+        ScrollView {
+          SourceEditorView(model: model)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 24)
+            .frame(maxWidth: .infinity)
         }
-      }
+      } else {
+        List {
+          Section("Standard Sources") {
+            if standard.isEmpty {
+              sourceEmptyRow(
+                "No standard sources",
+                detail: "Build a briefing to initialize the standard source set."
+              )
+            } else {
+              ForEach(standard) { source in
+                sourceRow(source)
+              }
+            }
+          }
 
-      Section("Personal Sources") {
-        if personal.isEmpty {
-          sourceEmptyRow(
-            "No personal sources",
-            detail: "Add an RSS or Atom feed to include it in future briefings."
-          )
-        } else {
-          ForEach(personal) { source in
-            sourceRow(source)
+          Section("Personal Sources") {
+            if personal.isEmpty {
+              sourceEmptyRow(
+                "No personal sources",
+                detail: "Add an RSS or Atom feed to include it in future briefings."
+              )
+            } else {
+              ForEach(personal) { source in
+                sourceRow(source)
+              }
+            }
           }
         }
+        .listStyle(.inset)
       }
     }
-    .listStyle(.inset)
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
         Button("Add Source", systemImage: "plus") {
           model.presentSourceEditor()
         }
         .keyboardShortcut("n", modifiers: [.command, .shift])
+        .disabled(model.inlineEditorRoute == .addSource)
         .help("Add personal source (⇧⌘N)")
       }
-    }
-    .sheet(isPresented: sourceEditorPresentation) {
-      SourceEditorView(model: model)
     }
     .confirmationDialog(
       pendingRemoval.map { "Remove \($0.name)?" } ?? "Remove personal source?",
@@ -115,19 +124,6 @@ public struct SourcesView: View {
       get: { pendingRemoval != nil },
       set: { presented in
         if !presented { pendingRemoval = nil }
-      }
-    )
-  }
-
-  private var sourceEditorPresentation: Binding<Bool> {
-    Binding(
-      get: { model.isSourceEditorPresented },
-      set: { isPresented in
-        if isPresented {
-          model.presentSourceEditor()
-        } else {
-          model.dismissSourceEditor()
-        }
       }
     )
   }

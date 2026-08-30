@@ -126,6 +126,45 @@ public struct SourceEditorView: View, CustomDebugStringConvertible, CustomReflec
       revealsValidation: revealsValidation
     )
 
+    VStack(alignment: .leading, spacing: 16) {
+      HStack {
+        Text("Add Personal Source")
+          .font(.title2.weight(.semibold))
+        Spacer()
+        Button("Cancel") {
+          model.dismissSourceEditor()
+        }
+        .keyboardShortcut(.cancelAction)
+        Button {
+          save()
+        } label: {
+          if isSaving {
+            ProgressView()
+              .controlSize(.small)
+              .accessibilityLabel("Adding source")
+          } else {
+            Text("Add Source")
+          }
+        }
+        .keyboardShortcut(.defaultAction)
+        .disabled(!presentation.canSave)
+      }
+
+      sourceForm(presentation: presentation)
+        .formStyle(.grouped)
+        .disabled(isSaving)
+    }
+    .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
+    .task {
+      focusedField = .name
+    }
+    .onChange(of: draft.name) { _, _ in revealsValidation = true }
+    .onChange(of: draft.feedURL) { _, _ in revealsValidation = true }
+    .onChange(of: draft.category) { _, _ in revealsValidation = true }
+    .onChange(of: weightText) { _, _ in revealsValidation = true }
+  }
+
+  private func sourceForm(presentation: SourceEditorPresentation) -> some View {
     Form {
       Section("Feed") {
         TextField("Name", text: $draft.name, prompt: Text("Publication or project"))
@@ -157,41 +196,6 @@ public struct SourceEditorView: View, CustomDebugStringConvertible, CustomReflec
         }
       }
     }
-    .formStyle(.grouped)
-    .disabled(isSaving)
-    .frame(minWidth: 460, idealWidth: 520, minHeight: 390)
-    .navigationTitle("Add Personal Source")
-    .safeAreaInset(edge: .bottom) {
-      HStack {
-        Spacer()
-        Button("Cancel") {
-          model.dismissSourceEditor()
-        }
-        .keyboardShortcut(.cancelAction)
-        Button {
-          save()
-        } label: {
-          if isSaving {
-            ProgressView()
-              .controlSize(.small)
-              .accessibilityLabel("Adding source")
-          } else {
-            Text("Add Source")
-          }
-        }
-        .keyboardShortcut(.defaultAction)
-        .disabled(!presentation.canSave)
-      }
-      .padding()
-      .background(.bar)
-    }
-    .task {
-      focusedField = .name
-    }
-    .onChange(of: draft.name) { _, _ in revealsValidation = true }
-    .onChange(of: draft.feedURL) { _, _ in revealsValidation = true }
-    .onChange(of: draft.category) { _, _ in revealsValidation = true }
-    .onChange(of: weightText) { _, _ in revealsValidation = true }
   }
 
   private func save() {

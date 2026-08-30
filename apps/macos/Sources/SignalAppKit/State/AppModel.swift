@@ -132,7 +132,6 @@ public final class AppModel {
   public private(set) var modelEditorError: String?
   public private(set) var credentialCleanupWarning: String?
   public private(set) var inlineEditorRoute: InlineEditorRoute?
-  public var isSourceEditorPresented: Bool { inlineEditorRoute == .addSource }
   public var isModelEditorPresented: Bool { inlineEditorRoute == .addModel }
   public var destination: Destination {
     didSet {

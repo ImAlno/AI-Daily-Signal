@@ -119,7 +119,7 @@ struct SourceSettingsTests {
 
   @Test
   func pristineSourceEditorStaysQuietUntilRelevantInteraction() {
-    // Break caught: presenting required-field failure copy as soon as a calm new sheet opens.
+    // Break caught: presenting required-field failure copy as soon as a calm inline form opens.
     let draft = SourceEditorDraft()
 
     let pristine = SourceEditorPresentation(
@@ -331,7 +331,7 @@ struct SourceSettingsTests {
 
   @Test @MainActor
   func presentingAndDismissingSourceEditorClearStaleFailureCopy() async {
-    // Break caught: reopening a sheet with the previous bridge failure still visible.
+    // Break caught: reopening an inline form with the previous bridge failure still visible.
     let bridge = FakeBridgeClient(snapshot: sourceSnapshot(sources: [standardSource]))
     bridge.sourceError = BridgeError.invalidInput
     let model = AppModel(
