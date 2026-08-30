@@ -91,11 +91,13 @@ struct AppPresentationTests {
   }
 
   @Test
-  func preferencesDescribeOnlyCurrentLocalCompanionBehavior() {
-    // Break caught: showing invented settings or misreporting whether AI summaries are available.
+  func preferencesExplainThatDisplayedValuesAreCurrentStatus() {
+    // Break caught: presenting status rows without explaining their local companion context.
     let optional = PreferencesPresentation(hasUsableAIProfile: false)
     let enabled = PreferencesPresentation(hasUsableAIProfile: true)
 
+    #expect(optional.title == "Preferences")
+    #expect(optional.guidance == "Review how the companion stores data and works with the CLI.")
     #expect(optional.storage == "On this Mac")
     #expect(optional.aiSummaries == "Optional")
     #expect(enabled.aiSummaries == "Enabled")

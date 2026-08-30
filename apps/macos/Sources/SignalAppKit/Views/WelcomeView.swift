@@ -39,7 +39,7 @@ public struct WelcomeView: View {
 
         VStack(alignment: .leading, spacing: 8) {
           Text("AI Daily Signal")
-            .font(.largeTitle.weight(.semibold))
+            .font(.system(size: 30, weight: .semibold))
             .accessibilityAddTraits(.isHeader)
             .accessibilitySortPriority(AccessibilityOrder.title.sortPriority)
           Text("A focused daily briefing for understanding what changed in AI.")
