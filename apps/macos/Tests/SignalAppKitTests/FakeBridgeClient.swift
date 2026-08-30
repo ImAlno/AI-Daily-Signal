@@ -27,6 +27,7 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var storedStateRevisionCalls = 0
   private var storedRefreshEntryCalls = 0
   private var storedModelInputs: [ModelProfileInput] = []
+  private var storedSavedRequests: [(storyID: String, saved: Bool)] = []
   private var storedSnapshotError: (any Error)?
   private var storedRefreshError: (any Error)?
   private var storedModelError: (any Error)?
@@ -79,6 +80,10 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
 
   var modelInputs: [ModelProfileInput] {
     lock.withLock { storedModelInputs }
+  }
+
+  var savedRequests: [(storyID: String, saved: Bool)] {
+    lock.withLock { storedSavedRequests }
   }
 
   func enqueueSnapshot(_ snapshot: AppSnapshot) {
@@ -247,7 +252,25 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     return matched
   }
 
-  func setSaved(storyID: String, saved: Bool) async throws -> Story { .fixture }
+  func setSaved(storyID: String, saved: Bool) async throws -> Story {
+    lock.withLock { storedSavedRequests.append((storyID, saved)) }
+    let story = Story.fixture
+    return Story(
+      id: story.id,
+      title: story.title,
+      canonicalURL: story.canonicalURL,
+      excerpt: story.excerpt,
+      category: story.category,
+      publishedAt: story.publishedAt,
+      sourceIDs: story.sourceIDs,
+      score: story.score,
+      smartSummary: story.smartSummary,
+      isRead: story.isRead,
+      isSaved: saved,
+      selectedSummary: story.selectedSummary,
+      summaryVariants: story.summaryVariants
+    )
+  }
   func setRead(storyID: String, read: Bool) async throws -> Story { .fixture }
   func selectSummary(storyID: String, variantID: String) async throws -> SummaryVariant { .fixture }
   func regenerate(storyID: String, profile: String?, force: Bool) async throws -> GenerationResult {

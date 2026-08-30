@@ -78,6 +78,15 @@ public final class AppModel {
     }
   }
 
+  public var selectedStory: Story? {
+    guard let selectedStoryID else { return nil }
+    if let story = snapshot?.today?.items.first(where: { $0.story.id == selectedStoryID })?.story {
+      return story
+    }
+    return snapshot?.latest.first(where: { $0.id == selectedStoryID })
+      ?? snapshot?.saved.first(where: { $0.id == selectedStoryID })
+  }
+
   public func start() async {
     phase = .loading
     await reloadSnapshot()
@@ -115,6 +124,19 @@ public final class AppModel {
       invalidatePendingRevisionReads()
       phase = snapshot.map(presentationPhase(for:)) ?? .empty
       return
+    }
+  }
+
+  public func toggleSelectedStorySaved() async {
+    guard activeOperationID == nil, bridgeActivity == .idle, let selectedStory else { return }
+    do {
+      let confirmed = try await bridge.setSaved(
+        storyID: selectedStory.id,
+        saved: !selectedStory.isSaved
+      )
+      replaceStory(confirmed)
+    } catch {
+      apply(error)
     }
   }
 
@@ -396,6 +418,44 @@ public final class AppModel {
       self.selectedStoryID = nil
     }
     phase = presentationPhase(for: replacement)
+  }
+
+  private func replaceStory(_ replacement: Story) {
+    guard let snapshot else { return }
+    let today = snapshot.today.map { briefing in
+      Briefing(
+        date: briefing.date,
+        generatedAt: briefing.generatedAt,
+        isStale: briefing.isStale,
+        items: briefing.items.map { item in
+          guard item.story.id == replacement.id else { return item }
+          return BriefingItem(
+            position: item.position,
+            section: item.section,
+            isStale: item.isStale,
+            story: replacement,
+            selectedSummary: replacement.selectedSummary,
+            summaryVariants: replacement.summaryVariants
+          )
+        }
+      )
+    }
+    let latest = snapshot.latest.map { $0.id == replacement.id ? replacement : $0 }
+    var saved = snapshot.saved.filter { $0.id != replacement.id }
+    if replacement.isSaved {
+      saved.append(replacement)
+    }
+    self.snapshot = AppSnapshot(
+      revision: snapshot.revision,
+      status: snapshot.status,
+      today: today,
+      latest: latest,
+      saved: saved,
+      sources: snapshot.sources,
+      modelProfiles: snapshot.modelProfiles,
+      defaultModelProfileID: snapshot.defaultModelProfileID,
+      hasUsableAIProfile: snapshot.hasUsableAIProfile
+    )
   }
 
   private func presentationPhase(for snapshot: AppSnapshot) -> AppPhase {
