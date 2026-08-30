@@ -541,6 +541,7 @@ pub mod test_support {
         requested_prompts: Mutex<Vec<(String, String)>>,
         mode: Mutex<RecordingProviderMode>,
         queued_modes: Mutex<VecDeque<RecordingProviderMode>>,
+        cancel_before_dispatch: AtomicBool,
     }
 
     impl Default for RecordingProvider {
@@ -553,6 +554,7 @@ pub mod test_support {
                     output_tokens: 60,
                 }))),
                 queued_modes: Mutex::new(VecDeque::new()),
+                cancel_before_dispatch: AtomicBool::new(false),
             }
         }
     }
@@ -609,6 +611,10 @@ pub mod test_support {
                     })),
                 ]);
         }
+
+        fn cancel_before_dispatch(&self) {
+            self.cancel_before_dispatch.store(true, Ordering::SeqCst);
+        }
     }
 
     #[async_trait::async_trait]
@@ -654,6 +660,21 @@ pub mod test_support {
                     }),
                 }),
             }
+        }
+
+        async fn generate_with_cancel(
+            &self,
+            request: &ProviderRequest,
+            credential: &crate::ResolvedCredential,
+            _cancellation: &crate::CancellationToken,
+        ) -> std::result::Result<ProviderResponse, ProviderFailure> {
+            if self.cancel_before_dispatch.load(Ordering::SeqCst) {
+                return Err(ProviderFailure::new(
+                    ProviderFailureKind::Cancelled,
+                    RequestChargeStatus::NotSent,
+                ));
+            }
+            self.generate(request, credential).await
         }
     }
 
@@ -791,6 +812,11 @@ pub mod test_support {
 
         pub fn with_malformed_output(self) -> Self {
             self.provider.return_malformed();
+            self
+        }
+
+        pub fn with_pre_dispatch_cancellation(self) -> Self {
+            self.provider.cancel_before_dispatch();
             self
         }
 

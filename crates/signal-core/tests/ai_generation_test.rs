@@ -89,6 +89,34 @@ async fn provider_failure_keeps_smart_and_refresh_succeeds() {
 }
 
 #[tokio::test]
+async fn pre_dispatch_cancellation_finalizes_the_reserved_attempt_uncharged() {
+    // Break caught: a cooperative pre-dispatch cancellation leaving a transport failure or reservation.
+    let fixture = signal_core::test_support::ai_app_fixture()
+        .with_max_items(1)
+        .with_pre_dispatch_cancellation();
+    let token = signal_core::CancellationToken::new();
+
+    let result = fixture
+        .app
+        .refresh_with_control(fixture.now, RefreshOptions::default(), &token)
+        .await;
+
+    assert!(matches!(result, Err(signal_core::SignalError::Cancelled)));
+    assert_eq!(fixture.provider.request_count(), 0);
+    let attempt = fixture
+        .store()
+        .list_generation_attempts()
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        attempt.final_outcome,
+        Some(GenerationOutcomeKind::FailedUncharged)
+    );
+    assert_eq!(attempt.failure_kind, Some(GenerationFailureKind::Cancelled));
+    assert_eq!(attempt.actual_cost_microusd, Some(0));
+}
+
+#[tokio::test]
 async fn not_sent_provider_failure_is_finalized_uncharged() {
     let fixture = signal_core::test_support::ai_app_fixture()
         .with_max_items(1)
