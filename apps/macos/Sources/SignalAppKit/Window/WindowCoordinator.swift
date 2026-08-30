@@ -64,9 +64,11 @@ public final class WindowCoordinator: NSObject, NSWindowDelegate {
     window.title = "AI Daily Signal"
     window.isReleasedWhenClosed = false
     window.toolbarStyle = .unified
-    window.contentViewController = NSHostingController(rootView: ReadingWindowView(model: model))
-    // SwiftUI's toolbar applies Auto Layout after `minSize`; restate the same frame floor through
-    // the content-size API so AppKit continues to report an exact 420-by-520 window minimum.
+    let hostingController = NSHostingController(rootView: ReadingWindowView(model: model))
+    // The full-size content root already owns the unified toolbar region. Propagating that region
+    // as a safe-area inset would add its height to SwiftUI's 520-point minimum after presentation.
+    hostingController.safeAreaRegions = []
+    window.contentViewController = hostingController
     window.contentMinSize = NSSize(
       width: ReadingColumnMetrics.minimumWindowWidth,
       height: ReadingColumnMetrics.minimumWindowHeight

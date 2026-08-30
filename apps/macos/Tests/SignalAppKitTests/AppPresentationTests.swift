@@ -110,9 +110,27 @@ struct AppPresentationTests {
     #expect(presentedWindows[0] === firstWindow)
     #expect(presentedWindows[1] === firstWindow)
     #expect(model.destination == .settings)
-    #expect(firstWindow?.minSize == NSSize(width: 420, height: 520))
 
     coordinator.close()
+  }
+
+  @Test @MainActor
+  func shownWindowKeepsApprovedMinimumAfterSwiftUILayoutSettles() throws {
+    // Break caught: setting the minimum only before SwiftUI's shown-window toolbar layout runs.
+    let model = AppModel(
+      bridge: FakeBridgeClient(snapshot: .fixture),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    let coordinator = WindowCoordinator(model: model)
+
+    coordinator.open(destination: .today)
+    let window = try #require(coordinator.managedWindow)
+    defer { coordinator.close() }
+
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+
+    #expect(window.isVisible)
+    #expect(window.minSize == NSSize(width: 420, height: 520))
   }
 
   @Test @MainActor
