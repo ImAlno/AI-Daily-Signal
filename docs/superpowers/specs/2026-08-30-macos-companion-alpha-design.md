@@ -32,7 +32,7 @@ The alpha is intentionally a complete foreground reading and configuration exper
 - Model-profile creation, removal, default selection, consent, limits, budgets, and secure Keychain credential entry.
 - Manual foreground refresh with partial/offline failure handling.
 - Shared state with an independently installed CLI through the same Rust core, configuration, database, and Keychain service.
-- Data-generation polling while the app is active so CLI changes appear without restarting.
+- State-revision polling while the app is active so CLI changes appear without restarting.
 - Accessibility behavior for Reduced Transparency, Increase Contrast, keyboard navigation, and VoiceOver.
 - Deterministic preview and test fixtures that do not use paid APIs.
 - A reproducible personal `.app` bundle assembled from command-line builds.
@@ -122,7 +122,7 @@ The exact UniFFI spelling is set by the implementation plan, but the semantic su
 `CompanionSnapshot` contains:
 
 - initialization state;
-- current data-generation number;
+- a `StateRevision` containing the SQLite data-generation number and a deterministic source-configuration fingerprint;
 - collection status and last refresh metadata;
 - today briefing, latest stories, and saved stories;
 - effective feed sources;
@@ -139,7 +139,7 @@ The bridge supports:
 
 - initialize standard sources;
 - load a complete snapshot;
-- read the current data-generation value;
+- read the current state revision;
 - start, observe, and cancel one foreground refresh;
 - mark a story read or unread;
 - save or unsave a story;
@@ -151,7 +151,9 @@ The bridge supports:
 - test and remove a model profile; and
 - return safe validation information needed by forms.
 
-Mutating operations return the changed safe record plus the resulting data-generation value so Swift can update immediately without guessing.
+Mutating operations return the changed safe record plus the resulting state revision so Swift can update immediately without guessing.
+
+SQLite mutations increment `data_generation` transactionally. Source configuration is an atomically written file rather than a SQLite table, so its canonical serialized bytes are hashed separately. Comparing the composite revision detects both database and source changes made by an optional CLI without pretending that a cross-file-and-database transaction exists.
 
 ### 5.3 Errors and cancellation
 
@@ -187,7 +189,7 @@ UniFFI does not supply native cancellation automatically. The bridge therefore g
 
 Bridge work runs outside the main actor. Only completed records cross back to replace Swift state. Views do not call generated bindings directly.
 
-While the app is active, a low-frequency task reads only the data-generation value. A change triggers one coalesced snapshot reload. Polling pauses when the app is inactive and while a local mutation is already loading a newer snapshot.
+While the app is active, a low-frequency task reads only the composite state revision. A change triggers one coalesced snapshot reload. Polling pauses when the app is inactive and while a local mutation is already loading a newer snapshot.
 
 ## 7. Interaction design
 
