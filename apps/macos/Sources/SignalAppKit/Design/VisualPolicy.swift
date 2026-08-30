@@ -103,11 +103,13 @@ public enum AccessibilityOrder: CaseIterable, Sendable, Equatable {
 }
 
 public enum IconControlDescriptor: CaseIterable, Sendable, Equatable {
+  case compactNavigation
   case moreActions
   case removeSource
 
   public var label: String {
     switch self {
+    case .compactNavigation: "Choose section"
     case .moreActions: "More actions"
     case .removeSource: "Remove personal source"
     }
@@ -115,6 +117,7 @@ public enum IconControlDescriptor: CaseIterable, Sendable, Equatable {
 
   public var help: String {
     switch self {
+    case .compactNavigation: "Open the app navigation menu"
     case .moreActions: "Open Settings or quit AI Daily Signal"
     case .removeSource: "Remove this personal source after confirmation"
     }

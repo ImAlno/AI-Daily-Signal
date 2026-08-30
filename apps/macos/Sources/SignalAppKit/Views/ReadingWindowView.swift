@@ -87,6 +87,7 @@ public struct UnavailableContentPresentation: Sendable, Equatable {
 
 public struct ReadingWindowView: View {
   @Bindable private var model: AppModel
+  @State private var columnVisibility = NavigationSplitViewVisibility.all
 
   public init(model: AppModel) {
     self.model = model
@@ -101,67 +102,39 @@ public struct ReadingWindowView: View {
         readingShell
       }
     }
-    .frame(minWidth: 860, minHeight: 600)
+    .frame(
+      minWidth: ReadingColumnMetrics.minimumWindowWidth,
+      minHeight: ReadingColumnMetrics.minimumWindowHeight
+    )
   }
 
   private var readingShell: some View {
-    let toolbarPresentation = ReadingToolbarPresentation(
-      phase: model.phase,
-      refreshInProgress: model.activeOperationID != nil
-    )
-    return NavigationSplitView {
-      List(selection: destinationSelection) {
-        ForEach(Destination.allCases, id: \.self) { destination in
-          Label(destination.title, systemImage: destination.systemImage)
-            .tag(destination)
-        }
-      }
-      .navigationTitle("AI Daily Signal")
-      .navigationSplitViewColumnWidth(min: 180, ideal: 220)
-    } detail: {
-      Group {
-        switch model.destination {
-        case .today, .latest, .saved:
-          HSplitView {
-            destinationContent
-              .frame(minWidth: 320, idealWidth: 390, maxWidth: 520)
-            StoryDetailView(model: model)
-              .frame(minWidth: 440, idealWidth: 680)
-          }
-        case .sources, .models, .settings:
-          destinationContent
-        }
-      }
-      .navigationTitle(model.destination.title)
-    }
-    .toolbar {
-      ToolbarItemGroup(placement: .primaryAction) {
-        refreshToolbarButton(toolbarPresentation.refreshControl)
-        Button("Open Source", systemImage: "safari") {
-          openSelectedSource()
-        }
-        .keyboardShortcut(ReadingCommand.openSource.keyEquivalent, modifiers: .command)
-        .disabled(
-          model.selectedStory.map { !StorySourceActionPresentation(story: $0).isEnabled } ?? true
-        )
-        .help(ReadingCommand.openSource.descriptor.help)
+    GeometryReader { proxy in
+      let mode = AppLayoutPolicy.mode(for: proxy.size.width)
+      let navigationPresentation = AppNavigationPresentation(mode: mode)
+      let navigationWidth = AppLayoutPolicy.navigationWidth(for: mode) ?? 58
 
-        Button("Save Story", systemImage: "bookmark") {
-          Task { await model.saveSelectedStory() }
-        }
-        .keyboardShortcut(ReadingCommand.save.keyEquivalent, modifiers: .command)
-        .disabled(
-          model.selectedStory.map {
-            $0.isSaved || model.storyActionState(for: .saving(storyID: $0.id)) != nil
-          } ?? true
-        )
-        .help(ReadingCommand.save.descriptor.help)
-
-        Button("Preferences", systemImage: "gearshape") {
-          model.destination = .settings
-        }
-        .keyboardShortcut(ReadingCommand.settings.keyEquivalent, modifiers: .command)
-        .help(ReadingCommand.settings.descriptor.help)
+      NavigationSplitView(columnVisibility: $columnVisibility) {
+        AppNavigationView(mode: mode, selection: destinationSelection)
+          .navigationSplitViewColumnWidth(
+            min: navigationWidth,
+            ideal: navigationWidth,
+            max: navigationWidth
+          )
+      } detail: {
+        destinationContent
+          .navigationTitle(model.destination.title)
+          .background(Color(nsColor: .textBackgroundColor))
+      }
+      .onAppear {
+        columnVisibility = navigationPresentation.persistentNavigationVisible ? .all : .detailOnly
+      }
+      .onChange(of: mode) { _, value in
+        columnVisibility =
+          AppNavigationPresentation(mode: value).persistentNavigationVisible ? .all : .detailOnly
+      }
+      .toolbar {
+        toolbarContent(mode: mode)
       }
     }
     .safeAreaInset(edge: .top) {
@@ -178,6 +151,93 @@ public struct ReadingWindowView: View {
           .accessibilitySortPriority(AccessibilityOrder.status.sortPriority)
       }
     }
+  }
+
+  @ToolbarContentBuilder
+  private func toolbarContent(mode: AppLayoutMode) -> some ToolbarContent {
+    if AppNavigationPresentation(mode: mode).usesToolbarMenu {
+      ToolbarItem(placement: .navigation) {
+        Menu {
+          ForEach(Destination.allCases, id: \.self) { destination in
+            Button(destination.title, systemImage: destination.systemImage) {
+              model.destination = destination
+            }
+          }
+        } label: {
+          Label(model.destination.title, systemImage: "sidebar.left")
+        }
+        .accessibilityLabel(IconControlDescriptor.compactNavigation.label)
+        .help(IconControlDescriptor.compactNavigation.help)
+      }
+    }
+
+    ToolbarItem(placement: .primaryAction) {
+      refreshToolbarButton(
+        ReadingToolbarPresentation(
+          phase: model.phase,
+          refreshInProgress: model.activeOperationID != nil
+        ).refreshControl
+      )
+    }
+
+    if AppNavigationPresentation(mode: mode).usesToolbarMenu {
+      ToolbarItem(placement: .primaryAction) {
+        Menu {
+          if storyCommandsAvailable {
+            openSourceToolbarButton
+            saveToolbarButton
+          }
+          preferencesToolbarButton
+        } label: {
+          Label("More", systemImage: "ellipsis.circle")
+        }
+        .help("Open story actions and Preferences")
+      }
+    } else {
+      ToolbarItemGroup(placement: .primaryAction) {
+        if storyCommandsAvailable {
+          openSourceToolbarButton
+          saveToolbarButton
+        }
+        preferencesToolbarButton
+      }
+    }
+  }
+
+  private var storyCommandsAvailable: Bool {
+    [.today, .latest, .saved].contains(model.destination)
+  }
+
+  private var openSourceToolbarButton: some View {
+    Button("Open Source", systemImage: "safari") {
+      openSelectedSource()
+    }
+    .keyboardShortcut(ReadingCommand.openSource.keyEquivalent, modifiers: .command)
+    .disabled(
+      model.selectedStory.map { !StorySourceActionPresentation(story: $0).isEnabled } ?? true
+    )
+    .help(ReadingCommand.openSource.descriptor.help)
+  }
+
+  private var saveToolbarButton: some View {
+    Button("Save Story", systemImage: "bookmark") {
+      Task { await model.saveSelectedStory() }
+    }
+    .keyboardShortcut(ReadingCommand.save.keyEquivalent, modifiers: .command)
+    .disabled(
+      model.selectedStory.map {
+        $0.isSaved || model.storyActionState(for: .saving(storyID: $0.id)) != nil
+      } ?? true
+    )
+    .help(ReadingCommand.save.descriptor.help)
+  }
+
+  private var preferencesToolbarButton: some View {
+    Button("Preferences", systemImage: "gearshape") {
+      model.destination = .settings
+    }
+    .keyboardShortcut(ReadingCommand.settings.keyEquivalent, modifiers: .command)
+    .help(ReadingCommand.settings.descriptor.help)
   }
 
   private var destinationSelection: Binding<Destination?> {

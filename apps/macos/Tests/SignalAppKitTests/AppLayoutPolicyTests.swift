@@ -23,4 +23,25 @@ struct AppLayoutPolicyTests {
     #expect(ReadingColumnMetrics.horizontalPadding(for: 760) == 28)
     #expect(ReadingColumnMetrics.horizontalPadding(for: 1_100) == 36)
   }
+
+  @Test(arguments: [AppLayoutMode.expanded, .rail, .compact])
+  func navigationPresentationMatchesEachLayoutMode(mode: AppLayoutMode) {
+    // Break caught: showing the wrong navigation surface for a responsive layout mode.
+    let presentation = AppNavigationPresentation(mode: mode)
+
+    switch mode {
+    case .expanded:
+      #expect(presentation.persistentNavigationVisible)
+      #expect(presentation.showsDestinationTitles)
+      #expect(!presentation.usesToolbarMenu)
+    case .rail:
+      #expect(presentation.persistentNavigationVisible)
+      #expect(!presentation.showsDestinationTitles)
+      #expect(!presentation.usesToolbarMenu)
+    case .compact:
+      #expect(!presentation.persistentNavigationVisible)
+      #expect(!presentation.showsDestinationTitles)
+      #expect(presentation.usesToolbarMenu)
+    }
+  }
 }

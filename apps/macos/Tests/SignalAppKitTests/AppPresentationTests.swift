@@ -110,6 +110,7 @@ struct AppPresentationTests {
     #expect(presentedWindows[0] === firstWindow)
     #expect(presentedWindows[1] === firstWindow)
     #expect(model.destination == .settings)
+    #expect(firstWindow?.minSize == NSSize(width: 420, height: 520))
 
     coordinator.close()
   }

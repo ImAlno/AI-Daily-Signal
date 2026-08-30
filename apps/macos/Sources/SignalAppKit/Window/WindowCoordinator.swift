@@ -62,10 +62,15 @@ public final class WindowCoordinator: NSObject, NSWindowDelegate {
       defer: false
     )
     window.title = "AI Daily Signal"
-    window.minSize = NSSize(width: 860, height: 600)
     window.isReleasedWhenClosed = false
     window.toolbarStyle = .unified
     window.contentViewController = NSHostingController(rootView: ReadingWindowView(model: model))
+    // SwiftUI's toolbar applies Auto Layout after `minSize`; restate the same frame floor through
+    // the content-size API so AppKit continues to report an exact 420-by-520 window minimum.
+    window.contentMinSize = NSSize(
+      width: ReadingColumnMetrics.minimumWindowWidth,
+      height: ReadingColumnMetrics.minimumWindowHeight
+    )
     window.delegate = self
     window.center()
     window.setFrameAutosaveName("AI Daily Signal Reading Window")

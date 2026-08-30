@@ -79,9 +79,11 @@ struct AccessibilityPolicyTests {
     // Break caught: adding a visually recognizable glyph that VoiceOver or keyboard users cannot identify.
     let controls = IconControlDescriptor.allCases
 
-    #expect(controls.count == 2)
+    #expect(controls.count == 3)
     #expect(controls.allSatisfy { !$0.label.isEmpty && !$0.help.isEmpty })
     #expect(Set(controls.map(\.label)).count == controls.count)
+    #expect(!IconControlDescriptor.compactNavigation.label.isEmpty)
+    #expect(!IconControlDescriptor.compactNavigation.help.isEmpty)
   }
 
   @Test
