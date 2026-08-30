@@ -2716,6 +2716,7 @@ name = "signal-ffi"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "rusqlite",
  "secrecy",
  "signal-core",
  "tempfile",

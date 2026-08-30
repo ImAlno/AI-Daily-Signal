@@ -61,15 +61,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Generate Swift bindings
         run: scripts/generate-swift-bindings.sh
-      - name: Build the real CLI for shared-process bridge tests
-        run: cargo build -p signal-cli
       - name: Run bridge contracts
         run: cargo test -p signal-ffi --all-features
       - name: Run Swift tests
-        run: swift test --package-path apps/macos
+        run: scripts/test-swift-testing.sh
+      - name: Run packaging safety contracts
+        run: scripts/test-macos-packaging-hardening.sh
       - name: Build release Swift executable
         run: swift build --package-path apps/macos -c release
       - name: Assemble and verify standalone app bundle
         run: |
           scripts/build-macos-app.sh
           scripts/verify-macos-app.sh
+          scripts/test-macos-verifier-adversarial.sh

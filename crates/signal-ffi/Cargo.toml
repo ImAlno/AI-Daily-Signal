@@ -21,6 +21,7 @@ tokio = { workspace = true, features = ["sync"] }
 uniffi = { version = "=0.32.0", features = ["tokio"] }
 
 [dev-dependencies]
+rusqlite.workspace = true
 secrecy.workspace = true
 tempfile.workspace = true
 

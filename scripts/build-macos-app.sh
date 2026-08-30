@@ -3,12 +3,8 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 bundle="$repository_root/target/macos/AI Daily Signal.app"
-expected_bundle="$repository_root/target/macos/AI Daily Signal.app"
-
-[[ "$bundle" == "$expected_bundle" ]] || {
-  echo "refusing to assemble an unexpected bundle path: $bundle" >&2
-  exit 1
-}
+# shellcheck source=scripts/macos-packaging-common.sh
+source "$repository_root/scripts/macos-packaging-common.sh"
 
 cd "$repository_root"
 scripts/generate-swift-bindings.sh
@@ -27,7 +23,10 @@ for source in "$swift_binary" "$rust_dylib" "$plist_source" "$icon_source"; do
   }
 done
 
-rm -rf "$bundle"
+delete_exact_bundle "$repository_root" "$bundle" || {
+  echo "refusing to delete outside the physical target/macos bundle parent" >&2
+  exit 1
+}
 mkdir -p \
   "$bundle/Contents/MacOS" \
   "$bundle/Contents/Frameworks" \
@@ -51,6 +50,17 @@ install_name_tool -id '@rpath/libsignal_ffi.dylib' "$bundled_dylib"
 if [[ "$linked_dylib" != '@rpath/libsignal_ffi.dylib' ]]; then
   install_name_tool -change "$linked_dylib" '@rpath/libsignal_ffi.dylib' "$bundled_executable"
 fi
+while IFS= read -r rpath; do
+  if [[ "$rpath" != '@executable_path/../Frameworks' ]]; then
+    install_name_tool -delete_rpath "$rpath" "$bundled_executable"
+  fi
+done < <(otool -l "$bundled_executable" \
+  | awk '$1 == "cmd" && $2 == "LC_RPATH" { getline; getline; print $2 }')
+
+# SwiftPM and the native linker can retain absolute object/source paths even in release builds.
+# Remove those non-runtime debug records before the final local signature is evaluated.
+strip -S "$bundled_executable"
+strip -S "$bundled_dylib"
 
 if ! codesign --verify --deep --strict "$bundle" >/dev/null 2>&1; then
   codesign --force --sign - "$bundled_dylib"

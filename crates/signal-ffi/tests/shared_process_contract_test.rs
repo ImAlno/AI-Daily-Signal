@@ -14,15 +14,19 @@ use signal_core::{
 use signal_ffi::{AddFeedSourceRequest, CompanionClient, FfiSourceOrigin};
 
 struct SharedProcessFixture {
-    _root: tempfile::TempDir,
+    fixture_root: tempfile::TempDir,
+    application_root: PathBuf,
     paths: AppPaths,
     client: Arc<CompanionClient>,
+    cli_binary: PathBuf,
 }
 
 impl SharedProcessFixture {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("isolated application root");
-        let paths = AppPaths::for_root(root.path());
+        let application_root = root.path().join("application");
+        let cli_binary = build_fresh_cli(root.path());
+        let paths = AppPaths::for_root(&application_root);
         ConfigRepository::new(paths.clone())
             .load_or_create()
             .expect("source configuration");
@@ -50,18 +54,20 @@ impl SharedProcessFixture {
         let client = CompanionClient::for_test(app);
 
         Self {
-            _root: root,
+            fixture_root: root,
+            application_root,
             paths,
             client,
+            cli_binary,
         }
     }
 
     fn root(&self) -> &std::path::Path {
-        self._root.path()
+        &self.application_root
     }
 
     fn cli(&self, args: &[&str]) -> std::process::Output {
-        let output = Command::new(cli_binary())
+        let output = Command::new(&self.cli_binary)
             .env("SIGNAL_HOME", self.root())
             .args(args)
             .output()
@@ -81,34 +87,66 @@ impl SharedProcessFixture {
     }
 
     fn spawn_cli(&self, args: &[&str]) -> std::process::Child {
-        Command::new(cli_binary())
+        Command::new(&self.cli_binary)
             .env("SIGNAL_HOME", self.root())
             .args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("spawn real signal CLI process")
     }
 }
 
-fn cli_binary() -> PathBuf {
+fn build_fresh_cli(fixture_root: &std::path::Path) -> PathBuf {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(std::path::Path::parent)
         .expect("workspace root")
         .to_path_buf();
-    let binary = workspace
-        .join("target")
-        .join("debug")
-        .join(if cfg!(windows) {
-            "signal.exe"
-        } else {
-            "signal"
-        });
+    let target = fixture_root.join("cargo-target");
+    let build = Command::new(env!("CARGO"))
+        .current_dir(&workspace)
+        .env_remove("CARGO_TARGET_DIR")
+        .args([
+            "build",
+            "--locked",
+            "--quiet",
+            "-p",
+            "signal-cli",
+            "--bin",
+            "signal",
+            "--target-dir",
+        ])
+        .arg(&target)
+        .output()
+        .expect("build fixture-owned real CLI");
+    assert!(
+        build.status.success(),
+        "fixture CLI build failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let binary = target.join("debug").join(if cfg!(windows) {
+        "signal.exe"
+    } else {
+        "signal"
+    });
     assert!(
         binary.is_file(),
-        "build the real CLI first with `cargo build -p signal-cli`: {}",
+        "fixture-owned CLI build did not produce {}",
         binary.display()
+    );
+    let version = Command::new(&binary)
+        .arg("--version")
+        .output()
+        .expect("read fixture CLI version");
+    assert!(version.status.success(), "fixture CLI --version failed");
+    assert_eq!(
+        String::from_utf8(version.stdout)
+            .expect("UTF-8 CLI version")
+            .trim(),
+        format!("signal {}", env!("CARGO_PKG_VERSION")),
+        "fixture CLI must be bound to this workspace version"
     );
     binary
 }
@@ -122,11 +160,17 @@ fn data_generation(status: &str) -> u64 {
         .expect("numeric data generation")
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bridge_and_real_cli_share_one_uncorrupted_application_root() {
     // Break caught: app and CLI drifting into separate stores, stale config, or unsafe concurrent
     // writes despite resolving one explicit application root.
     let fixture = SharedProcessFixture::new();
+    assert!(
+        fixture
+            .cli_binary
+            .starts_with(fixture.fixture_root.path().join("cargo-target")),
+        "the contract must use a fixture-owned, freshly built CLI artifact"
+    );
     let initial = fixture
         .client
         .state_revision()
@@ -236,13 +280,48 @@ async fn bridge_and_real_cli_share_one_uncorrupted_application_root() {
             .contains("Shared profile")
     );
 
+    let database_path = fixture.paths.data_dir.join("signal.sqlite3");
+    let lock = rusqlite::Connection::open(&database_path).expect("open overlap barrier");
+    lock.execute_batch("BEGIN IMMEDIATE")
+        .expect("hold isolated SQLite write barrier");
     let mut cli_save = fixture.spawn_cli(&["save", "story-1"]);
-    fixture
-        .client
-        .set_story_read("story-1".to_owned(), false)
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        cli_save.try_wait().expect("inspect blocked CLI").is_none(),
+        "CLI writer must reach and wait behind the held SQLite barrier"
+    );
+
+    let concurrent_client = Arc::clone(&fixture.client);
+    let bridge_write = tokio::spawn(async move {
+        concurrent_client
+            .set_story_read("story-1".to_owned(), false)
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        cli_save
+            .try_wait()
+            .expect("inspect overlapping CLI")
+            .is_none()
+            && !bridge_write.is_finished(),
+        "separate CLI and bridge writers must demonstrably overlap before barrier release"
+    );
+    lock.execute_batch("COMMIT")
+        .expect("release isolated SQLite write barrier");
+    let bridge_result = tokio::time::timeout(std::time::Duration::from_secs(6), bridge_write)
         .await
-        .expect("bridge write concurrent with CLI process");
-    assert!(cli_save.wait().expect("wait for CLI save").success());
+        .expect("bridge writer completes after barrier release")
+        .expect("bridge writer task remains healthy")
+        .expect("bridge write after deterministic overlap");
+    let cli_output = cli_save
+        .wait_with_output()
+        .expect("wait for overlapped CLI save");
+    assert!(
+        cli_output.status.success(),
+        "overlapped CLI save failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&cli_output.stdout),
+        String::from_utf8_lossy(&cli_output.stderr)
+    );
 
     let final_snapshot = fixture
         .client
@@ -251,6 +330,10 @@ async fn bridge_and_real_cli_share_one_uncorrupted_application_root() {
         .expect("final bridge snapshot");
     assert!(final_snapshot.latest[0].is_saved);
     assert!(!final_snapshot.latest[0].is_read);
+    assert!(
+        final_snapshot.revision.data_generation >= bridge_result.revision.data_generation,
+        "final snapshot must include the deterministically overlapped bridge revision"
+    );
     let final_revision = fixture
         .client
         .state_revision()
@@ -265,4 +348,9 @@ async fn bridge_and_real_cli_share_one_uncorrupted_application_root() {
         .expect("SQLite remains readable after separate-process writes")
         .status()
         .expect("SQLite status remains readable");
+    let integrity = rusqlite::Connection::open(fixture.paths.data_dir.join("signal.sqlite3"))
+        .expect("reopen SQLite for integrity check")
+        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+        .expect("run SQLite integrity_check");
+    assert_eq!(integrity, "ok");
 }
