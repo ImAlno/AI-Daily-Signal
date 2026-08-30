@@ -166,11 +166,39 @@ struct SourceSettingsTests {
 
     #expect(standard.displayHost == "example.test")
     #expect(standard.originLabel == "Standard source")
-    #expect(!standard.canRemove)
+    #expect(standard.overflowActions.isEmpty)
     #expect(!standard.requiresRemovalConfirmation)
     #expect(personal.originLabel == "Personal source")
-    #expect(personal.canRemove)
+    #expect(personal.overflowActions == [.remove])
     #expect(personal.requiresRemovalConfirmation)
+  }
+
+  @Test
+  func sourceRowsPrioritizeIdentityStatusThenTertiaryMetadata() {
+    // Break caught: making source identity, status metadata, and available actions indistinct.
+    let source = Source(
+      id: "personal-1",
+      name: "Personal feed",
+      category: "Research",
+      enabled: true,
+      weight: 0.8,
+      feedURL: "https://example.com/feed.xml",
+      origin: .personal
+    )
+
+    let value = SourceRowPresentation(source: source)
+
+    #expect(value.secondaryText == "Research · example.com")
+    #expect(value.tertiaryText == "Weight 0.8 · Personal source")
+    #expect(value.directActions == [.toggleEnabled])
+    #expect(value.overflowActions == [.remove])
+  }
+
+  @Test
+  func sourceEditorExplainsTheEffectOfAddingAFeed() {
+    // Break caught: leaving a source editor without guidance about its effect on later briefings.
+    #expect(SourceEditorCopy.title == "Add Personal Source")
+    #expect(SourceEditorCopy.guidance.contains("future briefings"))
   }
 
   @Test

@@ -94,6 +94,13 @@ struct AccessibilityPolicyTests {
   }
 
   @Test
+  func sourceRemovalAccessibilityExplainsItsConfirmationStep() {
+    // Break caught: a destructive source action that VoiceOver users cannot identify as confirmed.
+    #expect(IconControlDescriptor.removeSource.label == "Remove personal source")
+    #expect(IconControlDescriptor.removeSource.help.contains("confirmation"))
+  }
+
+  @Test
   func approvedKeyboardCommandsHaveTruthfulDescriptors() {
     // Break caught: a view and its displayed shortcut help drifting onto different key mappings.
     let expected: [(ReadingCommand, String, String)] = [

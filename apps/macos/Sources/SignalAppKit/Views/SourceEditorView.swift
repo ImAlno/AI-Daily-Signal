@@ -1,6 +1,11 @@
 import Foundation
 import SwiftUI
 
+public enum SourceEditorCopy {
+  public static let title = "Add Personal Source"
+  public static let guidance = "Add an RSS or Atom feed to include it in future briefings."
+}
+
 public struct SourceEditorDraft: Sendable, Equatable, CustomDebugStringConvertible,
   CustomReflectable
 {
@@ -127,9 +132,11 @@ public struct SourceEditorView: View, CustomDebugStringConvertible, CustomReflec
     )
 
     VStack(alignment: .leading, spacing: 16) {
+      SettingsPageHeaderView(
+        title: SourceEditorCopy.title,
+        message: SourceEditorCopy.guidance
+      )
       HStack {
-        Text("Add Personal Source")
-          .font(.title2.weight(.semibold))
         Spacer()
         Button("Cancel") {
           model.dismissSourceEditor()

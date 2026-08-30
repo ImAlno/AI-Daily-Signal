@@ -1,24 +1,37 @@
 import Foundation
 import SwiftUI
 
+public enum SourceSettingsAction: Sendable, Equatable {
+  case toggleEnabled
+  case remove
+}
+
 public struct SourceRowPresentation: Sendable, Equatable {
   public let displayHost: String
   public let originLabel: String
-  public let canRemove: Bool
+  public let secondaryText: String
+  public let tertiaryText: String
+  public let directActions: [SourceSettingsAction]
+  public let overflowActions: [SourceSettingsAction]
   public let requiresRemovalConfirmation: Bool
 
   public init(source: Source) {
     displayHost = URLComponents(string: source.feedURL)?.host ?? "Feed address unavailable"
+    secondaryText = "\(source.category) · \(displayHost)"
     switch source.origin {
     case .standard:
       originLabel = "Standard source"
-      canRemove = false
+      directActions = [.toggleEnabled]
+      overflowActions = []
       requiresRemovalConfirmation = false
     case .personal:
       originLabel = "Personal source"
-      canRemove = true
+      directActions = [.toggleEnabled]
+      overflowActions = [.remove]
       requiresRemovalConfirmation = true
     }
+    tertiaryText =
+      "Weight \(source.weight.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).precision(.fractionLength(0...2)))) · \(originLabel)"
   }
 }
 
@@ -58,36 +71,46 @@ public struct SourcesView: View {
           .padding(.vertical, 24)
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       } else {
-        List {
-          Section("Standard Sources") {
-            if standard.isEmpty {
-              sourceEmptyRow(
-                "No standard sources",
-                detail: "Build a briefing to initialize the standard source set."
-              )
-            } else {
-              ForEach(standard) { source in
-                sourceRow(source)
-              }
-            }
-          }
+        VStack(spacing: 0) {
+          SettingsPageHeaderView(
+            title: "Sources",
+            message: "Choose which feeds contribute to future briefings."
+          )
+          .padding(.horizontal, 28)
+          .padding(.vertical, 20)
 
-          Section("Personal Sources") {
-            if personal.isEmpty {
-              sourceEmptyRow(
-                "No personal sources",
-                detail: "Add an RSS or Atom feed to include it in future briefings."
-              )
-            } else {
-              ForEach(personal) { source in
-                sourceRow(source)
+          List {
+            Section("Standard Sources") {
+              if standard.isEmpty {
+                sourceEmptyRow(
+                  "No standard sources",
+                  detail: "Build a briefing to initialize the standard source set."
+                )
+              } else {
+                ForEach(standard) { source in
+                  sourceRow(source)
+                }
+              }
+            }
+
+            Section("Personal Sources") {
+              if personal.isEmpty {
+                sourceEmptyRow(
+                  "No personal sources",
+                  detail: "Add an RSS or Atom feed to include it in future briefings."
+                )
+              } else {
+                ForEach(personal) { source in
+                  sourceRow(source)
+                }
               }
             }
           }
+          .listStyle(.inset)
         }
-        .listStyle(.inset)
       }
     }
+    .background(Color(nsColor: .textBackgroundColor))
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
         Button("Add Source", systemImage: "plus") {
@@ -159,13 +182,11 @@ public struct SourcesView: View {
       Text(source.name)
         .font(.headline)
         .lineLimit(textPresentation.nameLineLimit)
-      Text("\(source.category) · \(presentation.displayHost)")
+      Text(presentation.secondaryText)
         .font(.subheadline)
         .foregroundStyle(.secondary)
         .lineLimit(textPresentation.metadataLineLimit)
-      Text(
-        "Weight \(source.weight.formatted(.number.precision(.fractionLength(0...2)))) · \(presentation.originLabel)"
-      )
+      Text(presentation.tertiaryText)
       .font(.caption)
       .foregroundStyle(.secondary)
       .lineLimit(textPresentation.metadataLineLimit)
@@ -190,33 +211,42 @@ public struct SourcesView: View {
           .accessibilityLabel("Updating \(source.name)")
       }
 
-      Toggle(
-        source.enabled ? "Disable \(source.name)" : "Enable \(source.name)",
-        isOn: Binding(
-          get: { source.enabled },
-          set: { enabled in
-            Task { await model.setSourceEnabled(id: source.id, enabled: enabled) }
-          }
+      if presentation.directActions.contains(.toggleEnabled) {
+        Toggle(
+          source.enabled ? "Disable \(source.name)" : "Enable \(source.name)",
+          isOn: Binding(
+            get: { source.enabled },
+            set: { enabled in
+              Task { await model.setSourceEnabled(id: source.id, enabled: enabled) }
+            }
+          )
         )
-      )
-      .labelsHidden()
-      .disabled(isBusy)
-      .help(source.enabled ? "Disable this source" : "Enable this source")
+        .labelsHidden()
+        .disabled(isBusy)
+        .help(source.enabled ? "Disable this source" : "Enable this source")
+      }
 
-      if presentation.canRemove {
-        Button("Remove \(source.name)", systemImage: "trash", role: .destructive) {
-          if presentation.requiresRemovalConfirmation {
-            pendingRemoval = source
+      if !presentation.overflowActions.isEmpty {
+        Menu {
+          if presentation.overflowActions.contains(.remove) {
+            Button("Remove Source", role: .destructive) {
+              if presentation.requiresRemovalConfirmation {
+                pendingRemoval = source
+              }
+            }
+            .accessibilityLabel("Remove \(source.name)")
+            .accessibilityHint(IconControlDescriptor.removeSource.help)
           }
+        } label: {
+          Image(systemName: "ellipsis.circle")
         }
-        .labelStyle(.iconOnly)
         .disabled(isBusy)
         .frame(
           minWidth: VisualPolicy().minimumControlDimension,
           minHeight: VisualPolicy().minimumControlDimension
         )
-        .accessibilityLabel("Remove \(source.name)")
-        .accessibilityHint(IconControlDescriptor.removeSource.help)
+        .accessibilityLabel("More actions for \(source.name)")
+        .accessibilityHint("Manage this source")
         .help(IconControlDescriptor.removeSource.help)
       }
     }
