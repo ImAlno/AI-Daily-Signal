@@ -2,14 +2,40 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use secrecy::SecretString;
 use signal_core::{
-    AppPaths, ConfigRepository, ProviderKind, ProviderRegistry, SignalApp, Store,
+    AppPaths, ConfigRepository, CredentialRef, CredentialStore, ProviderKind, ProviderRegistry,
+    SignalApp, SignalError, Store,
     test_support::{MemoryCredentialStore, MemoryEnvironmentReader, RecordingProvider},
 };
 use signal_ffi::{
     AddCredentialRequest, AddFeedSourceRequest, AddModelProfileRequest, CompanionClient,
-    CompanionError, FfiApiDialect, FfiProfileLimitsInput, FfiProviderKind, FfiSourceOrigin,
+    CompanionError, FfiApiDialect, FfiCredentialDeletionStatus, FfiProfileLimitsInput,
+    FfiProviderKind, FfiSourceOrigin,
 };
+
+const DELETE_DIAGNOSTIC_SENTINEL: &str = "ffi-delete-backend-diagnostic-SENTINEL";
+
+#[derive(Default)]
+struct FailingDeleteCredentialStore {
+    inner: MemoryCredentialStore,
+}
+
+impl CredentialStore for FailingDeleteCredentialStore {
+    fn set(&self, reference: &CredentialRef, secret: SecretString) -> signal_core::Result<()> {
+        self.inner.set(reference, secret)
+    }
+
+    fn get(&self, reference: &CredentialRef) -> signal_core::Result<SecretString> {
+        self.inner.get(reference)
+    }
+
+    fn delete(&self, _: &CredentialRef) -> signal_core::Result<()> {
+        Err(SignalError::Credential(
+            DELETE_DIAGNOSTIC_SENTINEL.to_owned(),
+        ))
+    }
+}
 
 struct MutationFixture {
     _root: tempfile::TempDir,
@@ -56,11 +82,18 @@ impl MutationFixture {
     }
 
     fn client(&self) -> Arc<CompanionClient> {
+        self.client_with_credential_store(self.credential_store.clone())
+    }
+
+    fn client_with_credential_store(
+        &self,
+        credential_store: Arc<dyn CredentialStore>,
+    ) -> Arc<CompanionClient> {
         let mut providers = ProviderRegistry::new();
         providers.register(ProviderKind::OpenAi, self.provider.clone());
         let app = SignalApp::open_with_services(
             self.paths.clone(),
-            self.credential_store.clone(),
+            credential_store,
             self.environment_reader.clone(),
             Arc::new(providers),
         )
@@ -309,7 +342,90 @@ async fn model_profile_mutations_parse_exact_usd_and_return_safe_records() {
         .await
         .expect("remove profile");
     assert_eq!(removed.profile.name, "Environment profile");
+    assert_eq!(
+        removed.credential_deletion,
+        FfiCredentialDeletionStatus::NotApplicable
+    );
     assert!(removed.revision.data_generation > defaulted.revision.data_generation);
+}
+
+#[tokio::test]
+async fn model_removal_reports_deleted_system_credentials() {
+    // Break caught: treating a successful system-store deletion as unknown or not applicable.
+    let fixture = MutationFixture::new();
+    let client = fixture.client();
+    let added = client
+        .add_model_profile(system_profile("Deleted credential", "deleted-secret"))
+        .await
+        .expect("add system profile");
+
+    let removed = client
+        .remove_model_profile(added.profile.id)
+        .await
+        .expect("remove system profile");
+
+    assert_eq!(
+        removed.credential_deletion,
+        FfiCredentialDeletionStatus::Deleted
+    );
+    assert_eq!(fixture.credential_store.credential_count_for_test(), 0);
+}
+
+#[tokio::test]
+async fn failed_credential_deletion_returns_a_safe_warning_after_profile_removal() {
+    // Break caught: presenting failed Keychain cleanup as clean removal or leaking backend data.
+    let fixture = MutationFixture::new();
+    let credential_store = Arc::new(FailingDeleteCredentialStore::default());
+    let client = fixture.client_with_credential_store(credential_store.clone());
+    let secret_sentinel = "ffi-delete-secret-SENTINEL";
+    let added = client
+        .add_model_profile(system_profile("Deletion warning profile", secret_sentinel))
+        .await
+        .expect("add system profile");
+    let stored_profile = Store::open(fixture.sqlite_path())
+        .expect("fixture store")
+        .list_model_profiles()
+        .expect("stored profiles")
+        .into_iter()
+        .find(|profile| profile.id.hyphenated().to_string() == added.profile.id)
+        .expect("stored profile");
+    let credential_reference_sentinel = match stored_profile.credential {
+        CredentialRef::SystemStore { account, .. } => account,
+        CredentialRef::Environment { .. } => panic!("expected system-store profile"),
+    };
+    let selector_sentinel = added.profile.id.to_uppercase();
+
+    let removed = client
+        .remove_model_profile(selector_sentinel.clone())
+        .await
+        .expect("profile removal remains successful");
+
+    assert_eq!(
+        removed.credential_deletion,
+        FfiCredentialDeletionStatus::DeleteFailed
+    );
+    assert!(removed.revision.data_generation > added.revision.data_generation);
+    assert!(
+        client
+            .snapshot()
+            .await
+            .expect("post-removal snapshot")
+            .model_profiles
+            .is_empty()
+    );
+    assert_eq!(credential_store.inner.credential_count_for_test(), 1);
+    let output = format!("{removed:?}");
+    for private_material in [
+        secret_sentinel,
+        credential_reference_sentinel.as_str(),
+        DELETE_DIAGNOSTIC_SENTINEL,
+        selector_sentinel.as_str(),
+    ] {
+        assert!(
+            !output.contains(private_material),
+            "removal result leaked private credential cleanup material"
+        );
+    }
 }
 
 #[tokio::test]

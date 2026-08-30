@@ -3,16 +3,16 @@ use std::{collections::BTreeMap, sync::Arc};
 use chrono::Utc;
 use secrecy::SecretString;
 use signal_core::{
-    AddModelCredential, AddModelInput, ManualGenerationStatus, NewFeedSource, SignalApp,
-    SignalError, SummarizeOptions, TestModelOptions,
+    AddModelCredential, AddModelInput, CredentialWarningKind, ManualGenerationStatus,
+    NewFeedSource, SignalApp, SignalError, SummarizeOptions, TestModelOptions,
 };
 use tokio::sync::Mutex;
 
 use crate::{
     AddCredentialRequest, AddFeedSourceRequest, AddModelProfileRequest, CompanionError,
-    CompanionSnapshot, FfiBriefing, FfiCollectionStatus, FfiModelMutation, FfiModelProfile,
-    FfiModelTestMutation, FfiSource, FfiSourceMutation, FfiStateRevision, FfiStory,
-    FfiStoryMutation, FfiSummaryVariant, types,
+    CompanionSnapshot, FfiBriefing, FfiCollectionStatus, FfiCredentialDeletionStatus,
+    FfiModelMutation, FfiModelProfile, FfiModelRemoval, FfiModelTestMutation, FfiSource,
+    FfiSourceMutation, FfiStateRevision, FfiStory, FfiStoryMutation, FfiSummaryVariant, types,
 };
 
 #[derive(uniffi::Object)]
@@ -289,7 +289,7 @@ impl CompanionClient {
     pub async fn remove_model_profile(
         &self,
         profile: String,
-    ) -> Result<FfiModelMutation, CompanionError> {
+    ) -> Result<FfiModelRemoval, CompanionError> {
         let mut app = self.app.lock().await;
         let profiles = app.list_models().map_err(CompanionError::from)?;
         let report = app.remove_model(&profile).map_err(CompanionError::from)?;
@@ -297,7 +297,20 @@ impl CompanionClient {
             .into_iter()
             .find(|profile| profile.id == report.removed_profile_id)
             .ok_or(CompanionError::StorageUnavailable)?;
-        model_mutation(&mut app, removed.try_into()?)
+        let credential_deletion = match (report.credential_deleted, report.warning) {
+            (_, Some(CredentialWarningKind::DeleteFailed)) => {
+                FfiCredentialDeletionStatus::DeleteFailed
+            }
+            (true, None) => FfiCredentialDeletionStatus::Deleted,
+            (false, None) => FfiCredentialDeletionStatus::NotApplicable,
+        };
+        let profile = removed.try_into()?;
+        let revision = app.state_revision().map_err(CompanionError::from)?.into();
+        Ok(FfiModelRemoval {
+            profile,
+            credential_deletion,
+            revision,
+        })
     }
 }
 

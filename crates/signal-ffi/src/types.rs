@@ -212,6 +212,20 @@ pub struct FfiModelMutation {
     pub revision: FfiStateRevision,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum FfiCredentialDeletionStatus {
+    Deleted,
+    NotApplicable,
+    DeleteFailed,
+}
+
+#[derive(Clone, Debug, PartialEq, uniffi::Record)]
+pub struct FfiModelRemoval {
+    pub profile: FfiModelProfile,
+    pub credential_deletion: FfiCredentialDeletionStatus,
+    pub revision: FfiStateRevision,
+}
+
 #[derive(Clone, Debug, PartialEq, uniffi::Record)]
 pub struct FfiModelTestMutation {
     pub profile: FfiModelProfile,
