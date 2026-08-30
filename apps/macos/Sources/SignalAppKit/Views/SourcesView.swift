@@ -22,9 +22,25 @@ public struct SourceRowPresentation: Sendable, Equatable {
   }
 }
 
+public struct SourceRowTextPresentation: Sendable, Equatable {
+  public let nameLineLimit: Int?
+  public let metadataLineLimit: Int?
+
+  public init(dynamicTypeSize: DynamicTypeSize) {
+    if dynamicTypeSize.isAccessibilitySize {
+      nameLineLimit = nil
+      metadataLineLimit = nil
+    } else {
+      nameLineLimit = 2
+      metadataLineLimit = 2
+    }
+  }
+}
+
 public struct SourcesView: View {
   @Bindable private var model: AppModel
   @State private var pendingRemoval: Source?
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   public init(model: AppModel) {
     self.model = model
@@ -66,13 +82,13 @@ public struct SourcesView: View {
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
         Button("Add Source", systemImage: "plus") {
-          model.isSourceEditorPresented = true
+          model.presentSourceEditor()
         }
         .keyboardShortcut("n", modifiers: [.command, .shift])
         .help("Add personal source (⇧⌘N)")
       }
     }
-    .sheet(isPresented: $model.isSourceEditorPresented) {
+    .sheet(isPresented: sourceEditorPresentation) {
       SourceEditorView(model: model)
     }
     .confirmationDialog(
@@ -103,6 +119,19 @@ public struct SourcesView: View {
     )
   }
 
+  private var sourceEditorPresentation: Binding<Bool> {
+    Binding(
+      get: { model.isSourceEditorPresented },
+      set: { isPresented in
+        if isPresented {
+          model.presentSourceEditor()
+        } else {
+          model.dismissSourceEditor()
+        }
+      }
+    )
+  }
+
   @ViewBuilder
   private func sourceRow(_ source: Source) -> some View {
     let presentation = SourceRowPresentation(source: source)
@@ -128,20 +157,21 @@ public struct SourcesView: View {
     _ source: Source,
     presentation: SourceRowPresentation
   ) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
+    let textPresentation = SourceRowTextPresentation(dynamicTypeSize: dynamicTypeSize)
+    return VStack(alignment: .leading, spacing: 4) {
       Text(source.name)
         .font(.headline)
-        .lineLimit(2)
+        .lineLimit(textPresentation.nameLineLimit)
       Text("\(source.category) · \(presentation.displayHost)")
         .font(.subheadline)
         .foregroundStyle(.secondary)
-        .lineLimit(2)
+        .lineLimit(textPresentation.metadataLineLimit)
       Text(
         "Weight \(source.weight.formatted(.number.precision(.fractionLength(0...2)))) · \(presentation.originLabel)"
       )
       .font(.caption)
       .foregroundStyle(.secondary)
-      .lineLimit(2)
+      .lineLimit(textPresentation.metadataLineLimit)
       if let error = model.sourceActionError(for: source.id) {
         Label(error, systemImage: "exclamationmark.circle")
           .font(.caption)

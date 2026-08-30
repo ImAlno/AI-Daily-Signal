@@ -104,7 +104,7 @@ public final class AppModel {
   public private(set) var storyActionStates: [StoryAction: StoryActionState] = [:]
   public private(set) var sourceActionStates: [SourceAction: SourceActionState] = [:]
   public private(set) var sourceEditorError: String?
-  public var isSourceEditorPresented = false
+  public private(set) var isSourceEditorPresented = false
   public var destination: Destination {
     didSet {
       preferences.selectedDestination = destination
@@ -198,6 +198,16 @@ public final class AppModel {
 
   public func sourceActionError(for sourceID: String) -> String? {
     sourceActionErrors[sourceID]
+  }
+
+  public func presentSourceEditor() {
+    sourceEditorError = nil
+    isSourceEditorPresented = true
+  }
+
+  public func dismissSourceEditor() {
+    sourceEditorError = nil
+    isSourceEditorPresented = false
   }
 
   public var selectedSummarySelection: ReadingSummarySelection? {
@@ -621,8 +631,10 @@ public final class AppModel {
           )
         }
         let requiresReconciliation =
-          confirmation.result.revision.dataGeneration
-          < (self?.snapshot?.revision.dataGeneration ?? 0)
+          self?.snapshot.map {
+            confirmation.result.revision.dataGeneration
+              != $0.revision.dataGeneration
+          } ?? false
         if requiresReconciliation {
           let replacement = try await bridge.snapshot()
           self?.finishSourceMutation(

@@ -51,9 +51,35 @@ public struct SourceEditorPresentation: Sendable, Equatable {
   public let validationMessage: String?
   public let canSave: Bool
 
-  public init(draft: SourceEditorDraft, isSaving: Bool) {
-    validationMessage = draft.validationMessage
+  public init(
+    draft: SourceEditorDraft,
+    isSaving: Bool,
+    revealsValidation: Bool = false
+  ) {
+    validationMessage = revealsValidation ? draft.validationMessage : nil
     canSave = !isSaving && draft.input != nil
+  }
+}
+
+public enum SourceWeightParser {
+  public static func parse(_ text: String, locale: Locale) -> Double? {
+    guard !text.isEmpty else { return nil }
+    let formatter = NumberFormatter()
+    formatter.locale = locale
+    formatter.numberStyle = .decimal
+    formatter.isLenient = false
+    var parsed: AnyObject?
+    var range = NSRange(location: 0, length: text.utf16.count)
+    do {
+      try formatter.getObjectValue(&parsed, for: text, range: &range)
+    } catch {
+      return nil
+    }
+    guard range.location == 0,
+      range.length == text.utf16.count,
+      let number = parsed as? NSNumber
+    else { return nil }
+    return number.doubleValue
   }
 }
 
@@ -68,7 +94,9 @@ public struct SourceEditorView: View {
   @Bindable private var model: AppModel
   @State private var draft = SourceEditorDraft()
   @State private var weightText = "0.8"
+  @State private var revealsValidation = false
   @FocusState private var focusedField: Field?
+  @Environment(\.locale) private var locale
 
   public init(model: AppModel) {
     self.model = model
@@ -76,7 +104,11 @@ public struct SourceEditorView: View {
 
   public var body: some View {
     let isSaving = model.sourceActionState(for: .adding) != nil
-    let presentation = SourceEditorPresentation(draft: validatedDraft, isSaving: isSaving)
+    let presentation = SourceEditorPresentation(
+      draft: validatedDraft,
+      isSaving: isSaving,
+      revealsValidation: revealsValidation
+    )
 
     Form {
       Section("Feed") {
@@ -117,7 +149,7 @@ public struct SourceEditorView: View {
       HStack {
         Spacer()
         Button("Cancel") {
-          model.isSourceEditorPresented = false
+          model.dismissSourceEditor()
         }
         .keyboardShortcut(.cancelAction)
         Button {
@@ -140,13 +172,18 @@ public struct SourceEditorView: View {
     .task {
       focusedField = .name
     }
+    .onChange(of: draft.name) { _, _ in revealsValidation = true }
+    .onChange(of: draft.feedURL) { _, _ in revealsValidation = true }
+    .onChange(of: draft.category) { _, _ in revealsValidation = true }
+    .onChange(of: weightText) { _, _ in revealsValidation = true }
   }
 
   private func save() {
+    revealsValidation = true
     guard let input = validatedDraft.input else { return }
     Task {
       if await model.addSource(input) {
-        model.isSourceEditorPresented = false
+        model.dismissSourceEditor()
       }
     }
   }
@@ -156,7 +193,7 @@ public struct SourceEditorView: View {
       name: draft.name,
       feedURL: draft.feedURL,
       category: draft.category,
-      weight: Double(weightText) ?? .nan,
+      weight: SourceWeightParser.parse(weightText, locale: locale) ?? .nan,
       enabled: draft.enabled
     )
   }

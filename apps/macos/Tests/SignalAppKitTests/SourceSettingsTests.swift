@@ -73,6 +73,40 @@ struct SourceSettingsTests {
   }
 
   @Test
+  func pristineSourceEditorStaysQuietUntilRelevantInteraction() {
+    // Break caught: presenting required-field failure copy as soon as a calm new sheet opens.
+    let draft = SourceEditorDraft()
+
+    let pristine = SourceEditorPresentation(
+      draft: draft,
+      isSaving: false,
+      revealsValidation: false
+    )
+    let interacted = SourceEditorPresentation(
+      draft: draft,
+      isSaving: false,
+      revealsValidation: true
+    )
+
+    #expect(!pristine.canSave)
+    #expect(pristine.validationMessage == nil)
+    #expect(interacted.validationMessage == "Complete every field.")
+  }
+
+  @Test
+  func sourceWeightParserUsesTheExplicitLocaleAndConsumesTheWholeInput() {
+    // Break caught: silently interpreting a native comma decimal as zero or accepting partial text.
+    let commaLocale = Locale(identifier: "sv_SE")
+    let dotLocale = Locale(identifier: "en_US_POSIX")
+
+    #expect(SourceWeightParser.parse("0,8", locale: commaLocale) == 0.8)
+    #expect(SourceWeightParser.parse("0.8", locale: dotLocale) == 0.8)
+    #expect(SourceWeightParser.parse("0.8", locale: commaLocale) == nil)
+    #expect(SourceWeightParser.parse("0,8", locale: dotLocale) == nil)
+    #expect(SourceWeightParser.parse("0.8 trailing", locale: dotLocale) == nil)
+  }
+
+  @Test
   func sourceRowsExposeOnlySafeHostAndPersonalRemoval() {
     // Break caught: showing secret-like URL material or offering Delete for bundled definitions.
     let standard = SourceRowPresentation(
@@ -92,6 +126,18 @@ struct SourceSettingsTests {
     #expect(personal.originLabel == "Personal source")
     #expect(personal.canRemove)
     #expect(personal.requiresRemovalConfirmation)
+  }
+
+  @Test
+  func sourceRowTextLimitsRelaxForAccessibilitySizes() {
+    // Break caught: clipping source metadata to two lines when accessibility text needs to expand.
+    let ordinary = SourceRowTextPresentation(dynamicTypeSize: .large)
+    let accessible = SourceRowTextPresentation(dynamicTypeSize: .accessibility1)
+
+    #expect(ordinary.nameLineLimit == 2)
+    #expect(ordinary.metadataLineLimit == 2)
+    #expect(accessible.nameLineLimit == nil)
+    #expect(accessible.metadataLineLimit == nil)
   }
 
   @Test @MainActor
@@ -219,7 +265,7 @@ struct SourceSettingsTests {
       preferences: MemoryAppPreferences(welcomeCompleted: true)
     )
     await model.start()
-    model.isSourceEditorPresented = true
+    model.presentSourceEditor()
 
     let succeeded = await model.addSource(
       FeedSourceInput(
@@ -236,6 +282,37 @@ struct SourceSettingsTests {
     #expect(model.sourceEditorError == "The source could not be updated.")
     #expect(!model.sourceEditorError.orEmpty.contains("secret"))
     #expect(model.snapshot == initial)
+  }
+
+  @Test @MainActor
+  func presentingAndDismissingSourceEditorClearStaleFailureCopy() async {
+    // Break caught: reopening a sheet with the previous bridge failure still visible.
+    let bridge = FakeBridgeClient(snapshot: sourceSnapshot(sources: [standardSource]))
+    bridge.sourceError = BridgeError.invalidInput
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.presentSourceEditor()
+    _ = await model.addSource(
+      FeedSourceInput(
+        name: "Feed",
+        category: "Research",
+        url: "invalid",
+        weight: 0.5,
+        enabled: true
+      )
+    )
+    #expect(model.sourceEditorError == "The source could not be updated.")
+
+    model.dismissSourceEditor()
+    #expect(!model.isSourceEditorPresented)
+    #expect(model.sourceEditorError == nil)
+
+    model.presentSourceEditor()
+    #expect(model.isSourceEditorPresented)
+    #expect(model.sourceEditorError == nil)
   }
 
   @Test @MainActor
@@ -288,6 +365,47 @@ struct SourceSettingsTests {
 
     #expect(bridge.snapshotCalls == 2)
     #expect(model.snapshot == reconciled)
+  }
+
+  @Test @MainActor
+  func forwardSourceGenerationReconcilesNonSourceStateBeforePublishingRevision() async {
+    // Break caught: a partial source patch claims a forward database generation and makes polling
+    // believe stale stories and model state already match the authoritative composite snapshot.
+    let initialRevision = StateRevision(dataGeneration: 5, sourceConfigRevision: "source-a")
+    let initial = sourceSnapshot(revision: initialRevision, sources: [standardSource])
+    let toggled = standardSource.with(enabled: false)
+    let forwardRevision = StateRevision(dataGeneration: 6, sourceConfigRevision: "source-b")
+    let authoritativeStory = Story.fixture.with(title: "Authoritative forward story")
+    let reconciled = AppSnapshot(
+      revision: forwardRevision,
+      status: initial.status,
+      today: initial.today,
+      latest: [authoritativeStory],
+      saved: initial.saved,
+      sources: [toggled],
+      modelProfiles: [],
+      defaultModelProfileID: nil,
+      hasUsableAIProfile: false
+    )
+    let bridge = FakeBridgeClient(snapshot: initial, revisions: [forwardRevision])
+    bridge.sourceToggleResult = SourceMutationResult(source: toggled, revision: forwardRevision)
+    bridge.enqueueSnapshot(reconciled)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model.start()
+
+    await model.setSourceEnabled(id: standardSource.id, enabled: false)
+    model.setActive(true)
+    await eventually { bridge.stateRevisionCalls >= 1 }
+    model.stopPolling()
+
+    #expect(model.snapshot == reconciled)
+    #expect(model.snapshot?.latest == [authoritativeStory])
+    #expect(model.snapshot?.modelProfiles.isEmpty == true)
+    #expect(bridge.snapshotCalls == 2)
   }
 
   @Test @MainActor
@@ -387,6 +505,26 @@ extension Source {
       weight: weight,
       feedURL: feedURL ?? self.feedURL,
       origin: origin ?? self.origin
+    )
+  }
+}
+
+extension Story {
+  fileprivate func with(title: String) -> Story {
+    Story(
+      id: id,
+      title: title,
+      canonicalURL: canonicalURL,
+      excerpt: excerpt,
+      category: category,
+      publishedAt: publishedAt,
+      sourceIDs: sourceIDs,
+      score: score,
+      smartSummary: smartSummary,
+      isRead: isRead,
+      isSaved: isSaved,
+      selectedSummary: selectedSummary,
+      summaryVariants: summaryVariants
     )
   }
 }
