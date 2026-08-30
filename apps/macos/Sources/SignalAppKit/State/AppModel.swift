@@ -49,6 +49,7 @@ public final class AppModel {
   @ObservationIgnored private var pendingRefresh: PendingRefresh?
   @ObservationIgnored private var isActive = false
   @ObservationIgnored private var pollGeneration: UInt64 = 0
+  @ObservationIgnored private var revisionEpoch: UInt64 = 0
 
   public init(
     bridge: any BridgeClient,
@@ -89,6 +90,7 @@ public final class AppModel {
 
   public func refresh(ai: Bool = true) async {
     guard activeOperationID == nil else { return }
+    invalidatePendingRevisionReads()
     let operationID = UUID().uuidString
     activeOperationID = operationID
     phase = .refreshing
@@ -101,18 +103,19 @@ public final class AppModel {
     case .refreshing:
       assertionFailure("An active refresh must own activeOperationID")
     }
-    await Task.yield()
   }
 
   public func cancelRefresh() {
     guard let activeOperationID else { return }
+    refreshTask?.cancel()
+    _ = bridge.cancelOperation(id: activeOperationID)
     if pendingRefresh?.operationID == activeOperationID {
       pendingRefresh = nil
       self.activeOperationID = nil
+      invalidatePendingRevisionReads()
       phase = snapshot.map(presentationPhase(for:)) ?? .empty
       return
     }
-    _ = bridge.cancelOperation(id: activeOperationID)
   }
 
   public func setActive(_ active: Bool) {
@@ -160,6 +163,7 @@ public final class AppModel {
 
   private func startPolling() {
     guard !isActive else { return }
+    invalidatePendingRevisionReads()
     isActive = true
     pollGeneration &+= 1
     let generation = pollGeneration
@@ -177,16 +181,24 @@ public final class AppModel {
           continue
         }
         guard !Task.isCancelled else { return }
-        guard self?.pollMayReadRevision(generation: generation) == true else { continue }
+        guard let revisionEpoch = self?.revisionReadEpoch(generation: generation) else { continue }
         do {
           let revision = try await bridge.stateRevision()
           guard !Task.isCancelled else { return }
-          self?.receivePolledRevision(revision, generation: generation)
+          self?.receivePolledRevision(
+            revision,
+            generation: generation,
+            revisionEpoch: revisionEpoch
+          )
         } catch is CancellationError {
           return
         } catch {
           guard !Task.isCancelled else { return }
-          self?.receivePollingError(error, generation: generation)
+          self?.receivePollingError(
+            error,
+            generation: generation,
+            revisionEpoch: revisionEpoch
+          )
         }
       }
     }
@@ -194,6 +206,7 @@ public final class AppModel {
 
   private func stopPollingOwnedTasks() {
     guard isActive || pollTask != nil else { return }
+    invalidatePendingRevisionReads()
     isActive = false
     pollGeneration &+= 1
     pollTask?.cancel()
@@ -210,19 +223,37 @@ public final class AppModel {
       && bridgeActivity == .idle
   }
 
-  private func receivePolledRevision(_ revision: StateRevision, generation: UInt64) {
+  private func revisionReadEpoch(generation: UInt64) -> UInt64? {
+    guard pollMayReadRevision(generation: generation) else { return nil }
+    return revisionEpoch
+  }
+
+  private func receivePolledRevision(
+    _ revision: StateRevision,
+    generation: UInt64,
+    revisionEpoch: UInt64
+  ) {
+    guard revisionEpoch == self.revisionEpoch else { return }
     guard pollMayReadRevision(generation: generation) else { return }
     guard revision != snapshot?.revision else { return }
     beginReload(origin: .polling(generation: generation))
   }
 
-  private func receivePollingError(_ error: any Error, generation: UInt64) {
+  private func receivePollingError(
+    _ error: any Error,
+    generation: UInt64,
+    revisionEpoch: UInt64? = nil
+  ) {
+    if let revisionEpoch {
+      guard revisionEpoch == self.revisionEpoch else { return }
+    }
     guard pollMayReadRevision(generation: generation) else { return }
     apply(error)
   }
 
   private func beginReload(origin: ReloadOrigin) {
     guard bridgeActivity == .idle else { return }
+    invalidatePendingRevisionReads()
     let token = UUID()
     bridgeActivity = .reloading(token: token, origin: origin)
     let bridge = bridge
@@ -256,6 +287,7 @@ public final class AppModel {
     taskWasCancelled: Bool
   ) {
     guard bridgeActivity == .reloading(token: token, origin: origin) else { return }
+    invalidatePendingRevisionReads()
     reloadTask = nil
     bridgeActivity = .idle
 
@@ -289,13 +321,34 @@ public final class AppModel {
     bridgeActivity = .refreshing(operationID: request.operationID)
     let bridge = bridge
     refreshTask = Task { [weak self, bridge] in
+      guard !Task.isCancelled else {
+        self?.finishRefresh(
+          operationID: request.operationID,
+          replacement: nil,
+          error: BridgeError.cancelled
+        )
+        return
+      }
       do {
         _ = try await bridge.refresh(operationID: request.operationID, ai: request.ai)
-        guard !Task.isCancelled,
-          self?.refreshMayLoadSnapshot(operationID: request.operationID) == true
-        else { return }
+        guard !Task.isCancelled else {
+          self?.finishRefresh(
+            operationID: request.operationID,
+            replacement: nil,
+            error: BridgeError.cancelled
+          )
+          return
+        }
+        guard self?.refreshMayLoadSnapshot(operationID: request.operationID) == true else { return }
         let replacement = try await bridge.snapshot()
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else {
+          self?.finishRefresh(
+            operationID: request.operationID,
+            replacement: nil,
+            error: BridgeError.cancelled
+          )
+          return
+        }
         self?.finishRefresh(
           operationID: request.operationID,
           replacement: replacement,
@@ -305,7 +358,7 @@ public final class AppModel {
         self?.finishRefresh(
           operationID: request.operationID,
           replacement: nil,
-          error: error
+          error: Task.isCancelled ? BridgeError.cancelled : error
         )
       }
     }
@@ -322,6 +375,7 @@ public final class AppModel {
     error: (any Error)?
   ) {
     guard refreshMayLoadSnapshot(operationID: operationID) else { return }
+    invalidatePendingRevisionReads()
     bridgeActivity = .idle
     refreshTask = nil
     activeOperationID = nil
@@ -330,6 +384,10 @@ public final class AppModel {
     } else if let error {
       apply(error)
     }
+  }
+
+  private func invalidatePendingRevisionReads() {
+    revisionEpoch &+= 1
   }
 
   private func replaceSnapshot(_ replacement: AppSnapshot) {

@@ -37,13 +37,14 @@ struct AppModelTests {
 
   @Test @MainActor
   func refreshIsSingleFlightAndCancellationUsesTheActiveIdentifier() async {
-    // Break caught: losing an immediate cancellation before the fake registers its continuation.
+    // Break caught: starting overlapping bridge refreshes or cancelling the wrong running identifier.
     let bridge = FakeBridgeClient(snapshot: .fixture)
     let model = AppModel(
       bridge: bridge, preferences: MemoryAppPreferences(welcomeCompleted: true))
     await model.start()
 
     await model.refresh()
+    await eventually { bridge.refreshIdentifiers.count == 1 }
     await model.refresh()
     model.cancelRefresh()
     await eventually {
@@ -54,6 +55,35 @@ struct AppModelTests {
 
     #expect(bridge.cancelledIdentifiers == bridge.refreshIdentifiers)
     #expect(model.phase == .ready)
+  }
+
+  @Test @MainActor
+  func immediateCancellationBeforeRefreshTaskStartsNeverEntersBridge() async throws {
+    // Break caught: relying on Rust cancellation registration instead of cancelling the local task.
+    let bridge = FakeBridgeClient(snapshot: .fixture)
+    bridge.discardCancellationBeforeRefreshRegistration()
+    bridge.suspendNextRefreshBeforeRegistration()
+    let model = AppModel(
+      bridge: bridge, preferences: MemoryAppPreferences(welcomeCompleted: true))
+    await model.start()
+
+    await model.refresh()
+    let operationID = try #require(model.activeOperationID)
+    model.cancelRefresh()
+    try? await Task.sleep(for: .milliseconds(20))
+
+    #expect(bridge.refreshEntryCalls == 0)
+    #expect(bridge.refreshIdentifiers.isEmpty)
+    #expect(bridge.cancelledIdentifiers == [operationID])
+    #expect(model.activeOperationID == nil)
+    #expect(model.phase == .ready)
+
+    if bridge.refreshEntryCalls > 0 {
+      bridge.releaseRefreshStarts()
+      await eventually { bridge.refreshIdentifiers.count == 1 }
+      bridge.finishRefresh(with: .fixture)
+      await eventually { model.activeOperationID == nil }
+    }
   }
 
   @Test @MainActor
@@ -199,6 +229,48 @@ struct AppModelTests {
       model.snapshot == refreshed && model.activeOperationID == nil
     }
     model.setActive(false)
+    #expect(bridge.snapshotCalls == 2)
+  }
+
+  @Test @MainActor
+  func revisionStartedBeforeRefreshCannotReloadAfterRefreshFinishes() async {
+    // Break caught: accepting a pre-refresh revision after bridge activity returns to idle.
+    let initial = AppSnapshot.fixture
+    let oldRevision = StateRevision(dataGeneration: 2, sourceConfigRevision: "source-a")
+    let refreshed = initial.with(
+      revision: StateRevision(dataGeneration: 3, sourceConfigRevision: "source-a"),
+      latest: [Story.fixture.with(title: "Fresh result")]
+    )
+    let stale = initial.with(
+      revision: oldRevision,
+      latest: [Story.fixture.with(title: "Stale reload")]
+    )
+    let bridge = FakeBridgeClient(
+      snapshot: initial, revisions: [oldRevision, refreshed.revision])
+    bridge.enqueueSnapshot(refreshed)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true),
+      pollInterval: .milliseconds(1)
+    )
+    await model.start()
+    bridge.suspendNextStateRevision()
+    model.setActive(true)
+    await eventually { bridge.stateRevisionCalls == 1 }
+
+    await model.refresh()
+    await eventually { bridge.refreshIdentifiers.count == 1 }
+    bridge.finishRefresh(with: .fixture)
+    await eventually {
+      model.snapshot == refreshed && model.activeOperationID == nil
+    }
+    bridge.enqueueSnapshot(stale)
+
+    bridge.releaseStateRevisions()
+    try? await Task.sleep(for: .milliseconds(20))
+    model.stopPolling()
+
+    #expect(model.snapshot == refreshed)
     #expect(bridge.snapshotCalls == 2)
   }
 

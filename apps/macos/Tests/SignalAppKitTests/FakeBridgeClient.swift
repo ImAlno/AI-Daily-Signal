@@ -14,14 +14,18 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   private var revisionIndex = 0
   private var suspendedSnapshotCount = 0
   private var suspendedRevisionCount = 0
+  private var suspendedRefreshStartCount = 0
   private var pendingSnapshots: [(SnapshotContinuation, Result<AppSnapshot, any Error>)] = []
   private var pendingRevisions: [(RevisionContinuation, Result<StateRevision, any Error>)] = []
+  private var pendingRefreshStarts: [CheckedContinuation<Void, Never>] = []
   private var pendingRefreshes: [String: RefreshContinuation] = [:]
   private var cancellationRequests: Set<String> = []
+  private var remembersCancellationBeforeRefreshRegistration = true
   private var storedRefreshIdentifiers: [String] = []
   private var storedCancelledIdentifiers: [String] = []
   private var storedSnapshotCalls = 0
   private var storedStateRevisionCalls = 0
+  private var storedRefreshEntryCalls = 0
   private var storedModelInputs: [ModelProfileInput] = []
   private var storedSnapshotError: (any Error)?
   private var storedRefreshError: (any Error)?
@@ -69,6 +73,10 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     lock.withLock { storedMaximumConcurrentBridgeCalls }
   }
 
+  var refreshEntryCalls: Int {
+    lock.withLock { storedRefreshEntryCalls }
+  }
+
   var modelInputs: [ModelProfileInput] {
     lock.withLock { storedModelInputs }
   }
@@ -83,6 +91,14 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
 
   func suspendNextStateRevision() {
     lock.withLock { suspendedRevisionCount += 1 }
+  }
+
+  func suspendNextRefreshBeforeRegistration() {
+    lock.withLock { suspendedRefreshStartCount += 1 }
+  }
+
+  func discardCancellationBeforeRefreshRegistration() {
+    lock.withLock { remembersCancellationBeforeRefreshRegistration = false }
   }
 
   func releaseSnapshots() {
@@ -106,6 +122,17 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     }
     for (continuation, result) in pending {
       continuation.resume(with: result)
+    }
+  }
+
+  func releaseRefreshStarts() {
+    let pending = lock.withLock {
+      let pending = pendingRefreshStarts
+      pendingRefreshStarts.removeAll()
+      return pending
+    }
+    for continuation in pending {
+      continuation.resume()
     }
   }
 
@@ -158,6 +185,17 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
   }
 
   func refresh(operationID: String, ai: Bool) async throws -> RefreshResult {
+    let shouldSuspend = lock.withLock {
+      storedRefreshEntryCalls += 1
+      guard suspendedRefreshStartCount > 0 else { return false }
+      suspendedRefreshStartCount -= 1
+      return true
+    }
+    if shouldSuspend {
+      await withCheckedContinuation { continuation in
+        lock.withLock { pendingRefreshStarts.append(continuation) }
+      }
+    }
     return try await withCheckedThrowingContinuation { continuation in
       let immediateError = lock.withLock { () -> (any Error)? in
         beginBridgeCallLocked()
@@ -195,8 +233,10 @@ final class FakeBridgeClient: BridgeClient, @unchecked Sendable {
     let (matched, continuation) = lock.withLock {
       () -> (Bool, RefreshContinuation?) in
       storedCancelledIdentifiers.append(id)
-      cancellationRequests.insert(id)
       let matched = storedRefreshIdentifiers.contains(id)
+      if matched || remembersCancellationBeforeRefreshRegistration {
+        cancellationRequests.insert(id)
+      }
       let continuation = pendingRefreshes.removeValue(forKey: id)
       if continuation != nil { endBridgeCallLocked() }
       return (matched, continuation)
