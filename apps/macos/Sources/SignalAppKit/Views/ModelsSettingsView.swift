@@ -77,7 +77,10 @@ public struct ModelsSettingsView: View {
         Button("Add Model", systemImage: "plus") {
           model.presentModelEditor()
         }
-        .disabled(model.inlineEditorRoute == .addModel)
+        .disabled(
+          model.inlineEditorRoute == .addModel
+            || model.modelActionState(for: .adding) != nil
+        )
         .help("Add model profile")
       }
     }

@@ -96,7 +96,10 @@ public struct SourcesView: View {
           model.presentSourceEditor()
         }
         .keyboardShortcut("n", modifiers: [.command, .shift])
-        .disabled(model.inlineEditorRoute == .addSource)
+        .disabled(
+          model.inlineEditorRoute == .addSource
+            || model.sourceActionState(for: .adding) != nil
+        )
         .help("Add personal source (⇧⌘N)")
       }
     }

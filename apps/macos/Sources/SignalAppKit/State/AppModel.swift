@@ -239,6 +239,7 @@ public final class AppModel {
   }
 
   public func presentSourceEditor() {
+    guard sourceActionStates[.adding] == nil else { return }
     sourceEditorError = nil
     modelEditorError = nil
     inlineEditorRoute = .addSource
@@ -250,6 +251,7 @@ public final class AppModel {
   }
 
   public func presentModelEditor() {
+    guard modelActionStates[.adding] == nil else { return }
     modelEditorError = nil
     sourceEditorError = nil
     inlineEditorRoute = .addModel

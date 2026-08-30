@@ -330,6 +330,45 @@ struct SourceSettingsTests {
   }
 
   @Test @MainActor
+  func pendingSourceAddBlocksEditorReentryUntilSettlement() async {
+    // Break caught: an older add completion dismissing or writing failure into a reopened editor.
+    let bridge = FakeBridgeClient(snapshot: sourceSnapshot(sources: [standardSource]))
+    bridge.sourceError = BridgeError.invalidInput
+    bridge.suspendNextAddSource()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.presentSourceEditor()
+    let input = FeedSourceInput(
+      name: "Feed",
+      category: "Research",
+      url: "invalid",
+      weight: 0.5,
+      enabled: true
+    )
+
+    let add = Task { await model.addSource(input) }
+    await eventually { bridge.addSourceInputs.count == 1 }
+    #expect(model.sourceActionState(for: .adding) == .inFlight)
+
+    model.dismissSourceEditor()
+    model.presentSourceEditor()
+    #expect(model.inlineEditorRoute == nil)
+
+    bridge.releaseAddSources()
+    #expect(!(await add.value))
+    #expect(model.sourceActionState(for: .adding) == nil)
+    #expect(model.inlineEditorRoute == nil)
+    #expect(model.sourceEditorError != nil)
+
+    model.presentSourceEditor()
+    #expect(model.inlineEditorRoute == .addSource)
+    #expect(model.sourceEditorError == nil)
+  }
+
+  @Test @MainActor
   func presentingAndDismissingSourceEditorClearStaleFailureCopy() async {
     // Break caught: reopening an inline form with the previous bridge failure still visible.
     let bridge = FakeBridgeClient(snapshot: sourceSnapshot(sources: [standardSource]))

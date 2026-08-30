@@ -21,6 +21,40 @@ struct ModelSettingsTests {
     #expect(model.modelEditorError == nil)
   }
 
+  @Test @MainActor
+  func pendingModelAddBlocksEditorReentryUntilSettlement() async {
+    // Break caught: an older add completion dismissing or writing failure into a reopened editor.
+    let bridge = FakeBridgeClient(snapshot: .fixture)
+    bridge.modelError = BridgeError.providerUnavailable
+    bridge.suspendNextAddModel()
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.presentModelEditor()
+    var draft = validModelDraft()
+    let input = draft.takeInput()!
+
+    let add = Task { await model.addModel(input) {} }
+    await eventually { bridge.addModelRequests.count == 1 }
+    #expect(model.modelActionState(for: .adding) == .inFlight)
+
+    model.dismissModelEditor()
+    model.presentModelEditor()
+    #expect(model.inlineEditorRoute == nil)
+
+    bridge.releaseAddModels()
+    #expect(!(await add.value))
+    #expect(model.modelActionState(for: .adding) == nil)
+    #expect(model.inlineEditorRoute == nil)
+    #expect(model.modelEditorError != nil)
+
+    model.presentModelEditor()
+    #expect(model.inlineEditorRoute == .addModel)
+    #expect(model.modelEditorError == nil)
+  }
+
   @Test
   func newProfileUsesTheExactBoundedDefaults() {
     // Break caught: silently expanding the number, size, duration, or retries of paid requests.
