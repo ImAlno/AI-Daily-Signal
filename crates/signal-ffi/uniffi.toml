@@ -1,0 +1,5 @@
+[bindings.swift]
+module_name = "SignalFFIBindings"
+ffi_module_name = "CSignalFFI"
+generate_module_map = true
+generate_immutable_records = true

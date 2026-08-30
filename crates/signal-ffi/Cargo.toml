@@ -1,0 +1,29 @@
+[package]
+name = "signal-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+bindgen-cli = ["uniffi/cli"]
+test-support = ["signal-core/test-support"]
+
+[dependencies]
+chrono.workspace = true
+signal-core = { path = "../signal-core" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+uniffi = { version = "=0.32.0", features = ["tokio"] }
+
+[dev-dependencies]
+secrecy.workspace = true
+tempfile.workspace = true
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen-cli"]

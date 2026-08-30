@@ -1,5 +1,6 @@
 .superpowers/
 .worktrees/
+/apps/macos/Generated/
 
 # Rust build artifacts
 /target/
