@@ -19,7 +19,7 @@ impl SourceFixture {
         let signal_home_lock = SIGNAL_HOME_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .unwrap();
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = tempfile::tempdir().unwrap();
         let paths = AppPaths::for_root(root.path());
         // SAFETY: this fixture holds the process-wide test lock until it is dropped, and this
@@ -125,6 +125,22 @@ fn invalid_personal_feed_is_rejected_before_writing_config() {
 }
 
 #[test]
+fn empty_url_user_info_is_rejected_before_writing_config() {
+    // Break caught: accepting an authority with an explicit but empty user-info component.
+    let fixture = SourceFixture::new();
+    let before = fixture.config_bytes();
+    let input = NewFeedSource {
+        url: "https://@example.com/feed.xml".to_owned(),
+        ..personal_feed("Personal")
+    };
+
+    let error = fixture.open_app().add_feed_source(input).unwrap_err();
+
+    assert!(matches!(error, SignalError::InvalidConfiguration(_)));
+    assert_eq!(fixture.config_bytes(), before);
+}
+
+#[test]
 fn personal_feed_names_are_case_insensitively_unique() {
     // Break caught: allowing duplicate feeds that differ only by name casing.
     let fixture = SourceFixture::new();
@@ -224,6 +240,22 @@ fn failed_atomic_write_leaves_source_enabled_state_unchanged() {
     fixture.prevent_config_writes();
 
     assert!(app.set_source_enabled(&source.id, !source.enabled).is_err());
+
+    assert_eq!(app.list_sources(), before);
+}
+
+#[test]
+fn failed_atomic_write_keeps_personal_source_in_memory_list() {
+    // Break caught: removing a personal source from memory before its config write succeeds.
+    let fixture = SourceFixture::new();
+    let mut app = fixture.open_app();
+    let added = app
+        .add_feed_source(personal_feed("Personal research"))
+        .unwrap();
+    let before = app.list_sources();
+    fixture.prevent_config_writes();
+
+    assert!(app.remove_personal_source(&added.source.id).is_err());
 
     assert_eq!(app.list_sources(), before);
 }

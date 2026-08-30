@@ -569,14 +569,29 @@ fn validate_new_feed_source(input: &NewFeedSource) -> Result<()> {
         .map_err(|_| SignalError::InvalidConfiguration("source URL must be valid".to_owned()))?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
+        || has_user_info_delimiter(&input.url, &url)
     {
         return Err(SignalError::InvalidConfiguration(
             "source URL must be HTTP or HTTPS with a host and no user info".to_owned(),
         ));
     }
     Ok(())
+}
+
+fn has_user_info_delimiter(input: &str, url: &Url) -> bool {
+    let Some((input_scheme, after_scheme)) = input.split_once(':') else {
+        return false;
+    };
+    if !input_scheme.eq_ignore_ascii_case(url.scheme()) {
+        return false;
+    }
+    let Some(after_authority_start) = after_scheme.strip_prefix("//") else {
+        return false;
+    };
+    let authority_end = after_authority_start
+        .find(['/', '?', '#'])
+        .unwrap_or(after_authority_start.len());
+    after_authority_start[..authority_end].contains('@')
 }
 
 fn source_record(source: Source, standard_source_ids: &BTreeSet<String>) -> SourceRecord {
