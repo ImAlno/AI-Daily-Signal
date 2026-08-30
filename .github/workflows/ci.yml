@@ -50,3 +50,26 @@ jobs:
             printf "\n" | gnome-keyring-daemon --unlock >/dev/null
             cargo test -p signal-core --test system_credential_contract -- --ignored
           '
+
+  macos-companion:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate Swift bindings
+        run: scripts/generate-swift-bindings.sh
+      - name: Build the real CLI for shared-process bridge tests
+        run: cargo build -p signal-cli
+      - name: Run bridge contracts
+        run: cargo test -p signal-ffi --all-features
+      - name: Run Swift tests
+        run: swift test --package-path apps/macos
+      - name: Build release Swift executable
+        run: swift build --package-path apps/macos -c release
+      - name: Assemble and verify standalone app bundle
+        run: |
+          scripts/build-macos-app.sh
+          scripts/verify-macos-app.sh

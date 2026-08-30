@@ -6,7 +6,7 @@ AI Daily Signal is a calm, local-first command-line briefing that turns a standa
 
 Milestone two delivers the shared Rust core and cross-platform CLI: local feed collection, deterministic ranking, Raw and Smart summaries, opt-in model profiles, secure credentials, budgeted AI summaries, and immutable local caching. It is ready for personal use from source; packaged installers are not available yet.
 
-The native SwiftUI macOS companion is the next milestone. It is not part of this release.
+The personal SwiftUI macOS alpha is available from source for macOS 26 on Apple Silicon. Build and installation instructions are in the [macOS alpha guide](docs/macos-alpha.md); signing and public distribution remain deferred.
 
 Raw and Smart summaries are generated locally and never call an LLM. AI summaries are optional, require a profile plus one-time data-sharing consent, and fall back to the readable Smart summary when credentials, budget, provider output, or the provider itself are unavailable.
 
@@ -101,7 +101,7 @@ For isolated testing or a portable local workspace, set `SIGNAL_HOME` to a direc
 
 The product direction is documented in the approved [design specification](docs/superpowers/specs/2026-08-29-ai-daily-signal-design.md), and the milestone-two contracts are in the [model profiles and AI summaries specification](docs/superpowers/specs/2026-08-29-model-profiles-ai-summaries-design.md).
 
-The next milestone adds shared-core bindings and the native macOS companion. Signing, installers, and distribution follow later.
+The personal macOS alpha now adds shared-core bindings and a standalone native companion from source. Signing, notarization, installers, and public distribution follow later.
 
 ## Development checks
 
