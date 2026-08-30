@@ -173,6 +173,35 @@ struct ModelSettingsTests {
     #expect(!unconsented.canSetDefault)
   }
 
+  @Test
+  func modelRowsKeepIdentityAndReadinessVisibleWhileDeferringAdvancedMetadata() {
+    // Break caught: mixing connection limits and destructive actions into a profile's primary row.
+    let value = ModelProfileRowPresentation(profile: .fixture, isDefault: false)
+
+    #expect(value.secondaryText == "OpenAI · model-1")
+    #expect(value.readinessText.contains("Keychain"))
+    #expect(value.advancedMetadata.contains("summaries"))
+    #expect(value.advancedMetadata.contains("tokens"))
+    #expect(value.directActions == [.setDefault])
+    #expect(value.overflowActions == [.test, .remove])
+  }
+
+  @Test
+  func defaultModelHasNoRedundantDirectAction() {
+    // Break caught: offering an action that only restates the current default selection.
+    let value = ModelProfileRowPresentation(profile: .fixture, isDefault: true)
+
+    #expect(value.directActions.isEmpty)
+    #expect(value.overflowActions == [.test, .remove])
+  }
+
+  @Test
+  func modelEditorExplainsThatAIProfilesRemainOptional() {
+    // Break caught: presenting provider credentials without explaining Raw and Smart stay local.
+    #expect(ModelEditorCopy.title == "Add Model Profile")
+    #expect(ModelEditorCopy.guidance.contains("Raw and Smart remain local"))
+  }
+
   @Test(arguments: [
     CredentialDeletionStatus.deleted,
     CredentialDeletionStatus.notApplicable,

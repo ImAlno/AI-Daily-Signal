@@ -32,6 +32,12 @@ public enum ModelSettingsCopy {
     "The model profile was removed, but its Keychain credential could not be deleted. Remove it from Keychain Access."
 }
 
+public enum ModelEditorCopy {
+  public static let title = "Add Model Profile"
+  public static let guidance =
+    "Configure an optional provider for future AI summaries. Raw and Smart remain local."
+}
+
 public struct ModelProfileEditorDraft: Sendable, CustomDebugStringConvertible {
   public var name: String
   public var provider: ProviderKind
@@ -223,9 +229,11 @@ public struct ModelProfileEditorView: View {
     let renderPlan = ModelProfileEditorRenderPlan(draft: draft)
 
     VStack(alignment: .leading, spacing: 16) {
+      SettingsPageHeaderView(
+        title: ModelEditorCopy.title,
+        message: ModelEditorCopy.guidance
+      )
       HStack {
-        Text("Add Model Profile")
-          .font(.title2.weight(.semibold))
         Spacer()
         Button("Cancel") {
           draft.clearSecret()

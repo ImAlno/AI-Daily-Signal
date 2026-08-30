@@ -101,6 +101,14 @@ struct AccessibilityPolicyTests {
   }
 
   @Test
+  func modelOverflowAccessibilityIdentifiesTheProfileItControls() {
+    // Break caught: an overflow control that VoiceOver cannot associate with its model profile.
+    let presentation = ModelProfileRowPresentation(profile: .fixture, isDefault: false)
+
+    #expect(presentation.overflowAccessibilityLabel == "More actions for Example model")
+  }
+
+  @Test
   func approvedKeyboardCommandsHaveTruthfulDescriptors() {
     // Break caught: a view and its displayed shortcut help drifting onto different key mappings.
     let expected: [(ReadingCommand, String, String)] = [

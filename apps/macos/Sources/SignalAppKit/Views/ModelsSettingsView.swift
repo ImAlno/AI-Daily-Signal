@@ -7,6 +7,12 @@ public struct ModelProfileRowPresentation: Sendable, Equatable {
   public let credentialLabel: String
   public let canTest: Bool
   public let endpointHost: String?
+  public let secondaryText: String
+  public let readinessText: String
+  public let advancedMetadata: String
+  public let directActions: [ModelsSettingsAction]
+  public let overflowActions: [ModelsSettingsAction]
+  public let overflowAccessibilityLabel: String
 
   public init(profile: ModelProfile, isDefault: Bool) {
     self.isDefault = isDefault
@@ -18,6 +24,13 @@ public struct ModelProfileRowPresentation: Sendable, Equatable {
     case .environment: credentialLabel = "Environment variable"
     }
     endpointHost = profile.endpoint.flatMap { URLComponents(string: $0)?.host }
+    secondaryText = "\(profile.provider.settingsTitle) · \(profile.model)"
+    readinessText = "\(credentialLabel) · \(consentLabel)"
+    advancedMetadata =
+      "\(profile.limits.maxSummariesPerRefresh) summaries · \(profile.limits.maxOutputTokens) tokens · \(profile.limits.timeoutSeconds) second timeout · \(profile.limits.maxRetries) retries"
+    directActions = canSetDefault ? [.setDefault] : []
+    overflowActions = [.test, .remove]
+    overflowAccessibilityLabel = "More actions for \(profile.name)"
   }
 }
 
@@ -67,9 +80,19 @@ public struct ModelsSettingsView: View {
           .padding(.vertical, 24)
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
       } else {
-        modelList
+        VStack(spacing: 0) {
+          SettingsPageHeaderView(
+            title: "Models",
+            message: "Choose which provider creates optional AI summaries."
+          )
+          .padding(.horizontal, 28)
+          .padding(.vertical, 20)
+
+          modelList
+        }
       }
     }
+    .background(Color(nsColor: .textBackgroundColor))
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
         Button("Add Model", systemImage: "plus") {
@@ -124,7 +147,7 @@ public struct ModelsSettingsView: View {
 
   private var modelList: some View {
     List {
-      Section("Models") {
+      Section {
         let profiles = model.snapshot?.modelProfiles ?? []
         if profiles.isEmpty {
           Label {
@@ -203,19 +226,24 @@ public struct ModelsSettingsView: View {
             .accessibilityLabel("Default model profile")
         }
       }
-      Text("\(profile.provider.settingsTitle) · \(profile.model)")
+      Text(presentation.secondaryText)
         .font(.subheadline)
         .foregroundStyle(.secondary)
-      Text(
-        "\(presentation.credentialLabel) · \(presentation.consentLabel) · \(profile.limits.maxSummariesPerRefresh) summaries · \(profile.limits.maxOutputTokens) tokens"
-      )
+      Text(presentation.readinessText)
       .font(.caption)
       .foregroundStyle(.secondary)
-      if let host = presentation.endpointHost {
-        Text("Compatible endpoint: \(host)")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+      DisclosureGroup("Connection and limits") {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(presentation.advancedMetadata)
+          if let host = presentation.endpointHost {
+            Text("Compatible endpoint: \(host)")
+          }
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .padding(.top, 4)
       }
+      .font(.caption)
       if let error = model.modelActionError(for: profile.id) {
         Label(error, systemImage: "exclamationmark.circle")
           .font(.caption)
@@ -236,16 +264,35 @@ public struct ModelsSettingsView: View {
           .controlSize(.small)
           .accessibilityLabel("Updating \(profile.name)")
       }
-      Button("Test") { pendingTest = profile }
-        .disabled(isBusy || !presentation.canTest)
-      if presentation.canSetDefault {
+      if presentation.directActions.contains(.setDefault) {
         Button("Use as Default") {
           Task { await model.setDefaultModel(id: profile.id) }
         }
         .disabled(isBusy)
       }
-      Button("Remove", role: .destructive) { pendingRemoval = profile }
+      if !presentation.overflowActions.isEmpty {
+        Menu {
+          if presentation.overflowActions.contains(.test) {
+            Button("Test") { pendingTest = profile }
+              .disabled(!presentation.canTest)
+              .accessibilityLabel("Test \(profile.name)")
+          }
+          if presentation.overflowActions.contains(.remove) {
+            Button("Remove", role: .destructive) { pendingRemoval = profile }
+              .accessibilityLabel("Remove \(profile.name)")
+          }
+        } label: {
+          Image(systemName: "ellipsis.circle")
+        }
         .disabled(isBusy)
+        .frame(
+          minWidth: VisualPolicy().minimumControlDimension,
+          minHeight: VisualPolicy().minimumControlDimension
+        )
+        .accessibilityLabel(presentation.overflowAccessibilityLabel)
+        .accessibilityHint("Test or remove this model profile")
+        .help("More actions for \(profile.name)")
+      }
     }
   }
 
