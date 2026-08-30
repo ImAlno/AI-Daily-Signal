@@ -13,8 +13,8 @@ mod storage;
 mod summaries;
 
 pub use app::{
-    AddModelCredential, AddModelInput, AddModelReport, CredentialWarningKind, RefreshOptions,
-    RefreshReport, RemoveModelReport, SignalApp, StateRevision, TodayView,
+    AddModelCredential, AddModelInput, AddModelReport, CredentialWarningKind, NewFeedSource,
+    RefreshOptions, RefreshReport, RemoveModelReport, SignalApp, StateRevision, TodayView,
 };
 pub use collector::{CollectionReport, FeedCollector, SourceFailure};
 pub use config::{AppConfig, BriefingConfig, ConfigRepository};
@@ -22,7 +22,10 @@ pub use credentials::{
     CredentialResolver, CredentialStore, EnvironmentReader, ProcessEnvironmentReader,
     ResolvedCredential, SystemCredentialStore, persist_system_credential_then,
 };
-pub use domain::{Briefing, BriefingItem, Candidate, ScoreBreakdown, Source, SourceKind, Story};
+pub use domain::{
+    Briefing, BriefingItem, Candidate, ScoreBreakdown, Source, SourceKind, SourceOrigin,
+    SourceRecord, Story,
+};
 pub use error::{Result, SignalError};
 pub use generator::{
     AiGenerationCoordinator, ManualGenerationStatus, SummarizeOptions, SummarizeReport,

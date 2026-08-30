@@ -17,6 +17,18 @@ pub struct Source {
     pub kind: SourceKind,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceOrigin {
+    Standard,
+    Personal,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceRecord {
+    pub source: Source,
+    pub origin: SourceOrigin,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Candidate {
     pub source_id: String,

@@ -11,9 +11,9 @@ use crate::{
     ConfigRepository, CredentialRef, CredentialStore, EnvironmentReader, FeedCollector,
     GeminiProvider, GenerationReport, ModelProfile, NewModelProfile, OpenAiProvider, Pipeline,
     ProcessEnvironmentReader, ProfileLimits, ProviderKind, ProviderRegistry, Result, SignalError,
-    Source, SourceFailure, Store, StoreStatus, Story, SummarizeOptions, SummarizeReport,
-    SummaryVariant, SystemCredentialStore, TestModelOptions, TestModelReport,
-    persist_system_credential_then,
+    Source, SourceFailure, SourceKind, SourceOrigin, SourceRecord, Store, StoreStatus, Story,
+    SummarizeOptions, SummarizeReport, SummaryVariant, SystemCredentialStore, TestModelOptions,
+    TestModelReport, persist_system_credential_then,
 };
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -75,6 +75,14 @@ pub struct RemoveModelReport {
     pub removed_profile_id: Uuid,
     pub credential_deleted: bool,
     pub warning: Option<CredentialWarningKind>,
+}
+
+pub struct NewFeedSource {
+    pub name: String,
+    pub category: String,
+    pub url: String,
+    pub weight: f64,
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -436,17 +444,85 @@ impl SignalApp {
         self.config.sources.clone()
     }
 
-    pub fn set_source_enabled(&mut self, id: &str, enabled: bool) -> Result<Source> {
-        let source = self
+    pub fn list_source_records(&mut self) -> Result<Vec<SourceRecord>> {
+        self.reload_config()?;
+        let standard_source_ids = ConfigRepository::standard_source_ids()?;
+        Ok(self
             .config
+            .sources
+            .iter()
+            .cloned()
+            .map(|source| source_record(source, &standard_source_ids))
+            .collect())
+    }
+
+    pub fn add_feed_source(&mut self, input: NewFeedSource) -> Result<SourceRecord> {
+        validate_new_feed_source(&input)?;
+        if self
+            .config
+            .sources
+            .iter()
+            .any(|source| source.name.trim().to_lowercase() == input.name.trim().to_lowercase())
+        {
+            return Err(SignalError::InvalidConfiguration(
+                "source names must be unique".to_owned(),
+            ));
+        }
+
+        let source = Source {
+            id: format!("personal-{}", Uuid::new_v4().hyphenated()),
+            name: input.name.trim().to_owned(),
+            category: input.category.trim().to_owned(),
+            enabled: input.enabled,
+            weight: input.weight,
+            kind: SourceKind::Feed { url: input.url },
+        };
+        let mut candidate = self.config.clone();
+        candidate.sources.push(source.clone());
+        ConfigRepository::new(self.paths.clone()).save(&candidate)?;
+        self.config = candidate;
+        Ok(SourceRecord {
+            source,
+            origin: SourceOrigin::Personal,
+        })
+    }
+
+    pub fn set_source_enabled(&mut self, id: &str, enabled: bool) -> Result<Source> {
+        let mut candidate = self.config.clone();
+        let source = candidate
             .sources
             .iter_mut()
             .find(|source| source.id == id)
             .ok_or_else(|| SignalError::NotFound("Source was not found".to_owned()))?;
         source.enabled = enabled;
         let updated = source.clone();
-        ConfigRepository::new(self.paths.clone()).save(&self.config)?;
+        ConfigRepository::new(self.paths.clone()).save(&candidate)?;
+        self.config = candidate;
         Ok(updated)
+    }
+
+    pub fn remove_personal_source(&mut self, id: &str) -> Result<SourceRecord> {
+        let source = self
+            .config
+            .sources
+            .iter()
+            .find(|source| source.id == id)
+            .cloned()
+            .ok_or_else(|| SignalError::NotFound("Source was not found".to_owned()))?;
+        if ConfigRepository::standard_source_ids()?.contains(id) {
+            return Err(SignalError::InvalidConfiguration(
+                "standard sources cannot be removed".to_owned(),
+            ));
+        }
+
+        let mut candidate = self.config.clone();
+        candidate.sources.retain(|source| source.id != id);
+        ConfigRepository::new(self.paths.clone()).save(&candidate)?;
+        self.config = candidate;
+        Ok(SourceRecord {
+            source,
+            origin: SourceOrigin::Personal,
+        })
     }
 
     fn coordinator(&self) -> AiGenerationCoordinator<'_> {
@@ -471,6 +547,45 @@ impl SignalApp {
             )?)
             .ok_or_else(|| SignalError::NotFound("Model profile was not found".to_owned()))
     }
+}
+
+fn validate_new_feed_source(input: &NewFeedSource) -> Result<()> {
+    if input.name.trim().is_empty() {
+        return Err(SignalError::InvalidConfiguration(
+            "source name must not be empty".to_owned(),
+        ));
+    }
+    if input.category.trim().is_empty() {
+        return Err(SignalError::InvalidConfiguration(
+            "source category must not be empty".to_owned(),
+        ));
+    }
+    if !input.weight.is_finite() || !(0.0..=1.0).contains(&input.weight) {
+        return Err(SignalError::InvalidConfiguration(
+            "source weight must be finite and between 0.0 and 1.0".to_owned(),
+        ));
+    }
+    let url = Url::parse(&input.url)
+        .map_err(|_| SignalError::InvalidConfiguration("source URL must be valid".to_owned()))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(SignalError::InvalidConfiguration(
+            "source URL must be HTTP or HTTPS with a host and no user info".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn source_record(source: Source, standard_source_ids: &BTreeSet<String>) -> SourceRecord {
+    let origin = if standard_source_ids.contains(&source.id) {
+        SourceOrigin::Standard
+    } else {
+        SourceOrigin::Personal
+    };
+    SourceRecord { source, origin }
 }
 
 fn merge_partial_briefing(

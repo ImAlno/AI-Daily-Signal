@@ -1,4 +1,4 @@
-use std::{fs, io::Write};
+use std::{collections::BTreeSet, fs, io::Write};
 
 use sha2::Digest;
 
@@ -59,6 +59,16 @@ impl ConfigRepository {
         config_file.flush()?;
         config_file.commit()?;
         Ok(())
+    }
+
+    pub(crate) fn standard_source_ids() -> Result<BTreeSet<String>> {
+        Ok(
+            Self::parse(include_str!("../assets/standard-sources.toml"))?
+                .sources
+                .into_iter()
+                .map(|source| source.id)
+                .collect(),
+        )
     }
 
     fn parse(contents: &str) -> Result<AppConfig> {
