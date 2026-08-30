@@ -273,3 +273,38 @@ Native visual inspection must cover 1100 by 720, 760 by 640, 480 by 620, and 420
 - Inline forms retain one scrolling owner and fit the 420-by-520 minimum.
 - Preferences remains honest status UI rather than fake controls.
 - Existing accessibility, bridge-confirmed mutations, keyboard commands, responsive modes, standalone app packaging, and cross-platform CLI behavior remain intact.
+
+## Implementation Verification — 2026-08-31
+
+Acceptance coverage was audited before the release matrix. No additional acceptance-only test was needed:
+
+| Criterion | Existing behavior or hosted-view evidence |
+|---|---|
+| 420-by-520 shown-window minimum | `shownWindowKeepsApprovedMinimumAfterSwiftUILayoutSettles` |
+| 820/560 responsive transitions; 680-point reading maximum; 28/24/18 padding | `exactLayoutBreakpointsAreStable`, `navigationAndReadingMetricsMatchTheApprovedEditorialColumn` |
+| Refresh-only direct toolbar; overflow commands and shortcuts | `toolbarKeepsOnlyRefreshDirectAndPlacesContextInOverflow`, `approvedKeyboardCommandsHaveTruthfulDescriptors` |
+| Rail visible selection and selected semantics | hosted `railNavigationMakesTheCurrentDestinationVisiblySelected` |
+| Compact current destination and absent sidebar toggle | `compactNavigationExposesTheCurrentDestinationAsItsValue`, hosted `compactShellHasNoSidebarToggleAfterLayoutSettles` |
+| One selected story and continuous header expansion | `signalDisclosureExpansionIsDerivedOnlyFromSelectedStoryID`, `storyHeaderKeepsIdentityAndDisclosesItsState`, `firstValidStoryExpandsAndValidSelectionPersists` |
+| Summary selector/provenance before the body | `pickerOrdersRawSmartThenImmutableAINewestFirst`, `expandedBodyExcludesIdentityAndKeepsSemanticOrder`, plus the live-flow structural check below |
+| Accessibility title wrapping and Reduce Motion | `accessibilityTextLeavesStoryTitlesUnrestricted`, `sourceRowTextLimitsRelaxForAccessibilitySizes`, `reduceMotionDisablesReaderPolishAnimation` |
+| One source/model editor scroll owner | hosted `inlineEditorsHaveOneVerticalScrollingOwnerAtMinimumWindowSize` at exactly 420 by 520 |
+| Source/model action and confirmation behavior | `sourceRowsPrioritizeIdentityStatusThenTertiaryMetadata`, `personalRemovalUsesConfirmationPolicyAndStandardRemovalNeverCallsBridge`, `modelRowsKeepIdentityAndReadinessVisibleWhileDeferringAdvancedMetadata`, `defaultTestAndRemovalRequirePolicyConfirmationAndPublishOnlyReconciledSnapshots` |
+| Preferences status-only content | `preferencesExplainThatDisplayedValuesAreCurrentStatus`, `preferencesUseNativeStatusRowsWithoutInventedControlsOrContainers` |
+
+The complete release matrix was run as separate commands from the polished worktree. Every command exited zero:
+
+- `git diff --check`: no output.
+- `scripts/test-swift-testing.sh`: 153 tests in 10 suites passed, including `AlphaAcceptanceTests` and the hosted acceptance regressions.
+- `scripts/test-swift-package-modes.sh`: reported `Swift package modes are isolated`.
+- `cargo test --workspace --all-features`: 264 tests passed; the one real OS credential-store contract remained ignored with its explicit unlocked-ephemeral-store requirement; there were no failures.
+- `scripts/build-macos-app.sh`: production Swift build completed and assembled `target/macos/AI Daily Signal.app` with its bundled `libsignal_ffi.dylib`.
+- `scripts/verify-macos-app.sh`: verified the exact standalone bundle.
+- `scripts/smoke-test-macos-app.sh`: verified direct bundle launch under isolated `HOME`/`PATH`, absent overrides, created configuration and SQLite state, integrity, and binary-safe scans; the owned process was stopped by the script.
+- `scripts/test-macos-packaging-hardening.sh`, `scripts/test-macos-smoke-ownership.sh`, and `scripts/test-macos-verifier-adversarial.sh`: all adversarial checks passed.
+
+The required forbidden-pattern scan returned no matches in macOS sources or tests. Focused structural inspection found one `SummaryVariantPicker` in the live `TodayView`/`StoryListView` → `SignalDisclosureView` expanded flow, only Refresh in `directCommands`, Open Source/Save/Preferences rendered from `overflowCommands`, and no outer `ScrollView` around the source or model editor `Form`. The branch diff contains no Rust crate, generated binding, bridge, CLI, menu-bar view, package manifest, or packaging-script change.
+
+Safe deterministic native inspection produced complete component renders from the approved fixture at 1100 by 720 expanded, 760 by 640 rail, and 480 by 620 compact in both light and dark appearances, plus Today at 420 by 520. Those inspected renders showed adaptive opaque reading surfaces, responsive persistent-navigation changes, a visible non-color rail selection surface, the numbered signal line, a continuous selected header, the summary selector immediately before article sections, compact wrapping, and the wide/rail article actions. Separate 420-by-520 full-window frames for the Sources editor and Preferences rendered complete enough to inspect their wrapped guidance, grouped content, and opaque surfaces.
+
+Native visual acceptance is not complete. Full-window off-screen captures of Today at 1100 by 720, 760 by 640, 480 by 620, and 420 by 520 produced black/partial SwiftUI frames even though the same production reader components rendered correctly without the shell. The Models editor frame clipped its leading title content and was rejected. Injected accessibility-size content rendered byte-identically to the standard-size frame, while keyboard-focus, Reduce Motion, Reduce Transparency, and Increase Contrast shell frames were also black/partial; none were accepted as evidence. Therefore toolbar/title-bar duplication and crowding, hover feel, live editor scrolling and validation wrapping, Dynamic Type, keyboard focus ring, Reduce Motion transitions, Reduce Transparency, Increase Contrast, and the complete Models editor still require human inspection in the native app. No global appearance or accessibility setting was changed, and no capture permission was requested.
