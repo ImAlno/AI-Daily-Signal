@@ -136,6 +136,7 @@ impl<'a> AiGenerationCoordinator<'a> {
                             maximum: maximum_requests,
                         }),
                         cancellation: Some(cancellation),
+                        produce_variant: true,
                     },
                 )
                 .await?;
@@ -145,6 +146,59 @@ impl<'a> AiGenerationCoordinator<'a> {
             }
         }
         Ok(report)
+    }
+
+    pub(crate) async fn generate_briefing_staged_with_cancel(
+        &self,
+        briefing: &mut Briefing,
+        profile: Option<&ModelProfile>,
+        now: DateTime<Utc>,
+        cancellation: &CancellationToken,
+    ) -> Result<StagedGeneration> {
+        cancellation.check()?;
+        let mut report = GenerationReport {
+            eligible: briefing.items.len(),
+            ..GenerationReport::default()
+        };
+        let Some(profile) = profile.filter(|profile| automatic_profile_is_usable(profile)) else {
+            report.smart_fallbacks = briefing.items.len();
+            return Ok(StagedGeneration {
+                report,
+                variants: Vec::new(),
+            });
+        };
+
+        let mut variants = Vec::new();
+        let mut outbound_requests = 0_u32;
+        let maximum_requests = profile.limits.max_summaries_per_refresh;
+        for item in &mut briefing.items {
+            cancellation.check()?;
+            let generated = self
+                .generate_story(
+                    &item.story,
+                    profile,
+                    now,
+                    GenerationControl {
+                        force: false,
+                        persist_variant: false,
+                        produce_variant: true,
+                        refresh_cap: Some(RefreshCap {
+                            used: &mut outbound_requests,
+                            maximum: maximum_requests,
+                        }),
+                        cancellation: Some(cancellation),
+                    },
+                )
+                .await?;
+            update_report(&mut report, &generated);
+            if let Some(variant) = generated.variant {
+                item.selected_summary = Some(variant.clone());
+                if generated.status == ManualGenerationStatus::Generated {
+                    variants.push(variant);
+                }
+            }
+        }
+        Ok(StagedGeneration { report, variants })
     }
 
     pub async fn summarize(
@@ -164,6 +218,7 @@ impl<'a> AiGenerationCoordinator<'a> {
                     persist_variant: true,
                     refresh_cap: None,
                     cancellation: None,
+                    produce_variant: true,
                 },
             )
             .await?;
@@ -197,6 +252,7 @@ impl<'a> AiGenerationCoordinator<'a> {
                     persist_variant: false,
                     refresh_cap: None,
                     cancellation: None,
+                    produce_variant: false,
                 },
             )
             .await?;
@@ -336,9 +392,26 @@ impl<'a> AiGenerationCoordinator<'a> {
         };
 
         if let Some(cancellation) = control.cancellation {
-            cancellation.check()?;
+            if cancellation.is_cancelled() {
+                self.store.finalize_generation(
+                    attempt_id,
+                    now,
+                    AttemptOutcome::FailedUncharged {
+                        category: GenerationFailureKind::Cancelled,
+                    },
+                )?;
+                cancellation.check()?;
+            }
         }
-        let response = match provider.generate(&request, &credential).await {
+        let provider_response = match control.cancellation {
+            Some(cancellation) => {
+                provider
+                    .generate_with_cancel(&request, &credential, cancellation)
+                    .await
+            }
+            None => provider.generate(&request, &credential).await,
+        };
+        let response = match provider_response {
             Ok(response) => {
                 consume_refresh_cap(&mut control)?;
                 response
@@ -373,6 +446,9 @@ impl<'a> AiGenerationCoordinator<'a> {
                     cost_microusd: estimated_cost,
                 },
             )?;
+            if let Some(cancellation) = control.cancellation {
+                cancellation.check()?;
+            }
             return Ok(SingleGeneration {
                 status: ManualGenerationStatus::MalformedOutput,
                 variant: None,
@@ -398,6 +474,9 @@ impl<'a> AiGenerationCoordinator<'a> {
                             cost_microusd: estimated_cost,
                         },
                     )?;
+                    if let Some(cancellation) = control.cancellation {
+                        cancellation.check()?;
+                    }
                     return Ok(SingleGeneration {
                         status: ManualGenerationStatus::MalformedOutput,
                         variant: None,
@@ -413,6 +492,9 @@ impl<'a> AiGenerationCoordinator<'a> {
                             cost_microusd: estimated_cost,
                         },
                     )?;
+                    if let Some(cancellation) = control.cancellation {
+                        cancellation.check()?;
+                    }
                     return Ok(SingleGeneration {
                         status: ManualGenerationStatus::MalformedOutput,
                         variant: None,
@@ -436,7 +518,7 @@ impl<'a> AiGenerationCoordinator<'a> {
             cancellation.check()?;
         }
 
-        let variant = control.persist_variant.then(|| SummaryVariant {
+        let variant = control.produce_variant.then(|| SummaryVariant {
             id: Uuid::new_v4(),
             story_id: story.id.clone(),
             profile_id: Some(profile.id),
@@ -452,7 +534,9 @@ impl<'a> AiGenerationCoordinator<'a> {
             cost_microusd: actual_cost,
             generated_at: now,
         });
-        if let Some(variant) = &variant {
+        if control.persist_variant
+            && let Some(variant) = &variant
+        {
             self.store.insert_summary_variant(variant)?;
         }
         Ok(SingleGeneration {
@@ -489,8 +573,14 @@ struct RefreshCap<'a> {
 struct GenerationControl<'a> {
     force: bool,
     persist_variant: bool,
+    produce_variant: bool,
     refresh_cap: Option<RefreshCap<'a>>,
     cancellation: Option<&'a CancellationToken>,
+}
+
+pub(crate) struct StagedGeneration {
+    pub report: GenerationReport,
+    pub variants: Vec<SummaryVariant>,
 }
 
 struct SingleGeneration {

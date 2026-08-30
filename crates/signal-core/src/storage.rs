@@ -82,7 +82,7 @@ impl Store {
     }
 
     pub fn commit_refresh(&self, stories: &[Story], briefing: &Briefing) -> Result<()> {
-        self.commit_refresh_transaction(stories, briefing, None)
+        self.commit_refresh_transaction(stories, briefing, &[], None)
     }
 
     pub fn commit_refresh_with_counts(
@@ -97,6 +97,25 @@ impl Store {
         self.commit_refresh_transaction(
             stories,
             briefing,
+            &[],
+            Some((successful_sources, failed_sources)),
+        )
+    }
+
+    pub fn commit_refresh_with_counts_and_variants(
+        &self,
+        stories: &[Story],
+        briefing: &Briefing,
+        variants: &[SummaryVariant],
+        successful_sources: usize,
+        failed_sources: usize,
+    ) -> Result<()> {
+        let successful_sources = count_as_i64(successful_sources)?;
+        let failed_sources = count_as_i64(failed_sources)?;
+        self.commit_refresh_transaction(
+            stories,
+            briefing,
+            variants,
             Some((successful_sources, failed_sources)),
         )
     }
@@ -105,12 +124,17 @@ impl Store {
         &self,
         stories: &[Story],
         briefing: &Briefing,
+        variants: &[SummaryVariant],
         source_counts: Option<(i64, i64)>,
     ) -> Result<()> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         upsert_stories_in_transaction(&transaction, stories)?;
+        for variant in variants {
+            insert_summary_variant_in_transaction(&transaction, variant)?;
+            bump_data_generation(&transaction)?;
+        }
         transaction.execute(
             "INSERT INTO briefings (date, generated_at) VALUES (?1, ?2)
              ON CONFLICT(date) DO UPDATE SET generated_at = excluded.generated_at",
@@ -206,38 +230,9 @@ impl Store {
     }
 
     pub fn insert_summary_variant(&self, variant: &SummaryVariant) -> Result<()> {
-        validate_summary_variant(variant)?;
         let mut connection = self.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute(
-            "INSERT INTO summary_variants (
-                 id, story_id, profile_id, provider, model, endpoint, dialect, prompt_version,
-                 cache_key, what_happened, why_it_matters, caveat, input_tokens, output_tokens,
-                 cost_microusd, generated_at
-             ) VALUES (
-                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
-             )",
-            params![
-                variant.id.hyphenated().to_string(),
-                variant.story_id,
-                variant
-                    .profile_id
-                    .map(|value| value.hyphenated().to_string()),
-                variant.provider.as_storage(),
-                variant.model,
-                variant.endpoint,
-                variant.dialect.map(ApiDialect::as_storage),
-                variant.prompt_version,
-                variant.cache_key,
-                variant.fields.what_happened,
-                variant.fields.why_it_matters,
-                variant.fields.caveat,
-                optional_integer_as_i64(variant.input_tokens)?,
-                optional_integer_as_i64(variant.output_tokens)?,
-                integer_as_i64(variant.cost_microusd)?,
-                variant.generated_at.to_rfc3339(),
-            ],
-        )?;
+        insert_summary_variant_in_transaction(&transaction, variant)?;
         bump_data_generation(&transaction)?;
         transaction.commit()?;
         Ok(())
@@ -815,6 +810,43 @@ fn bump_data_generation(transaction: &Transaction<'_>) -> Result<()> {
     transaction.execute(
         "UPDATE metadata SET value = CAST(value AS INTEGER) + 1 WHERE key = 'data_generation'",
         [],
+    )?;
+    Ok(())
+}
+
+fn insert_summary_variant_in_transaction(
+    transaction: &Transaction<'_>,
+    variant: &SummaryVariant,
+) -> Result<()> {
+    validate_summary_variant(variant)?;
+    transaction.execute(
+        "INSERT INTO summary_variants (
+             id, story_id, profile_id, provider, model, endpoint, dialect, prompt_version,
+             cache_key, what_happened, why_it_matters, caveat, input_tokens, output_tokens,
+             cost_microusd, generated_at
+         ) VALUES (
+             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
+         )",
+        params![
+            variant.id.hyphenated().to_string(),
+            variant.story_id,
+            variant
+                .profile_id
+                .map(|value| value.hyphenated().to_string()),
+            variant.provider.as_storage(),
+            variant.model,
+            variant.endpoint,
+            variant.dialect.map(ApiDialect::as_storage),
+            variant.prompt_version,
+            variant.cache_key,
+            variant.fields.what_happened,
+            variant.fields.why_it_matters,
+            variant.fields.caveat,
+            optional_integer_as_i64(variant.input_tokens)?,
+            optional_integer_as_i64(variant.output_tokens)?,
+            integer_as_i64(variant.cost_microusd)?,
+            variant.generated_at.to_rfc3339(),
+        ],
     )?;
     Ok(())
 }

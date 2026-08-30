@@ -251,25 +251,27 @@ impl SignalApp {
             item.selected_summary = None;
         }
         cancellation.check()?;
-        let generation = if options.ai {
+        let (generation, staged_variants) = if options.ai {
             cancellation.check()?;
-            storage_result(self.store.upsert_stories(&output.stories))?;
             let profile = storage_result(self.store.default_model_profile())?;
-            self.coordinator()
-                .generate_briefing_with_cancel(
+            let staged = self
+                .coordinator()
+                .generate_briefing_staged_with_cancel(
                     &mut output.briefing,
                     profile.as_ref(),
                     now,
                     cancellation,
                 )
-                .await?
+                .await?;
+            (staged.report, staged.variants)
         } else {
-            GenerationReport::default()
+            (GenerationReport::default(), Vec::new())
         };
         cancellation.check()?;
-        storage_result(self.store.commit_refresh_with_counts(
+        storage_result(self.store.commit_refresh_with_counts_and_variants(
             &output.stories,
             &output.briefing,
+            &staged_variants,
             successful_sources,
             failed_sources,
         ))?;

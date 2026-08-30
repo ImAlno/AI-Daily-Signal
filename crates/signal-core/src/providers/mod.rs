@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::{
-    AiSummaryFields, ApiDialect, GenerationFailureKind, ModelProfile, ProviderKind,
-    ResolvedCredential, SignalError,
+    AiSummaryFields, ApiDialect, CancellationToken, GenerationFailureKind, ModelProfile,
+    ProviderKind, ResolvedCredential, SignalError,
 };
 
 pub use anthropic::AnthropicProvider;
@@ -25,6 +25,7 @@ pub use parse::{
 };
 pub use retry::{
     RetryAttemptFailure, RetryPolicy, RetrySleeper, TokioRetrySleeper, retry_provider_operation,
+    retry_provider_operation_with_cancel,
 };
 
 const PROVIDER_USER_AGENT: &str = "ai-daily-signal/0.1.0";
@@ -104,6 +105,21 @@ pub trait SummaryProvider: Send + Sync {
         request: &ProviderRequest,
         credential: &ResolvedCredential,
     ) -> Result<ProviderResponse, ProviderFailure>;
+
+    async fn generate_with_cancel(
+        &self,
+        request: &ProviderRequest,
+        credential: &ResolvedCredential,
+        cancellation: &CancellationToken,
+    ) -> Result<ProviderResponse, ProviderFailure> {
+        if cancellation.is_cancelled() {
+            return Err(ProviderFailure::new(
+                ProviderFailureKind::Transport,
+                RequestChargeStatus::NotSent,
+            ));
+        }
+        self.generate(request, credential).await
+    }
 }
 
 #[derive(Default)]

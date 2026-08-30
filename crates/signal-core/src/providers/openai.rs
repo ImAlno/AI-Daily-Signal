@@ -4,13 +4,13 @@ use reqwest::{Client, Response};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{ApiDialect, ResolvedCredential, SummarySettings};
+use crate::{ApiDialect, CancellationToken, ResolvedCredential, SummarySettings};
 
 use super::{
     ProviderFailure, ProviderFailureKind, ProviderRequest, ProviderResponse, ProviderUsage,
     RequestChargeStatus, RetryAttemptFailure, RetryPolicy, SummaryProvider, TokioRetrySleeper,
-    parse_ai_summary, read_json_response, retry_provider_operation, shared_http_client,
-    transport_attempt_failure,
+    parse_ai_summary, read_json_response, retry_provider_operation,
+    retry_provider_operation_with_cancel, shared_http_client, transport_attempt_failure,
 };
 
 const OFFICIAL_OPENAI_ORIGIN: &str = "https://api.openai.com";
@@ -194,6 +194,19 @@ impl SummaryProvider for OpenAiProvider {
     ) -> Result<ProviderResponse, ProviderFailure> {
         let policy = RetryPolicy::new(request.timeout, request.max_retries);
         retry_provider_operation(&policy, &self.sleeper, || {
+            self.send_attempt(request, credential)
+        })
+        .await
+    }
+
+    async fn generate_with_cancel(
+        &self,
+        request: &ProviderRequest,
+        credential: &ResolvedCredential,
+        cancellation: &CancellationToken,
+    ) -> Result<ProviderResponse, ProviderFailure> {
+        let policy = RetryPolicy::new(request.timeout, request.max_retries);
+        retry_provider_operation_with_cancel(&policy, &self.sleeper, cancellation, || {
             self.send_attempt(request, credential)
         })
         .await

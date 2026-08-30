@@ -3,7 +3,9 @@ use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
 
-use super::{ProviderFailure, RequestChargeStatus};
+use crate::CancellationToken;
+
+use super::{ProviderFailure, ProviderFailureKind, RequestChargeStatus};
 
 const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
 
@@ -85,6 +87,33 @@ impl RetryAttemptFailure {
 pub async fn retry_provider_operation<T, F, Fut>(
     policy: &RetryPolicy,
     sleeper: &dyn RetrySleeper,
+    operation: F,
+) -> Result<T, ProviderFailure>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, RetryAttemptFailure>>,
+{
+    retry_provider_operation_with_optional_cancel(policy, sleeper, None, operation).await
+}
+
+pub async fn retry_provider_operation_with_cancel<T, F, Fut>(
+    policy: &RetryPolicy,
+    sleeper: &dyn RetrySleeper,
+    cancellation: &CancellationToken,
+    operation: F,
+) -> Result<T, ProviderFailure>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, RetryAttemptFailure>>,
+{
+    retry_provider_operation_with_optional_cancel(policy, sleeper, Some(cancellation), operation)
+        .await
+}
+
+async fn retry_provider_operation_with_optional_cancel<T, F, Fut>(
+    policy: &RetryPolicy,
+    sleeper: &dyn RetrySleeper,
+    cancellation: Option<&CancellationToken>,
     mut operation: F,
 ) -> Result<T, ProviderFailure>
 where
@@ -96,6 +125,12 @@ where
     let mut charge_status = RequestChargeStatus::NotSent;
 
     loop {
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(ProviderFailure::new(
+                ProviderFailureKind::Transport,
+                charge_status,
+            ));
+        }
         match operation().await {
             Ok(value) => return Ok(value),
             Err(attempt) => {

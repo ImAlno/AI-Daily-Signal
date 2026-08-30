@@ -1,11 +1,16 @@
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{
+    Arc, Mutex, MutexGuard, OnceLock,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use chrono::{Duration, TimeZone, Utc};
 use serde_json::json;
 use signal_core::{
     AddModelCredential, AddModelInput, AppConfig, AppPaths, Briefing, BriefingConfig, BriefingItem,
-    CancellationToken, ConfigRepository, GenerationOutcomeKind, ProfileLimits, ProviderKind,
-    RefreshOptions, ScoreBreakdown, SignalApp, SignalError, Source, SourceKind, Store, Story,
+    CancellationToken, ConfigRepository, GenerationOutcomeKind, ProfileLimits, ProviderFailure,
+    ProviderFailureKind, ProviderKind, RefreshOptions, RequestChargeStatus, RetryAttemptFailure,
+    RetryPolicy, ScoreBreakdown, SignalApp, SignalError, Source, SourceKind, Store, Story,
+    TokioRetrySleeper, retry_provider_operation_with_cancel,
 };
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -18,6 +23,18 @@ const FEED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <link>https://example.com/cancellation-story</link>
     <description>A complete deterministic fixture sentence.</description>
     <pubDate>Sat, 29 Aug 2026 11:30:00 +0000</pubDate></item>
+</channel></rss>"#;
+
+const MULTI_FEED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Cancellation fixture</title>
+  <item><guid>fixture-first</guid><title>First deterministic cancellation story</title>
+    <link>https://example.com/cancellation-first</link>
+    <description>A complete first deterministic fixture sentence.</description>
+    <pubDate>Sat, 29 Aug 2026 11:30:00 +0000</pubDate></item>
+  <item><guid>fixture-second</guid><title>Second deterministic cancellation story</title>
+    <link>https://example.com/cancellation-second</link>
+    <description>A complete second deterministic fixture sentence.</description>
+    <pubDate>Sat, 29 Aug 2026 10:30:00 +0000</pubDate></item>
 </channel></rss>"#;
 
 struct CancelOnRequest {
@@ -35,6 +52,27 @@ impl Respond for CancelOnRequest {
     }
 }
 
+struct CancelOnNthRequest {
+    token: CancellationToken,
+    cancel_on: usize,
+    requests: AtomicUsize,
+    status: u16,
+    body: String,
+    content_type: &'static str,
+}
+
+impl Respond for CancelOnNthRequest {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        let request = self.requests.fetch_add(1, Ordering::SeqCst) + 1;
+        if request == self.cancel_on {
+            self.token.cancel();
+        }
+        ResponseTemplate::new(self.status)
+            .insert_header("content-type", self.content_type)
+            .set_body_string(&self.body)
+    }
+}
+
 struct AppFixture {
     _signal_home_lock: MutexGuard<'static, ()>,
     _root: tempfile::TempDir,
@@ -45,6 +83,10 @@ struct AppFixture {
 
 impl AppFixture {
     fn new(sources: Vec<Source>) -> Self {
+        Self::new_with_max_items(sources, 1)
+    }
+
+    fn new_with_max_items(sources: Vec<Source>, max_items: usize) -> Self {
         let signal_home_lock = SIGNAL_HOME_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
@@ -56,7 +98,7 @@ impl AppFixture {
         unsafe { std::env::set_var("SIGNAL_HOME", root.path()) };
         let config = AppConfig {
             briefing: BriefingConfig {
-                max_items: 1,
+                max_items,
                 stale_after_minutes: 60,
             },
             sources,
@@ -302,4 +344,130 @@ async fn cancellation_after_possibly_sent_provider_failure_finalizes_charge_and_
         Some(attempts[0].estimated_cost_microusd)
     );
     assert_eq!(fixture.store.load_latest_briefing().unwrap(), Some(prior));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_retry_stops_before_a_second_provider_request_and_keeps_the_charge() {
+    // Break caught: retrying an already-cancelled provider request after a possibly-sent failure.
+    let token = CancellationToken::new();
+    let feed_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(FEED))
+        .mount(&feed_server)
+        .await;
+    let provider_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(CancelOnNthRequest {
+            token: token.clone(),
+            cancel_on: 1,
+            requests: AtomicUsize::new(0),
+            status: 429,
+            body: "retry later".to_owned(),
+            content_type: "application/json",
+        })
+        .mount(&provider_server)
+        .await;
+    let fixture = AppFixture::new(vec![source("first", feed_server.uri())]);
+    fixture.configure_loopback_model(&provider_server.uri());
+
+    let result = fixture
+        .app
+        .refresh_with_control(fixture.now, RefreshOptions::default(), &token)
+        .await;
+
+    assert!(matches!(result, Err(SignalError::Cancelled)));
+    assert_eq!(provider_server.received_requests().await.unwrap().len(), 1);
+    let attempt = fixture.store.list_generation_attempts().unwrap().remove(0);
+    assert_eq!(
+        attempt.final_outcome,
+        Some(GenerationOutcomeKind::FailedCharged)
+    );
+    assert_eq!(
+        attempt.actual_cost_microusd,
+        Some(attempt.estimated_cost_microusd)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn retry_helper_checks_cancellation_before_each_operation() {
+    // Break caught: dispatching a retry after its token has been cancelled.
+    let token = CancellationToken::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let operation_calls = calls.clone();
+    let operation_token = token.clone();
+    let policy = RetryPolicy::new(std::time::Duration::from_secs(1), 1);
+
+    let result: std::result::Result<(), ProviderFailure> =
+        retry_provider_operation_with_cancel(&policy, &TokioRetrySleeper, &token, move || {
+            let calls = operation_calls.clone();
+            let token = operation_token.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                token.cancel();
+                Err(RetryAttemptFailure::new(
+                    ProviderFailure::new(
+                        ProviderFailureKind::RateLimited,
+                        RequestChargeStatus::PossiblySent,
+                    ),
+                    Some(std::time::Duration::ZERO),
+                ))
+            }
+        })
+        .await;
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let failure = result.expect_err("cancellation should prevent the retry dispatch");
+    assert_eq!(failure.charge_status(), RequestChargeStatus::PossiblySent);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancellation_after_staged_first_variant_preserves_prior_generation_and_all_variants() {
+    // Break caught: persisting part of a multi-item refresh before its final commit boundary.
+    let token = CancellationToken::new();
+    let feed_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(MULTI_FEED))
+        .mount(&feed_server)
+        .await;
+    let provider_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(CancelOnNthRequest {
+            token: token.clone(),
+            cancel_on: 2,
+            requests: AtomicUsize::new(0),
+            status: 200,
+            body: json!({
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": r#"{"what_happened":"A deterministic event happened.","why_it_matters":"It proves staged variants.","caveat":null}"#
+                    }]
+                }],
+                "usage": {"input_tokens": 11, "output_tokens": 7}
+            })
+            .to_string(),
+            content_type: "application/json",
+        })
+        .mount(&provider_server)
+        .await;
+    let fixture = AppFixture::new_with_max_items(vec![source("first", feed_server.uri())], 2);
+    fixture.configure_loopback_model(&provider_server.uri());
+    let prior = fixture.seed_previous_briefing();
+    let prior_generation = fixture.store.status().unwrap().data_generation;
+
+    let result = fixture
+        .app
+        .refresh_with_control(fixture.now, RefreshOptions::default(), &token)
+        .await;
+
+    assert!(matches!(result, Err(SignalError::Cancelled)));
+    assert_eq!(provider_server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(
+        fixture.store.status().unwrap().data_generation,
+        prior_generation
+    );
+    assert_eq!(fixture.store.load_latest_briefing().unwrap(), Some(prior));
+    assert_eq!(fixture.store.list_latest().unwrap().len(), 1);
 }

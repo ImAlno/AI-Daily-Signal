@@ -47,7 +47,7 @@ pub use providers::{
     ProviderFailure, ProviderFailureKind, ProviderRegistry, ProviderRequest, ProviderResponse,
     ProviderUsage, RequestChargeStatus, RetryAttemptFailure, RetryPolicy, RetrySleeper,
     SummaryProvider, TokioRetrySleeper, build_ai_summary_prompt, parse_ai_summary,
-    retry_provider_operation,
+    retry_provider_operation, retry_provider_operation_with_cancel,
 };
 pub use storage::{RefreshRun, Store, StoreStatus};
 pub use summaries::{

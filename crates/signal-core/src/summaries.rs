@@ -133,6 +133,7 @@ impl GenerationStatus {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GenerationFailureKind {
+    Cancelled,
     CredentialMissing,
     Authentication,
     RateLimited,
@@ -146,6 +147,7 @@ pub enum GenerationFailureKind {
 impl GenerationFailureKind {
     pub(crate) fn as_storage(self) -> &'static str {
         match self {
+            Self::Cancelled => "cancelled",
             Self::CredentialMissing => "credential_missing",
             Self::Authentication => "authentication",
             Self::RateLimited => "rate_limited",
@@ -159,6 +161,7 @@ impl GenerationFailureKind {
 
     pub(crate) fn from_storage(value: &str) -> Result<Self> {
         match value {
+            "cancelled" => Ok(Self::Cancelled),
             "credential_missing" => Ok(Self::CredentialMissing),
             "authentication" => Ok(Self::Authentication),
             "rate_limited" => Ok(Self::RateLimited),
