@@ -391,17 +391,17 @@ impl<'a> AiGenerationCoordinator<'a> {
             });
         };
 
-        if let Some(cancellation) = control.cancellation {
-            if cancellation.is_cancelled() {
-                self.store.finalize_generation(
-                    attempt_id,
-                    now,
-                    AttemptOutcome::FailedUncharged {
-                        category: GenerationFailureKind::Cancelled,
-                    },
-                )?;
-                cancellation.check()?;
-            }
+        if let Some(cancellation) = control.cancellation
+            && cancellation.is_cancelled()
+        {
+            self.store.finalize_generation(
+                attempt_id,
+                now,
+                AttemptOutcome::FailedUncharged {
+                    category: GenerationFailureKind::Cancelled,
+                },
+            )?;
+            cancellation.check()?;
         }
         let provider_response = match control.cancellation {
             Some(cancellation) => {
