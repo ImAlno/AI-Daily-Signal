@@ -83,9 +83,36 @@ struct PreviewFixtureTests {
   }
 
   @Test
+  func populatedAndSelectedAIFixturesExerciseDifferentSelectionStates() {
+    // Break caught: two named visual fixtures rendering the same selected detail state.
+    #expect(PreviewFixtures.populated.snapshot == PreviewFixtures.selectedAI.snapshot)
+    #expect(PreviewFixtures.populated.selectedStoryID == nil)
+    #expect(PreviewFixtures.populated.selectedStory == nil)
+    #expect(PreviewFixtures.selectedAI.selectedStoryID == "preview-story-ai")
+    #expect(PreviewFixtures.selectedAI.selectedStory?.selectedSummary != nil)
+  }
+
+  @Test
   func failureFixturesPreserveCachedContentAndExplainTheFallback() {
     // Break caught: failure previews turning cached content into a misleading empty state.
-    #expect(PreviewFixtures.stalePartialRefresh.snapshot?.today?.isStale == true)
+    let fixture = PreviewFixtures.stalePartialRefresh
+    let briefing = fixture.snapshot?.today
+    let rowFlags = briefing?.items.map(\.isStale)
+    let presentation = TodayPresentation(
+      briefing: briefing,
+      sources: fixture.snapshot?.sources ?? [],
+      selectionForStory: { storyID in
+        fixture.snapshot?.today?.items.first(where: { $0.story.id == storyID })?.story
+          .selectedSummary.map { .ai(variantID: $0.id) } ?? .smart
+      },
+      relativeTo: PreviewFixtures.referenceDate
+    )
+
+    #expect(fixture.phase == .stale)
+    #expect(SignalStatus(phase: fixture.phase).title == "Partially stale")
+    #expect(briefing?.isStale == false)
+    #expect(rowFlags == [true, false])
+    #expect(presentation.sections.flatMap(\.rows).map(\.isStale) == [true, false])
     #expect(PreviewFixtures.offlineCachedBriefing.snapshot?.today?.items.isEmpty == false)
     #expect(PreviewFixtures.providerFailure.snapshot?.today?.items.isEmpty == false)
     #expect(PreviewFixtures.providerFailure.message?.contains("Smart") == true)

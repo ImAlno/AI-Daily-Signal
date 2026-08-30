@@ -122,3 +122,32 @@ meaningful rather than vacuous.
 - No paid provider API was called.
 - No Rust, bridge, generated binding, package manifest, SDD ledger, or unrelated
   file was changed.
+
+## Review fix round 1
+
+Review found three semantic gaps. Regression tests were added before production
+changes and the first focused build failed for the intended missing interfaces:
+`AppModel.saveSelectedStory()` and `StorySaveTogglePresentation` did not exist.
+The fixture regressions also encoded the incorrect fully stale and duplicate
+selection states before implementation changed them.
+
+- The stale partial-refresh fixture now keeps the briefing itself fresh, marks
+  only the carried first item stale, retains a fresh second item, and explicitly
+  presents `.stale` as `Partially stale`. Tests assert both stored item flags and
+  the resulting `TodayPresentation` row flags are `[true, false]`.
+- Command-S now calls an idempotent `saveSelectedStory()` path. It does nothing
+  when the selected story is already saved, while a new test proves no bridge
+  unsave request is emitted. The detail-pane control remains a true toggle and
+  uses dynamic `Save this story` or `Remove this story from Saved` help.
+- The populated fixture now contains stories without selecting one. The selected
+  AI fixture reuses the same snapshot but selects the AI-summary story. Tests
+  assert these semantic differences in addition to their stable identifiers.
+
+Focused direct Swift Testing passed 29 tests across
+`AccessibilityPolicyTests`, `PreviewFixtureTests`, and `AppPresentationTests`.
+The post-fix full direct Swift Testing run passed 116 tests across 7 suites. The
+Swift package build, package-mode isolation, Swift and Rust formatting, diff
+check, and Rust workspace regression (236 passed, 1 existing Keychain test
+ignored) also passed.
+Plain CLT SwiftPM discovery remains unchanged and the direct runner remains the
+truthful case-level evidence.

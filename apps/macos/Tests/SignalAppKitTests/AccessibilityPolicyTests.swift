@@ -100,4 +100,16 @@ struct AccessibilityPolicyTests {
       #expect(command.descriptor.help == help)
     }
   }
+
+  @Test
+  func visibleStorySaveToggleHasTruthfulDynamicHelp() {
+    // Break caught: describing a destructive remove action as Save Story.
+    let save = StorySaveTogglePresentation(isSaved: false)
+    let remove = StorySaveTogglePresentation(isSaved: true)
+
+    #expect(save.title == "Save")
+    #expect(save.help == "Save this story")
+    #expect(remove.title == "Remove from Saved")
+    #expect(remove.help == "Remove this story from Saved")
+  }
 }

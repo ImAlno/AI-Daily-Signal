@@ -116,6 +116,16 @@ public struct StorySourceActionPresentation: Sendable, Equatable {
   }
 }
 
+public struct StorySaveTogglePresentation: Sendable, Equatable {
+  public let title: String
+  public let help: String
+
+  public init(isSaved: Bool) {
+    title = isSaved ? "Remove from Saved" : "Save"
+    help = isSaved ? "Remove this story from Saved" : "Save this story"
+  }
+}
+
 public struct StoryDetailView: View {
   @Bindable private var model: AppModel
 
@@ -269,6 +279,7 @@ public struct StoryDetailView: View {
   @ViewBuilder
   private func actionContent(_ story: Story, axis: Axis) -> some View {
     let source = StorySourceActionPresentation(story: story)
+    let save = StorySaveTogglePresentation(isSaved: story.isSaved)
     let content = Group {
       Button("Open Source", systemImage: "safari") {
         if let url = source.url {
@@ -279,11 +290,11 @@ public struct StoryDetailView: View {
       .disabled(!source.isEnabled)
       .help(ReadingCommand.openSource.descriptor.help)
 
-      Button(story.isSaved ? "Remove from Saved" : "Save", systemImage: "bookmark") {
+      Button(save.title, systemImage: "bookmark") {
         Task { await model.toggleSelectedStorySaved() }
       }
       .disabled(model.storyActionState(for: .saving(storyID: story.id)) != nil)
-      .help(ReadingCommand.save.descriptor.help)
+      .help(save.help)
 
       Button(story.isRead ? "Mark Unread" : "Mark Read", systemImage: "checkmark.circle") {
         Task { await model.toggleSelectedStoryRead() }

@@ -146,16 +146,13 @@ public struct ReadingWindowView: View {
         )
         .help(ReadingCommand.openSource.descriptor.help)
 
-        Button(
-          model.selectedStory?.isSaved == true ? "Remove from Saved" : "Save Story",
-          systemImage: model.selectedStory?.isSaved == true ? "bookmark.slash" : "bookmark"
-        ) {
-          Task { await model.toggleSelectedStorySaved() }
+        Button("Save Story", systemImage: "bookmark") {
+          Task { await model.saveSelectedStory() }
         }
         .keyboardShortcut(ReadingCommand.save.keyEquivalent, modifiers: .command)
         .disabled(
           model.selectedStory.map {
-            model.storyActionState(for: .saving(storyID: $0.id)) != nil
+            $0.isSaved || model.storyActionState(for: .saving(storyID: $0.id)) != nil
           } ?? true
         )
         .help(ReadingCommand.save.descriptor.help)

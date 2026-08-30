@@ -120,7 +120,7 @@ struct AppPresentationTests {
     await model.start()
     model.selectedStoryID = "story-1"
 
-    await model.toggleSelectedStorySaved()
+    await model.saveSelectedStory()
 
     #expect(bridge.savedRequests.count == 1)
     #expect(bridge.savedRequests.first?.storyID == "story-1")
@@ -128,6 +128,24 @@ struct AppPresentationTests {
     #expect(model.snapshot?.revision == bridge.savedMutationRevision)
     #expect(model.snapshot?.latest.first?.isSaved == true)
     #expect(model.snapshot?.today?.items.first?.story.isSaved == true)
+  }
+
+  @Test @MainActor
+  func saveCommandNeverRemovesAnAlreadySavedStory() async {
+    // Break caught: wiring Command-S to the visible toggle and unsaving an already-saved story.
+    let bridge = FakeBridgeClient(snapshot: snapshotWithSavedStory)
+    let model = AppModel(
+      bridge: bridge,
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    model.selectedStoryID = "story-1"
+
+    await model.saveSelectedStory()
+
+    #expect(bridge.savedRequests.isEmpty)
+    #expect(model.selectedStory?.isSaved == true)
+    #expect(model.snapshot?.saved.first?.id == "story-1")
   }
 
   @Test
@@ -229,6 +247,49 @@ private var snapshotWithTwoTodaySignals: AppSnapshot {
     ),
     latest: fixture.latest,
     saved: fixture.saved,
+    sources: fixture.sources,
+    modelProfiles: fixture.modelProfiles,
+    defaultModelProfileID: fixture.defaultModelProfileID,
+    hasUsableAIProfile: fixture.hasUsableAIProfile
+  )
+}
+
+private var snapshotWithSavedStory: AppSnapshot {
+  let fixture = AppSnapshot.fixture
+  let story = Story(
+    id: Story.fixture.id,
+    title: Story.fixture.title,
+    canonicalURL: Story.fixture.canonicalURL,
+    excerpt: Story.fixture.excerpt,
+    category: Story.fixture.category,
+    publishedAt: Story.fixture.publishedAt,
+    sourceIDs: Story.fixture.sourceIDs,
+    score: Story.fixture.score,
+    smartSummary: Story.fixture.smartSummary,
+    isRead: Story.fixture.isRead,
+    isSaved: true,
+    selectedSummary: Story.fixture.selectedSummary,
+    summaryVariants: Story.fixture.summaryVariants
+  )
+  let item = BriefingItem(
+    position: 1,
+    section: "Top Signals",
+    isStale: false,
+    story: story,
+    selectedSummary: story.selectedSummary,
+    summaryVariants: story.summaryVariants
+  )
+  return AppSnapshot(
+    revision: fixture.revision,
+    status: fixture.status,
+    today: Briefing(
+      date: fixture.today?.date ?? "2026-08-30",
+      generatedAt: fixture.today?.generatedAt,
+      isStale: false,
+      items: [item]
+    ),
+    latest: [story],
+    saved: [story],
     sources: fixture.sources,
     modelProfiles: fixture.modelProfiles,
     defaultModelProfileID: fixture.defaultModelProfileID,

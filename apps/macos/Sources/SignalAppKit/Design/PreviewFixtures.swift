@@ -88,8 +88,7 @@ public enum PreviewFixtures {
   public static let populated = PreviewFixture(
     id: "populated",
     phase: .ready,
-    snapshot: populatedSnapshot,
-    selectedStoryID: aiStory.id
+    snapshot: populatedSnapshot
   )
 
   public static let selectedAI = PreviewFixture(
@@ -333,7 +332,7 @@ public enum PreviewFixtures {
       today: Briefing(
         date: "2026-08-30",
         generatedAt: generatedAt,
-        isStale: isStale,
+        isStale: false,
         items: items
       ),
       latest: stories,

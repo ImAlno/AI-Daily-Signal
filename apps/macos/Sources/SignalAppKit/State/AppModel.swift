@@ -354,6 +354,16 @@ public final class AppModel {
     )
   }
 
+  public func saveSelectedStory() async {
+    guard let selectedStory, !selectedStory.isSaved else { return }
+    let action = StoryAction.saving(storyID: selectedStory.id)
+    guard storyActionStates[action] == nil else { return }
+    await enqueueStoryMutation(
+      action: action,
+      payload: .save(storyID: selectedStory.id, saved: true)
+    )
+  }
+
   public func toggleSelectedStoryRead() async {
     guard let selectedStory else { return }
     let action = StoryAction.markingRead(storyID: selectedStory.id)
