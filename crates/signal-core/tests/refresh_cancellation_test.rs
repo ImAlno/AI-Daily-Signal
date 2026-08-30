@@ -471,3 +471,51 @@ async fn cancellation_after_staged_first_variant_preserves_prior_generation_and_
     assert_eq!(fixture.store.load_latest_briefing().unwrap(), Some(prior));
     assert_eq!(fixture.store.list_latest().unwrap().len(), 1);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancellation_after_invalid_success_response_keeps_its_finalized_charge() {
+    // Break caught: returning a malformed result after finalization without honoring cancellation.
+    let token = CancellationToken::new();
+    let feed_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(FEED))
+        .mount(&feed_server)
+        .await;
+    let provider_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(CancelOnRequest {
+            token: token.clone(),
+            body: json!({
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": r#"{"what_happened":"","why_it_matters":"Invalid blank field.","caveat":null}"#
+                    }]
+                }]
+            })
+            .to_string(),
+            content_type: "application/json",
+        })
+        .mount(&provider_server)
+        .await;
+    let fixture = AppFixture::new(vec![source("first", feed_server.uri())]);
+    fixture.configure_loopback_model(&provider_server.uri());
+
+    let result = fixture
+        .app
+        .refresh_with_control(fixture.now, RefreshOptions::default(), &token)
+        .await;
+
+    assert!(matches!(result, Err(SignalError::Cancelled)));
+    let attempt = fixture.store.list_generation_attempts().unwrap().remove(0);
+    assert_eq!(
+        attempt.final_outcome,
+        Some(GenerationOutcomeKind::FailedCharged)
+    );
+    assert_eq!(
+        attempt.actual_cost_microusd,
+        Some(attempt.estimated_cost_microusd)
+    );
+}
