@@ -20,9 +20,9 @@ struct AppLayoutPolicyTests {
     #expect(ReadingColumnMetrics.maximumWidth == 680)
     #expect(ReadingColumnMetrics.minimumWindowWidth == 420)
     #expect(ReadingColumnMetrics.minimumWindowHeight == 520)
-    #expect(ReadingColumnMetrics.horizontalPadding(for: 480) == 18)
-    #expect(ReadingColumnMetrics.horizontalPadding(for: 760) == 24)
-    #expect(ReadingColumnMetrics.horizontalPadding(for: 1_100) == 28)
+    #expect(ReadingColumnMetrics.horizontalPadding(for: .compact) == 18)
+    #expect(ReadingColumnMetrics.horizontalPadding(for: .rail) == 24)
+    #expect(ReadingColumnMetrics.horizontalPadding(for: .expanded) == 28)
   }
 
   @Test(arguments: [AppLayoutMode.expanded, .rail, .compact])

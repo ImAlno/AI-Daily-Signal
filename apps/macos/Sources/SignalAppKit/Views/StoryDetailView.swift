@@ -138,6 +138,7 @@ public struct StoryDetailView: View {
   @Bindable private var model: AppModel
   @State private var isHovered = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.appLayoutMode) private var layoutMode
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
   public init(model: AppModel) {
@@ -145,49 +146,47 @@ public struct StoryDetailView: View {
   }
 
   public var body: some View {
-    GeometryReader { proxy in
-      ScrollView {
-        if let story = model.selectedStory {
-          let row = rowPresentation(for: story)
-          let header = StoryHeaderPresentation(
-            row: row,
-            isExpanded: true,
-            isHovered: isHovered,
-            dynamicTypeSize: dynamicTypeSize
-          )
-          let transition = ReaderMotionPresentation(reduceMotion: reduceMotion).duration.map {
-            Animation.easeOut(duration: $0)
-          }
-
-          VStack(alignment: .leading, spacing: 0) {
-            StoryHeaderView(presentation: header) {
-              model.selectedStoryID = nil
-            }
-            .animation(transition, value: header.isHovered)
-            .onHover { isHovered = $0 }
-            SummaryVariantPicker(story: story, model: model)
-              .padding(.horizontal, 12)
-              .padding(.top, 8)
-            ExpandedStoryView(story: story, model: model)
-              .padding(.horizontal, 12)
-              .padding(.top, 18)
-              .padding(.bottom, 22)
-          }
-          .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
-          .padding(.horizontal, ReadingColumnMetrics.horizontalPadding(for: proxy.size.width))
-          .padding(.vertical, 30)
-          .frame(maxWidth: .infinity, alignment: .center)
-        } else {
-          ContentUnavailableView(
-            "Select a story",
-            systemImage: "text.page",
-            description: Text("Choose a signal from the list to read it here.")
-          )
-          .frame(maxWidth: .infinity, minHeight: 360)
+    ScrollView {
+      if let story = model.selectedStory {
+        let row = rowPresentation(for: story)
+        let header = StoryHeaderPresentation(
+          row: row,
+          isExpanded: true,
+          isHovered: isHovered,
+          dynamicTypeSize: dynamicTypeSize
+        )
+        let transition = ReaderMotionPresentation(reduceMotion: reduceMotion).duration.map {
+          Animation.easeOut(duration: $0)
         }
+
+        VStack(alignment: .leading, spacing: 0) {
+          StoryHeaderView(presentation: header) {
+            model.selectedStoryID = nil
+          }
+          .animation(transition, value: header.isHovered)
+          .onHover { isHovered = $0 }
+          SummaryVariantPicker(story: story, model: model)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+          ExpandedStoryView(story: story, model: model)
+            .padding(.horizontal, 12)
+            .padding(.top, 18)
+            .padding(.bottom, 22)
+        }
+        .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
+        .padding(.horizontal, ReadingColumnMetrics.horizontalPadding(for: layoutMode))
+        .padding(.vertical, 30)
+        .frame(maxWidth: .infinity, alignment: .center)
+      } else {
+        ContentUnavailableView(
+          "Select a story",
+          systemImage: "text.page",
+          description: Text("Choose a signal from the list to read it here.")
+        )
+        .frame(maxWidth: .infinity, minHeight: 360)
       }
-      .background(Color(nsColor: .textBackgroundColor))
     }
+    .background(Color(nsColor: .textBackgroundColor))
   }
 
   private func rowPresentation(for story: Story) -> StoryRowPresentation {

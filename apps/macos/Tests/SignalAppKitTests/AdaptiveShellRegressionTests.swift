@@ -7,6 +7,110 @@ import Testing
 @Suite(.serialized)
 struct AdaptiveShellRegressionTests {
   @Test @MainActor
+  func readingGuttersFollowTheShellModeAtExactBoundaries() async throws {
+    // Break caught: recomputing the shell breakpoint from the narrower post-navigation detail pane.
+    let boundaries: [(windowWidth: CGFloat, padding: CGFloat)] = [
+      (560, 24),
+      (820, 28),
+    ]
+
+    for boundary in boundaries {
+      let model = AppModel(
+        bridge: FakeBridgeClient(snapshot: .fixture),
+        preferences: MemoryAppPreferences(welcomeCompleted: true)
+      )
+      await model.start()
+      model.selectedStoryID = nil
+      let mode = AppLayoutPolicy.mode(for: boundary.windowWidth)
+      let navigationWidth = try #require(AppLayoutPolicy.navigationWidth(for: mode))
+      let hosted = host(
+        AnyView(
+          ReadingDestinationLayout(mode: mode) {
+            TodayView(model: model)
+          }
+        ),
+        size: NSSize(width: boundary.windowWidth - navigationWidth, height: 620)
+      )
+      let storyTarget = try #require(
+        descendants(of: NSView.self, in: hosted).first { view in
+          String(describing: type(of: view)).contains("FocusRingView")
+            && view.frame.height > 50
+            && view.frame.width > 200
+        }
+      )
+      let storyFrame = storyTarget.convert(storyTarget.bounds, to: hosted)
+
+      #expect(abs(storyFrame.minX - boundary.padding) < 1)
+    }
+  }
+
+  @Test @MainActor
+  func expandedSignalConsumesSeparateIdentityWhileCollapsedSignalRemainsCombined() async throws {
+    // Break caught: retaining the collapsed combined button when the expanded article needs a
+    // navigable title, status, selector, sections, and actions.
+    let model = AppModel(
+      bridge: FakeBridgeClient(snapshot: .fixture),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+    let row = StoryRowPresentation(
+      story: .fixture,
+      primarySource: "Example",
+      relativeTime: "now",
+      isStale: false,
+      rank: 1,
+      summarySelection: .ai(variantID: "variant-1")
+    )
+
+    model.selectedStoryID = nil
+    let collapsed = host(
+      AnyView(SignalDisclosureView(presentation: row, model: model)),
+      size: NSSize(width: 680, height: 220)
+    )
+    let collapsedControls = descendants(of: NSView.self, in: collapsed).filter {
+      String(describing: type(of: $0)).contains("FocusRingView")
+    }
+    let collapsedSelectableTitles = descendants(of: NSTextField.self, in: collapsed).filter {
+      $0.stringValue == row.title
+    }
+    let collapsedControl = try #require(collapsedControls.first)
+    #expect(collapsedControls.count == 1)
+    #expect(collapsedControl.frame.width > 600)
+    #expect(collapsedSelectableTitles.isEmpty)
+
+    model.selectedStoryID = row.storyID
+    let expanded = host(
+      AnyView(SignalDisclosureView(presentation: row, model: model)),
+      size: NSSize(width: 680, height: 620)
+    )
+    let expandedControls = descendants(of: NSView.self, in: expanded).filter {
+      String(describing: type(of: $0)).contains("FocusRingView")
+    }
+    let collapseControl = try #require(
+      expandedControls.first {
+        $0.frame.width == VisualPolicy().minimumControlDimension
+          && $0.frame.height == VisualPolicy().minimumControlDimension
+          && $0.frame.maxX > 650
+      }
+    )
+    let expandedSelectableText = descendants(of: NSTextField.self, in: expanded)
+    let title = try #require(expandedSelectableText.first { $0.stringValue == row.title })
+    let whatHappened = try #require(
+      expandedSelectableText.first { $0.stringValue == "What" }
+    )
+    let whyItMatters = try #require(
+      expandedSelectableText.first { $0.stringValue == "Why" }
+    )
+
+    let titleFrame = title.convert(title.bounds, to: expanded)
+    let whatHappenedFrame = whatHappened.convert(whatHappened.bounds, to: expanded)
+    let whyItMattersFrame = whyItMatters.convert(whyItMatters.bounds, to: expanded)
+    #expect(titleFrame.minY < whatHappenedFrame.minY)
+    #expect(whatHappenedFrame.minY < whyItMattersFrame.minY)
+    #expect(collapseControl.frame.width < collapsedControl.frame.width)
+  }
+
+  @Test @MainActor
   func compactShellHasNoSidebarToggleAfterLayoutSettles() throws {
     // Break caught: the system sidebar toggle can reveal the icon rail below the compact breakpoint.
     let model = AppModel(

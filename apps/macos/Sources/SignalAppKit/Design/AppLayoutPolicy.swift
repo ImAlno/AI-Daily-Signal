@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 public enum AppLayoutMode: String, Sendable, Equatable {
   case expanded
@@ -30,9 +31,22 @@ public enum ReadingColumnMetrics {
   public static let minimumWindowWidth: CGFloat = 420
   public static let minimumWindowHeight: CGFloat = 520
 
-  public static func horizontalPadding(for availableWidth: CGFloat) -> CGFloat {
-    if availableWidth >= 820 { return 28 }
-    if availableWidth >= 560 { return 24 }
-    return 18
+  public static func horizontalPadding(for mode: AppLayoutMode) -> CGFloat {
+    switch mode {
+    case .expanded: 28
+    case .rail: 24
+    case .compact: 18
+    }
+  }
+}
+
+private struct AppLayoutModeEnvironmentKey: EnvironmentKey {
+  static let defaultValue = AppLayoutMode.compact
+}
+
+extension EnvironmentValues {
+  var appLayoutMode: AppLayoutMode {
+    get { self[AppLayoutModeEnvironmentKey.self] }
+    set { self[AppLayoutModeEnvironmentKey.self] = newValue }
   }
 }

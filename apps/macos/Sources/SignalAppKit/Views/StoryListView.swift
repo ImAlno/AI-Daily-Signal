@@ -68,6 +68,7 @@ public struct StoryListPresentation: Sendable, Equatable {
 public struct StoryListView: View {
   @Bindable private var model: AppModel
   private let kind: StoryListKind
+  @Environment(\.appLayoutMode) private var layoutMode
 
   public init(kind: StoryListKind, model: AppModel) {
     self.kind = kind
@@ -90,29 +91,27 @@ public struct StoryListView: View {
       if let emptyState = presentation.emptyState {
         emptyView(emptyState)
       } else {
-        GeometryReader { proxy in
-          ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-              BriefingHeaderView(
-                presentation: BriefingHeaderPresentation(
-                  destination: model.destination,
-                  snapshot: model.snapshot,
-                  calendarDate: Date.now.formatted(
-                    .dateTime.weekday(.wide).month(.wide).day().year()
-                  )
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 0) {
+            BriefingHeaderView(
+              presentation: BriefingHeaderPresentation(
+                destination: model.destination,
+                snapshot: model.snapshot,
+                calendarDate: Date.now.formatted(
+                  .dateTime.weekday(.wide).month(.wide).day().year()
                 )
               )
-              ForEach(presentation.rows) { row in
-                SignalDisclosureView(presentation: row, model: model)
-              }
+            )
+            ForEach(presentation.rows) { row in
+              SignalDisclosureView(presentation: row, model: model)
             }
-            .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
-            .padding(.horizontal, ReadingColumnMetrics.horizontalPadding(for: proxy.size.width))
-            .padding(.vertical, 30)
-            .frame(maxWidth: .infinity, alignment: .center)
           }
-          .background(Color(nsColor: .textBackgroundColor))
+          .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
+          .padding(.horizontal, ReadingColumnMetrics.horizontalPadding(for: layoutMode))
+          .padding(.vertical, 30)
+          .frame(maxWidth: .infinity, alignment: .center)
         }
+        .background(Color(nsColor: .textBackgroundColor))
         .accessibilityLabel(kind == .latest ? "Latest stories" : "Saved stories")
       }
     }

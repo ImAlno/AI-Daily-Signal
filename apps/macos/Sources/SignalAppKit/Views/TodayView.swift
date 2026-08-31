@@ -66,6 +66,7 @@ public struct TodayPresentation: Sendable, Equatable {
 
 public struct TodayView: View {
   @Bindable private var model: AppModel
+  @Environment(\.appLayoutMode) private var layoutMode
 
   public init(model: AppModel) {
     self.model = model
@@ -89,37 +90,35 @@ public struct TodayView: View {
           Task { await model.refresh() }
         }
       } else {
-        GeometryReader { proxy in
-          ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-              BriefingHeaderView(
-                presentation: BriefingHeaderPresentation(
-                  destination: model.destination,
-                  snapshot: model.snapshot,
-                  calendarDate: Date.now.formatted(
-                    .dateTime.weekday(.wide).month(.wide).day().year()
-                  )
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 0) {
+            BriefingHeaderView(
+              presentation: BriefingHeaderPresentation(
+                destination: model.destination,
+                snapshot: model.snapshot,
+                calendarDate: Date.now.formatted(
+                  .dateTime.weekday(.wide).month(.wide).day().year()
                 )
               )
-              ForEach(presentation.sections) { section in
-                Text(section.title)
-                  .font(.caption.weight(.semibold))
-                  .foregroundStyle(.secondary)
-                  .padding(.top, 12)
-                  .padding(.bottom, 6)
-                  .accessibilityAddTraits(.isHeader)
-                ForEach(section.rows) { row in
-                  SignalDisclosureView(presentation: row, model: model)
-                }
+            )
+            ForEach(presentation.sections) { section in
+              Text(section.title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
+                .accessibilityAddTraits(.isHeader)
+              ForEach(section.rows) { row in
+                SignalDisclosureView(presentation: row, model: model)
               }
             }
-            .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
-            .padding(.horizontal, ReadingColumnMetrics.horizontalPadding(for: proxy.size.width))
-            .padding(.vertical, 30)
-            .frame(maxWidth: .infinity, alignment: .center)
           }
-          .background(Color(nsColor: .textBackgroundColor))
+          .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
+          .padding(.horizontal, ReadingColumnMetrics.horizontalPadding(for: layoutMode))
+          .padding(.vertical, 30)
+          .frame(maxWidth: .infinity, alignment: .center)
         }
+        .background(Color(nsColor: .textBackgroundColor))
         .accessibilityLabel("Today's ranked briefing")
       }
     }

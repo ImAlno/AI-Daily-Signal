@@ -1,6 +1,21 @@
 import AppKit
 import SwiftUI
 
+public struct ExpandedStoryHeaderAccessibility: Sendable, Equatable {
+  public let titleLabel: String
+  public let statusLabel: String
+  public let collapseLabel: String
+  public let collapseValue: String
+  public let collapseHint: String
+  public let titleSortPriority: Double
+  public let statusSortPriority: Double
+}
+
+public enum StoryHeaderAccessibilityPresentation: Sendable, Equatable {
+  case collapsed(label: String, value: String, hint: String)
+  case expanded(ExpandedStoryHeaderAccessibility)
+}
+
 public struct StoryHeaderPresentation: Sendable, Equatable {
   public let row: StoryRowPresentation
   public let isExpanded: Bool
@@ -16,7 +31,7 @@ public struct StoryHeaderPresentation: Sendable, Equatable {
     self.row = row
     self.isExpanded = isExpanded
     self.isHovered = isHovered
-    titleLineLimit = dynamicTypeSize.isAccessibilitySize ? nil : 3
+    titleLineLimit = isExpanded || dynamicTypeSize.isAccessibilitySize ? nil : 3
   }
 
   public var title: String { row.title }
@@ -24,7 +39,38 @@ public struct StoryHeaderPresentation: Sendable, Equatable {
   public var accessibilityLabel: String { row.accessibilitySummary }
   public var accessibilityValue: String { isExpanded ? "Expanded" : "Collapsed" }
   public var emphasizesSignalLine: Bool { isExpanded || isHovered }
+  public var signalRailOpacity: Double { emphasizesSignalLine ? 1 : 0.58 }
   public var showsSelectionSurface: Bool { isExpanded || isHovered }
+
+  public var accessibilityPresentation: StoryHeaderAccessibilityPresentation {
+    if isExpanded {
+      var status = [
+        row.primarySource,
+        row.relativeTime,
+        row.category,
+        row.provenance.accessibilityLabel,
+        row.isRead ? "Read" : "Unread",
+        row.isSaved ? "Saved" : "Not saved",
+      ]
+      if row.isStale { status.append("Stale") }
+      return .expanded(
+        ExpandedStoryHeaderAccessibility(
+          titleLabel: title,
+          statusLabel: status.joined(separator: ", "),
+          collapseLabel: "Collapse signal",
+          collapseValue: "Expanded",
+          collapseHint: "Collapse this signal",
+          titleSortPriority: AccessibilityOrder.title.sortPriority,
+          statusSortPriority: AccessibilityOrder.status.sortPriority
+        )
+      )
+    }
+    return .collapsed(
+      label: accessibilityLabel,
+      value: accessibilityValue,
+      hint: "Expand this signal"
+    )
+  }
 }
 
 public struct StoryHeaderView: View {
@@ -41,61 +87,136 @@ public struct StoryHeaderView: View {
     self.action = action
   }
 
+  @ViewBuilder
   public var body: some View {
-    Button(action: action) {
-      HStack(alignment: .top, spacing: 12) {
-        if let rank = presentation.row.rank {
-          rankRail(rank)
+    switch presentation.accessibilityPresentation {
+    case .collapsed(let label, let value, let hint):
+      Button(action: action) {
+        headerLayout(accessibility: nil) {
+          disclosureImage
         }
-
-        VStack(alignment: .leading, spacing: 6) {
-          ViewThatFits(in: .horizontal) {
-            HStack(spacing: 5) { metadata }
-            VStack(alignment: .leading, spacing: 3) { metadata }
-          }
-          .font(.system(size: metadataSize))
-          .foregroundStyle(.secondary)
-
-          storyTitle
-
-          HStack(spacing: 8) {
-            Text(presentation.row.provenance.shortLabel)
-              .font(.system(size: metadataSize))
-              .foregroundStyle(.secondary)
-            if presentation.row.isSaved {
-              Label("Saved", systemImage: "bookmark.fill")
-                .labelStyle(.iconOnly)
-                .foregroundStyle(.tint)
-                .accessibilityLabel("Saved")
-            }
-          }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background { selectionSurface }
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(label)
+      .accessibilityValue(value)
+      .accessibilityHint(hint)
+    case .expanded(let accessibility):
+      headerLayout(accessibility: accessibility) {
+        Button(action: action) {
+          disclosureImage
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibility.collapseLabel)
+        .accessibilityValue(accessibility.collapseValue)
+        .accessibilityHint(accessibility.collapseHint)
+        .accessibilitySortPriority(accessibility.statusSortPriority)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background { selectionSurface }
+      .accessibilityElement(children: .contain)
+    }
+  }
 
-        Image(systemName: presentation.chevronSystemImage)
-          .font(.system(size: rankSize, weight: .semibold))
-          .foregroundStyle(.secondary)
-          .frame(width: 16)
-          .frame(minHeight: VisualPolicy().minimumControlDimension)
-          .accessibilityHidden(true)
+  private func headerLayout<Trailing: View>(
+    accessibility: ExpandedStoryHeaderAccessibility?,
+    @ViewBuilder trailing: () -> Trailing
+  ) -> some View {
+    HStack(alignment: .top, spacing: 12) {
+      if let rank = presentation.row.rank {
+        rankRail(rank)
+      }
+
+      VStack(alignment: .leading, spacing: 6) {
+        headerMetadata(accessibility: accessibility)
+        storyTitle(accessibility: accessibility)
+        provenance
+          .accessibilityHidden(accessibility != nil)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 12)
-      .padding(.vertical, presentation.isExpanded ? 12 : 9)
-      .contentShape(Rectangle())
+
+      trailing()
     }
-    .buttonStyle(.plain)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background {
-      if presentation.showsSelectionSurface {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .fill(Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
+  }
+
+  @ViewBuilder
+  private var selectionSurface: some View {
+    if presentation.showsSelectionSurface {
+      RoundedRectangle(cornerRadius: 7, style: .continuous)
+        .fill(Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
+    }
+  }
+
+  private var disclosureImage: some View {
+    Image(systemName: presentation.chevronSystemImage)
+      .font(.system(size: rankSize, weight: .semibold))
+      .foregroundStyle(.secondary)
+      .frame(
+        width: VisualPolicy().minimumControlDimension,
+        height: VisualPolicy().minimumControlDimension
+      )
+      .accessibilityHidden(true)
+  }
+
+  @ViewBuilder
+  private func headerMetadata(
+    accessibility: ExpandedStoryHeaderAccessibility?
+  ) -> some View {
+    if let accessibility {
+      metadataContent
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibility.statusLabel)
+        .accessibilitySortPriority(accessibility.statusSortPriority)
+    } else {
+      metadataContent
+    }
+  }
+
+  private var metadataContent: some View {
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 5) { metadata }
+      VStack(alignment: .leading, spacing: 3) { metadata }
+    }
+    .font(.system(size: metadataSize))
+    .foregroundStyle(.secondary)
+  }
+
+  @ViewBuilder
+  private var provenance: some View {
+    HStack(spacing: 8) {
+      Text(presentation.row.provenance.shortLabel)
+        .font(.system(size: metadataSize))
+        .foregroundStyle(.secondary)
+      if presentation.row.isSaved {
+        Label("Saved", systemImage: "bookmark.fill")
+          .labelStyle(.iconOnly)
+          .foregroundStyle(.tint)
+          .accessibilityLabel("Saved")
       }
     }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(presentation.accessibilityLabel)
-    .accessibilityValue(presentation.accessibilityValue)
-    .accessibilityHint(presentation.isExpanded ? "Collapse this signal" : "Expand this signal")
+  }
+
+  @ViewBuilder
+  private func storyTitle(
+    accessibility: ExpandedStoryHeaderAccessibility?
+  ) -> some View {
+    if let accessibility {
+      titleText
+        .textSelection(.enabled)
+        .accessibilityLabel(accessibility.titleLabel)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilitySortPriority(accessibility.titleSortPriority)
+    } else {
+      titleText
+    }
   }
 
   @ViewBuilder
@@ -109,15 +230,6 @@ public struct StoryHeaderView: View {
     if presentation.row.isStale {
       Label("Stale", systemImage: "clock.badge.exclamationmark")
         .foregroundStyle(.orange)
-    }
-  }
-
-  @ViewBuilder
-  private var storyTitle: some View {
-    if presentation.isExpanded {
-      titleText.textSelection(.enabled)
-    } else {
-      titleText
     }
   }
 
@@ -147,6 +259,7 @@ public struct StoryHeaderView: View {
         )
         .frame(width: 1, height: presentation.isExpanded ? 52 : 36)
     }
+    .opacity(presentation.signalRailOpacity)
     .frame(width: 28)
     .accessibilityHidden(true)
   }

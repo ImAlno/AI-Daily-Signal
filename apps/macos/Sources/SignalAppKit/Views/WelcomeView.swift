@@ -23,6 +23,7 @@ public enum WelcomeContent {
 
 public struct WelcomeView: View {
   @Bindable private var model: AppModel
+  @ScaledMetric(relativeTo: .largeTitle) private var titleSize = 30.0
 
   public init(model: AppModel) {
     self.model = model
@@ -39,7 +40,7 @@ public struct WelcomeView: View {
 
         VStack(alignment: .leading, spacing: 8) {
           Text("AI Daily Signal")
-            .font(.system(size: 30, weight: .semibold))
+            .font(.system(size: titleSize, weight: .semibold))
             .accessibilityAddTraits(.isHeader)
             .accessibilitySortPriority(AccessibilityOrder.title.sortPriority)
           Text("A focused daily briefing for understanding what changed in AI.")

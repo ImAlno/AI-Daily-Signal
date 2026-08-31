@@ -18,6 +18,7 @@ public struct SummaryVariantPickerPresentation: Sendable, Equatable {
   public let selection: ReadingSummarySelection
   public let accessibilityLabel = "Summary version"
   public let selectedValue: String
+  public let accessibilitySortPriority = AccessibilityOrder.status.sortPriority
 
   public init(story: Story, selection: ReadingSummarySelection) {
     let immutableVariants = story.summaryVariants.enumerated().sorted { lhs, rhs in
@@ -97,6 +98,7 @@ public struct SummaryVariantPicker: View {
     .accessibilityLabel(presentation.accessibilityLabel)
     .accessibilityValue(presentation.selectedValue)
     .accessibilityHint("Choose the original excerpt, Smart summary, or a cached AI summary")
+    .accessibilitySortPriority(presentation.accessibilitySortPriority)
   }
 
   private func choose(_ selection: ReadingSummarySelection) {

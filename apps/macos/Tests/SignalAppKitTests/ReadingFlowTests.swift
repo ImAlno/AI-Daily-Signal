@@ -155,6 +155,12 @@ struct ReadingFlowTests {
       isHovered: false,
       dynamicTypeSize: .large
     )
+    let hovered = StoryHeaderPresentation(
+      row: row,
+      isExpanded: false,
+      isHovered: true,
+      dynamicTypeSize: .large
+    )
 
     #expect(collapsed.title == expanded.title)
     #expect(collapsed.chevronSystemImage == "chevron.right")
@@ -163,9 +169,37 @@ struct ReadingFlowTests {
     #expect(expanded.accessibilityValue == "Expanded")
     #expect(!collapsed.emphasizesSignalLine)
     #expect(expanded.emphasizesSignalLine)
+    #expect(hovered.emphasizesSignalLine)
+    #expect(collapsed.signalRailOpacity < expanded.signalRailOpacity)
+    #expect(hovered.signalRailOpacity == expanded.signalRailOpacity)
     #expect(!collapsed.showsSelectionSurface)
     #expect(expanded.showsSelectionSurface)
     #expect(collapsed.titleLineLimit == 3)
+    #expect(expanded.titleLineLimit == nil)
+
+    guard
+      case .collapsed(let label, let value, let hint) =
+        collapsed.accessibilityPresentation
+    else {
+      Issue.record("Collapsed stories must remain one combined accessibility element")
+      return
+    }
+    #expect(label == row.accessibilitySummary)
+    #expect(value == "Collapsed")
+    #expect(hint == "Expand this signal")
+
+    guard case .expanded(let accessibility) = expanded.accessibilityPresentation else {
+      Issue.record("Expanded stories must expose separate identity and status semantics")
+      return
+    }
+    #expect(accessibility.titleLabel == row.title)
+    #expect(accessibility.statusLabel.contains(row.provenance.accessibilityLabel))
+    #expect(accessibility.statusLabel.contains("Unread"))
+    #expect(accessibility.statusLabel.contains("Not saved"))
+    #expect(accessibility.collapseLabel == "Collapse signal")
+    #expect(accessibility.collapseValue == "Expanded")
+    #expect(accessibility.titleSortPriority == AccessibilityOrder.title.sortPriority)
+    #expect(accessibility.statusSortPriority == AccessibilityOrder.status.sortPriority)
   }
 
   @Test
@@ -277,6 +311,7 @@ struct ReadingFlowTests {
     #expect(picker.options[3].provenance == .ai(provider: "OpenAI", model: "gpt-signal"))
     #expect(picker.accessibilityLabel == "Summary version")
     #expect(picker.selectedValue == "Smart · local algorithmic summary")
+    #expect(picker.accessibilitySortPriority == AccessibilityOrder.status.sortPriority)
   }
 
   @Test

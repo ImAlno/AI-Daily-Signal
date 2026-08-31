@@ -131,9 +131,11 @@ public struct ReadingWindowView: View {
           )
           .toolbar(removing: .sidebarToggle)
       } detail: {
-        destinationContent
-          .navigationTitle(toolbarPresentation.windowTitle)
-          .background(Color(nsColor: .textBackgroundColor))
+        ReadingDestinationLayout(mode: mode) {
+          destinationContent
+        }
+        .navigationTitle(toolbarPresentation.windowTitle)
+        .background(Color(nsColor: .textBackgroundColor))
       }
       .toolbar {
         toolbarContent(mode: mode, presentation: toolbarPresentation)
@@ -361,6 +363,16 @@ public struct ReadingWindowView: View {
       let url = StorySourceURL.validated(value)
     else { return }
     NSWorkspace.shared.open(url)
+  }
+}
+
+struct ReadingDestinationLayout<Content: View>: View {
+  let mode: AppLayoutMode
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    content()
+      .environment(\.appLayoutMode, mode)
   }
 }
 
