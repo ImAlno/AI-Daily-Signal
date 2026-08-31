@@ -15,6 +15,7 @@ public struct PreferencesPresentation: Sendable, Equatable {
 
 public struct SettingsView: View {
   private let model: AppModel
+  @Environment(\.appLayoutMode) private var layoutMode
 
   public init(model: AppModel) {
     self.model = model
@@ -39,7 +40,7 @@ public struct SettingsView: View {
         }
       }
       .frame(maxWidth: SettingsGridMetrics.maximumWidth, alignment: .leading)
-      .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+      .padding(.horizontal, SettingsGridMetrics.horizontalPadding(for: layoutMode))
       .padding(.vertical, SettingsGridMetrics.verticalPadding)
       .frame(maxWidth: .infinity, alignment: .center)
     }

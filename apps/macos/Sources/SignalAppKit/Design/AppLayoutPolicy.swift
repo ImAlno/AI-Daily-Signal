@@ -42,11 +42,14 @@ public enum ReadingColumnMetrics {
 
 public enum SettingsGridMetrics {
   public static let maximumWidth: CGFloat = ReadingColumnMetrics.maximumWidth
-  public static let horizontalPadding: CGFloat = 28
   public static let verticalPadding: CGFloat = 20
   public static let headerBottomSpacing: CGFloat = 14
   public static let sectionSpacing: CGFloat = 16
   public static let rowVerticalPadding: CGFloat = 9
+
+  public static func horizontalPadding(for mode: AppLayoutMode) -> CGFloat {
+    ReadingColumnMetrics.horizontalPadding(for: mode)
+  }
 }
 
 public enum StoryRowMetrics {

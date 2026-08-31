@@ -169,9 +169,10 @@ struct ReadingFlowTests {
     #expect(expanded.accessibilityValue == "Expanded")
     #expect(!collapsed.emphasizesSignalLine)
     #expect(expanded.emphasizesSignalLine)
-    #expect(hovered.emphasizesSignalLine)
+    #expect(!hovered.emphasizesSignalLine)
     #expect(collapsed.signalRailOpacity < expanded.signalRailOpacity)
-    #expect(hovered.signalRailOpacity == expanded.signalRailOpacity)
+    #expect(hovered.signalRailOpacity > collapsed.signalRailOpacity)
+    #expect(hovered.signalRailOpacity < expanded.signalRailOpacity)
     #expect(collapsed.titleLineLimit == 3)
     #expect(expanded.titleLineLimit == nil)
 

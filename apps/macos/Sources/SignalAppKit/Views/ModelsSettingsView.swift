@@ -67,6 +67,7 @@ public struct ModelsSettingsView: View {
   @Bindable private var model: AppModel
   @State private var pendingTest: ModelProfile?
   @State private var pendingRemoval: ModelProfile?
+  @Environment(\.appLayoutMode) private var layoutMode
 
   public init(model: AppModel) {
     self.model = model
@@ -77,7 +78,7 @@ public struct ModelsSettingsView: View {
       if model.inlineEditorRoute == .addModel {
         ScrollView {
           ModelProfileEditorView(model: model)
-            .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+            .padding(.horizontal, SettingsGridMetrics.horizontalPadding(for: layoutMode))
             .padding(.vertical, SettingsGridMetrics.verticalPadding)
             .frame(maxWidth: .infinity, alignment: .top)
         }
@@ -93,7 +94,7 @@ public struct ModelsSettingsView: View {
             modelList
           }
           .frame(maxWidth: SettingsGridMetrics.maximumWidth, alignment: .leading)
-          .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+          .padding(.horizontal, SettingsGridMetrics.horizontalPadding(for: layoutMode))
           .padding(.vertical, SettingsGridMetrics.verticalPadding)
           .frame(maxWidth: .infinity, alignment: .center)
         }

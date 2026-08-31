@@ -45,6 +45,44 @@ struct AdaptiveShellRegressionTests {
   }
 
   @Test @MainActor
+  func settingsGuttersFollowCompactAndRailShellModesAtTheirBoundaries() async throws {
+    // Break caught: settings pages retaining the expanded 28-point gutter in narrower shells.
+    let boundaries: [(mode: AppLayoutMode, detailWidth: CGFloat, padding: CGFloat)] = [
+      (.compact, ReadingColumnMetrics.minimumWindowWidth, 18),
+      (
+        .rail,
+        AppLayoutPolicy.railMinimumWidth
+          - (AppLayoutPolicy.navigationWidth(for: .rail) ?? 0),
+        24
+      ),
+    ]
+
+    for boundary in boundaries {
+      let model = AppModel(
+        bridge: FakeBridgeClient(snapshot: .fixture),
+        preferences: MemoryAppPreferences(welcomeCompleted: true)
+      )
+      await model.start()
+      let hosted = host(
+        AnyView(
+          ReadingDestinationLayout(mode: boundary.mode) {
+            SourcesView(model: model)
+          }
+        ),
+        size: NSSize(width: boundary.detailWidth, height: 620)
+      )
+      let rowControl = try #require(
+        descendants(of: NSControl.self, in: hosted).first { control in
+          control.frame.width < 80 && control.frame.height < 80
+        }
+      )
+      let controlFrame = rowControl.convert(rowControl.bounds, to: hosted)
+
+      #expect(abs(hosted.bounds.maxX - controlFrame.maxX - boundary.padding) < 1)
+    }
+  }
+
+  @Test @MainActor
   func expandedSignalConsumesSeparateIdentityWhileCollapsedSignalRemainsCombined() async throws {
     // Break caught: retaining the collapsed combined button when the expanded article needs a
     // navigable title, status, selector, sections, and actions.

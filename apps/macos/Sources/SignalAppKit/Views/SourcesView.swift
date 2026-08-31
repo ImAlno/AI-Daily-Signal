@@ -54,6 +54,7 @@ public struct SourcesView: View {
   @Bindable private var model: AppModel
   @State private var pendingRemoval: Source?
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+  @Environment(\.appLayoutMode) private var layoutMode
 
   public init(model: AppModel) {
     self.model = model
@@ -68,7 +69,7 @@ public struct SourcesView: View {
       if model.inlineEditorRoute == .addSource {
         ScrollView {
           SourceEditorView(model: model)
-            .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+            .padding(.horizontal, SettingsGridMetrics.horizontalPadding(for: layoutMode))
             .padding(.vertical, SettingsGridMetrics.verticalPadding)
             .frame(maxWidth: .infinity, alignment: .top)
         }
@@ -108,7 +109,7 @@ public struct SourcesView: View {
             }
           }
           .frame(maxWidth: SettingsGridMetrics.maximumWidth, alignment: .leading)
-          .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+          .padding(.horizontal, SettingsGridMetrics.horizontalPadding(for: layoutMode))
           .padding(.vertical, SettingsGridMetrics.verticalPadding)
           .frame(maxWidth: .infinity, alignment: .center)
         }

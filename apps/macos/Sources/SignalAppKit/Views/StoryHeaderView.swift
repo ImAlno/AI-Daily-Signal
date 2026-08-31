@@ -38,8 +38,12 @@ public struct StoryHeaderPresentation: Sendable, Equatable {
   public var chevronSystemImage: String { isExpanded ? "chevron.down" : "chevron.right" }
   public var accessibilityLabel: String { row.accessibilitySummary }
   public var accessibilityValue: String { isExpanded ? "Expanded" : "Collapsed" }
-  public var emphasizesSignalLine: Bool { isExpanded || isHovered }
-  public var signalRailOpacity: Double { emphasizesSignalLine ? 1 : 0.58 }
+  public var emphasizesSignalLine: Bool { isExpanded }
+  public var signalRailOpacity: Double {
+    if isExpanded { return 1 }
+    if isHovered { return 0.78 }
+    return 0.58
+  }
 
   public var accessibilityPresentation: StoryHeaderAccessibilityPresentation {
     if isExpanded {
@@ -159,9 +163,9 @@ public struct StoryHeaderView: View {
 
   @ViewBuilder
   private var unrankedSelectionIndicator: some View {
-    if presentation.row.rank == nil, presentation.emphasizesSignalLine {
+    if presentation.row.rank == nil, presentation.isExpanded || presentation.isHovered {
       Rectangle()
-        .fill(Color.accentColor)
+        .fill(signalLineColor)
         .frame(width: 2, height: presentation.isExpanded ? 44 : 28)
         .opacity(presentation.signalRailOpacity)
         .accessibilityHidden(true)
@@ -252,17 +256,25 @@ public struct StoryHeaderView: View {
     VStack(spacing: 5) {
       Text(String(format: "%02d", rank))
         .font(.system(size: rankSize, weight: .medium, design: .monospaced))
-        .foregroundStyle(.tint)
+        .foregroundStyle(signalRankColor)
       Rectangle()
-        .fill(
-          presentation.emphasizesSignalLine
-            ? Color.accentColor
-            : Color(nsColor: .separatorColor)
-        )
+        .fill(signalLineColor)
         .frame(width: 1, height: presentation.isExpanded ? 52 : 36)
     }
     .opacity(presentation.signalRailOpacity)
     .frame(width: StoryRowMetrics.rankWidth)
     .accessibilityHidden(true)
+  }
+
+  private var signalLineColor: Color {
+    if presentation.emphasizesSignalLine { return .accentColor }
+    if presentation.isHovered { return Color(nsColor: .secondaryLabelColor) }
+    return Color(nsColor: .separatorColor)
+  }
+
+  private var signalRankColor: Color {
+    presentation.emphasizesSignalLine
+      ? .accentColor
+      : Color(nsColor: .secondaryLabelColor)
   }
 }
