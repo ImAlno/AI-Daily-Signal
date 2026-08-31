@@ -154,7 +154,8 @@ struct AccessibilityPolicyTests {
 
 private func preferencesViewSource() throws -> String {
   let testFile = URL(fileURLWithPath: #filePath)
-  let preferencesView = testFile
+  let preferencesView =
+    testFile
     .deletingLastPathComponent()
     .deletingLastPathComponent()
     .deletingLastPathComponent()

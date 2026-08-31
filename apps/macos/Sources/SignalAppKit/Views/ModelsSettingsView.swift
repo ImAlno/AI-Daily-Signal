@@ -230,8 +230,8 @@ public struct ModelsSettingsView: View {
         .font(.subheadline)
         .foregroundStyle(.secondary)
       Text(presentation.readinessText)
-      .font(.caption)
-      .foregroundStyle(.secondary)
+        .font(.caption)
+        .foregroundStyle(.secondary)
       DisclosureGroup("Connection and limits") {
         VStack(alignment: .leading, spacing: 4) {
           Text(presentation.advancedMetadata)

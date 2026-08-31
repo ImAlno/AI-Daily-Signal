@@ -187,9 +187,9 @@ public struct SourcesView: View {
         .foregroundStyle(.secondary)
         .lineLimit(textPresentation.metadataLineLimit)
       Text(presentation.tertiaryText)
-      .font(.caption)
-      .foregroundStyle(.secondary)
-      .lineLimit(textPresentation.metadataLineLimit)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(textPresentation.metadataLineLimit)
       if let error = model.sourceActionError(for: source.id) {
         Label(error, systemImage: "exclamationmark.circle")
           .font(.caption)
