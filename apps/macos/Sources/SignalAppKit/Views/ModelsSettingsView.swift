@@ -76,11 +76,8 @@ public struct ModelsSettingsView: View {
   public var body: some View {
     VStack(spacing: 0) {
       if model.inlineEditorRoute == .addModel {
-        ScrollView {
+        SettingsEditorLayout {
           ModelProfileEditorView(model: model)
-            .padding(.horizontal, SettingsGridMetrics.horizontalPadding(for: layoutMode))
-            .padding(.vertical, SettingsGridMetrics.verticalPadding)
-            .frame(maxWidth: .infinity, alignment: .top)
         }
       } else {
         ScrollView {

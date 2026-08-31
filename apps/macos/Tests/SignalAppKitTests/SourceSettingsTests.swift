@@ -186,12 +186,32 @@ struct SourceSettingsTests {
       origin: .personal
     )
 
-    let value = SourceRowPresentation(source: source)
+    let value = SourceRowPresentation(source: source, locale: Locale(identifier: "en_US_POSIX"))
 
     #expect(value.secondaryText == "Research · example.com")
     #expect(value.tertiaryText == "Weight 0.8 · Personal source")
     #expect(value.directActions == [.toggleEnabled])
     #expect(value.overflowActions == [.remove])
+  }
+
+  @Test
+  func sourceRowsFormatWeightWithTheInjectedDisplayLocale() {
+    // Break caught: forcing a dot decimal in user-visible metadata regardless of system locale.
+    let source = Source(
+      id: "personal-1",
+      name: "Personal feed",
+      category: "Research",
+      enabled: true,
+      weight: 0.8,
+      feedURL: "https://example.com/feed.xml",
+      origin: .personal
+    )
+
+    let swedish = SourceRowPresentation(source: source, locale: Locale(identifier: "sv_SE"))
+    let posix = SourceRowPresentation(source: source, locale: Locale(identifier: "en_US_POSIX"))
+
+    #expect(swedish.tertiaryText == "Weight 0,8 · Personal source")
+    #expect(posix.tertiaryText == "Weight 0.8 · Personal source")
   }
 
   @Test

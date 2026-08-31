@@ -15,7 +15,7 @@ public struct SourceRowPresentation: Sendable, Equatable {
   public let overflowActions: [SourceSettingsAction]
   public let requiresRemovalConfirmation: Bool
 
-  public init(source: Source) {
+  public init(source: Source, locale: Locale = .current) {
     displayHost = URLComponents(string: source.feedURL)?.host ?? "Feed address unavailable"
     secondaryText = "\(source.category) · \(displayHost)"
     switch source.origin {
@@ -31,7 +31,7 @@ public struct SourceRowPresentation: Sendable, Equatable {
       requiresRemovalConfirmation = true
     }
     tertiaryText =
-      "Weight \(source.weight.formatted(.number.locale(Locale(identifier: "en_US_POSIX")).precision(.fractionLength(0...2)))) · \(originLabel)"
+      "Weight \(source.weight.formatted(.number.locale(locale).precision(.fractionLength(0...2)))) · \(originLabel)"
   }
 }
 
@@ -55,6 +55,7 @@ public struct SourcesView: View {
   @State private var pendingRemoval: Source?
   @Environment(\.dynamicTypeSize) private var dynamicTypeSize
   @Environment(\.appLayoutMode) private var layoutMode
+  @Environment(\.locale) private var locale
 
   public init(model: AppModel) {
     self.model = model
@@ -67,11 +68,8 @@ public struct SourcesView: View {
 
     VStack(spacing: 0) {
       if model.inlineEditorRoute == .addSource {
-        ScrollView {
+        SettingsEditorLayout {
           SourceEditorView(model: model)
-            .padding(.horizontal, SettingsGridMetrics.horizontalPadding(for: layoutMode))
-            .padding(.vertical, SettingsGridMetrics.verticalPadding)
-            .frame(maxWidth: .infinity, alignment: .top)
         }
       } else {
         ScrollView {
@@ -159,7 +157,7 @@ public struct SourcesView: View {
 
   @ViewBuilder
   private func sourceRow(_ source: Source) -> some View {
-    let presentation = SourceRowPresentation(source: source)
+    let presentation = SourceRowPresentation(source: source, locale: locale)
     let isBusy = sourceIsBusy(source.id)
 
     ViewThatFits(in: .horizontal) {

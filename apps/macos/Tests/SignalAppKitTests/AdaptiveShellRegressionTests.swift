@@ -46,7 +46,7 @@ struct AdaptiveShellRegressionTests {
 
   @Test @MainActor
   func settingsGuttersFollowCompactAndRailShellModesAtTheirBoundaries() async throws {
-    // Break caught: settings pages retaining the expanded 28-point gutter in narrower shells.
+    // Break caught: any settings destination retaining the expanded 28-point gutter in narrower shells.
     let boundaries: [(mode: AppLayoutMode, detailWidth: CGFloat, padding: CGFloat)] = [
       (.compact, ReadingColumnMetrics.minimumWindowWidth, 18),
       (
@@ -57,28 +57,53 @@ struct AdaptiveShellRegressionTests {
       ),
     ]
 
-    for boundary in boundaries {
-      let model = AppModel(
-        bridge: FakeBridgeClient(snapshot: .fixture),
-        preferences: MemoryAppPreferences(welcomeCompleted: true)
-      )
-      await model.start()
-      let hosted = host(
-        AnyView(
-          ReadingDestinationLayout(mode: boundary.mode) {
-            SourcesView(model: model)
-          }
-        ),
-        size: NSSize(width: boundary.detailWidth, height: 620)
-      )
-      let rowControl = try #require(
-        descendants(of: NSControl.self, in: hosted).first { control in
-          control.frame.width < 80 && control.frame.height < 80
-        }
-      )
-      let controlFrame = rowControl.convert(rowControl.bounds, to: hosted)
+    let baseModel = AppModel(
+      bridge: FakeBridgeClient(snapshot: .fixture),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await baseModel.start()
+    let sourceEditorModel = AppModel(
+      bridge: FakeBridgeClient(snapshot: .fixture),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    sourceEditorModel.presentSourceEditor()
+    let modelEditorModel = AppModel(
+      bridge: FakeBridgeClient(snapshot: .fixture),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    modelEditorModel.presentModelEditor()
+    let destinations: [(name: String, view: AnyView)] = [
+      ("Sources", AnyView(SourcesView(model: baseModel))),
+      ("Models", AnyView(ModelsSettingsView(model: baseModel))),
+      ("Preferences", AnyView(SettingsView(model: baseModel))),
+      ("Source editor", AnyView(SourcesView(model: sourceEditorModel))),
+      ("Model editor", AnyView(ModelsSettingsView(model: modelEditorModel))),
+    ]
 
-      #expect(abs(hosted.bounds.maxX - controlFrame.maxX - boundary.padding) < 1)
+    for boundary in boundaries {
+      for destination in destinations {
+        let hosted = host(
+          AnyView(
+            ReadingDestinationLayout(mode: boundary.mode) {
+              destination.view
+            }
+          ),
+          size: NSSize(width: boundary.detailWidth, height: 620)
+        )
+        if let bitmap = hosted.bitmapImageRepForCachingDisplay(in: hosted.bounds) {
+          hosted.cacheDisplay(in: hosted.bounds, to: bitmap)
+        }
+        let alignedDivider = descendantLayers(of: try #require(hosted.layer)).first {
+          ($0.backgroundColor?.alpha ?? 0) > 0
+            && $0.frame.height <= 1
+            && abs($0.frame.minX - boundary.padding) < 1
+            && abs($0.frame.width - (boundary.detailWidth - (2 * boundary.padding))) < 1
+        }
+        #expect(
+          alignedDivider != nil,
+          "\(destination.name) must render structure on the \(boundary.padding)-point settings grid"
+        )
+      }
     }
   }
 
@@ -273,10 +298,31 @@ struct AdaptiveShellRegressionTests {
       String(describing: type(of: $0)).contains("KeyViewProxy")
     }
     let selectedTarget = try #require(targets.first)
+    let unselectedTarget = try #require(targets.dropFirst().first)
     let layers = descendantLayers(of: try #require(sidebar.layer))
+    let visibleSelectionIndicators = layers.filter {
+      ($0.backgroundColor?.alpha ?? 0) > 0
+        && abs($0.frame.width - 2) < 0.5
+        && abs($0.frame.height - 18) < 0.5
+    }
 
     #expect(selectedPresentation.accessibilityTraits.contains(.isSelected))
     #expect(!unselectedPresentation.accessibilityTraits.contains(.isSelected))
+    #expect(selectedTarget.frame.size == NSSize(width: 36, height: 36))
+    #expect(
+      visibleSelectionIndicators.contains {
+        abs($0.frame.minX - selectedTarget.frame.minX) < 1
+          && abs($0.frame.midY - selectedTarget.frame.midY) < 1
+      },
+      "The selected 36 by 36 rail target needs a visible 2 by 18 indicator"
+    )
+    #expect(
+      !visibleSelectionIndicators.contains {
+        abs($0.frame.minX - unselectedTarget.frame.minX) < 1
+          && abs($0.frame.midY - unselectedTarget.frame.midY) < 1
+      },
+      "Unselected rail targets must not show the selection indicator"
+    )
     #expect(
       !layers.contains {
         $0.frame.equalTo(selectedTarget.frame)

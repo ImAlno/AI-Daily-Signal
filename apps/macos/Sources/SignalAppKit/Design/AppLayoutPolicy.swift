@@ -52,6 +52,32 @@ public enum SettingsGridMetrics {
   }
 }
 
+struct SettingsEditorLayout<Content: View>: View {
+  @Environment(\.appLayoutMode) private var layoutMode
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    GeometryReader { geometry in
+      let horizontalPadding = SettingsGridMetrics.horizontalPadding(for: layoutMode)
+      let contentWidth = min(
+        SettingsGridMetrics.maximumWidth,
+        max(0, geometry.size.width - (2 * horizontalPadding))
+      )
+
+      ScrollView {
+        content()
+          .frame(width: contentWidth, alignment: .topLeading)
+          .padding(.vertical, SettingsGridMetrics.verticalPadding)
+          .frame(maxWidth: .infinity, alignment: .top)
+      }
+      .overlay(alignment: .top) {
+        Divider()
+          .padding(.horizontal, horizontalPadding)
+      }
+    }
+  }
+}
+
 public enum StoryRowMetrics {
   public static let horizontalPadding: CGFloat = 12
   public static let rankWidth: CGFloat = 28
