@@ -40,6 +40,25 @@ public enum ReadingColumnMetrics {
   }
 }
 
+public enum SettingsGridMetrics {
+  public static let maximumWidth: CGFloat = ReadingColumnMetrics.maximumWidth
+  public static let horizontalPadding: CGFloat = 28
+  public static let verticalPadding: CGFloat = 20
+  public static let headerBottomSpacing: CGFloat = 14
+  public static let sectionSpacing: CGFloat = 16
+  public static let rowVerticalPadding: CGFloat = 9
+}
+
+public enum StoryRowMetrics {
+  public static let horizontalPadding: CGFloat = 12
+  public static let rankWidth: CGFloat = 28
+  public static let columnSpacing: CGFloat = 12
+
+  public static func expandedContentLeadingPadding(hasRank: Bool) -> CGFloat {
+    horizontalPadding + (hasRank ? rankWidth + columnSpacing : 0)
+  }
+}
+
 private struct AppLayoutModeEnvironmentKey: EnvironmentKey {
   static let defaultValue = AppLayoutMode.compact
 }

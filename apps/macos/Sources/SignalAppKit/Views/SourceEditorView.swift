@@ -158,10 +158,10 @@ public struct SourceEditorView: View, CustomDebugStringConvertible, CustomReflec
       }
 
       sourceForm(presentation: presentation)
-        .formStyle(.grouped)
+        .formStyle(.columns)
         .disabled(isSaving)
     }
-    .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
+    .frame(maxWidth: SettingsGridMetrics.maximumWidth, alignment: .leading)
     .task {
       focusedField = .name
     }

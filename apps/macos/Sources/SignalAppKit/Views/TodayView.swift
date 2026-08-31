@@ -103,10 +103,10 @@ public struct TodayView: View {
             )
             ForEach(presentation.sections) { section in
               Text(section.title)
-                .font(.caption.weight(.semibold))
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
-                .padding(.top, 12)
-                .padding(.bottom, 6)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
                 .accessibilityAddTraits(.isHeader)
               ForEach(section.rows) { row in
                 SignalDisclosureView(presentation: row, model: model)
@@ -115,7 +115,7 @@ public struct TodayView: View {
           }
           .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
           .padding(.horizontal, ReadingColumnMetrics.horizontalPadding(for: layoutMode))
-          .padding(.vertical, 30)
+          .padding(.vertical, 22)
           .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(Color(nsColor: .textBackgroundColor))

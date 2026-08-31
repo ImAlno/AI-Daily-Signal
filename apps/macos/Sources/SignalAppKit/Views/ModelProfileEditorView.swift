@@ -257,10 +257,10 @@ public struct ModelProfileEditorView: View {
       }
 
       modelForm(presentation: presentation, renderPlan: renderPlan)
-        .formStyle(.grouped)
+        .formStyle(.columns)
         .disabled(isSaving)
     }
-    .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
+    .frame(maxWidth: SettingsGridMetrics.maximumWidth, alignment: .leading)
     .onChange(of: draft.validationMessage) { _, _ in
       revealsValidation = true
     }

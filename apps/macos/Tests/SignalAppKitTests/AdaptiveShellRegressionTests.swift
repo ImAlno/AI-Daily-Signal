@@ -107,7 +107,41 @@ struct AdaptiveShellRegressionTests {
     let whyItMattersFrame = whyItMatters.convert(whyItMatters.bounds, to: expanded)
     #expect(titleFrame.minY < whatHappenedFrame.minY)
     #expect(whatHappenedFrame.minY < whyItMattersFrame.minY)
+    #expect(abs(titleFrame.minX - whatHappenedFrame.minX) < 1)
     #expect(collapseControl.frame.width < collapsedControl.frame.width)
+
+    let expandedLayers = descendantLayers(of: try #require(expanded.layer))
+    #expect(
+      !expandedLayers.contains {
+        $0.cornerRadius >= 6
+          && ($0.backgroundColor?.alpha ?? 0) > 0
+          && $0.frame.width > 300
+          && $0.frame.height > 30
+      },
+      "Expanded reading content must remain inline instead of gaining a rounded story card"
+    )
+
+    let unrankedRow = StoryRowPresentation(
+      story: .fixture,
+      primarySource: "Example",
+      relativeTime: "now",
+      isStale: false,
+      rank: nil,
+      summarySelection: .ai(variantID: "variant-1")
+    )
+    let unranked = host(
+      AnyView(SignalDisclosureView(presentation: unrankedRow, model: model)),
+      size: NSSize(width: 680, height: 620)
+    )
+    let unrankedLayers = descendantLayers(of: try #require(unranked.layer))
+    #expect(
+      unrankedLayers.contains {
+        ($0.backgroundColor?.alpha ?? 0) > 0
+          && $0.frame.width <= 3
+          && $0.frame.height >= 20
+      },
+      "Expanded unranked stories need a thin signal indicator instead of a card"
+    )
   }
 
   @Test @MainActor
@@ -167,7 +201,7 @@ struct AdaptiveShellRegressionTests {
 
   @Test @MainActor
   func railNavigationMakesTheCurrentDestinationVisiblySelected() throws {
-    // Break caught: rendering the active rail item as an icon tint only, without a selected surface.
+    // Break caught: returning the active rail item to a prominent rounded selection tile.
     let model = AppModel(
       bridge: FakeBridgeClient(snapshot: .fixture),
       preferences: MemoryAppPreferences(welcomeCompleted: true)
@@ -201,24 +235,51 @@ struct AdaptiveShellRegressionTests {
       String(describing: type(of: $0)).contains("KeyViewProxy")
     }
     let selectedTarget = try #require(targets.first)
-    let unselectedTarget = try #require(targets.dropFirst().first)
     let layers = descendantLayers(of: try #require(sidebar.layer))
-    let selectionSurface = try #require(
-      layers.first {
-        $0.frame.equalTo(selectedTarget.frame)
-          && ($0.backgroundColor?.alpha ?? 0) > 0
-      }
-    )
 
     #expect(selectedPresentation.accessibilityTraits.contains(.isSelected))
     #expect(!unselectedPresentation.accessibilityTraits.contains(.isSelected))
-    #expect(selectionSurface.cornerRadius == 7)
     #expect(
       !layers.contains {
-        $0.frame.equalTo(unselectedTarget.frame)
+        $0.frame.equalTo(selectedTarget.frame)
           && ($0.backgroundColor?.alpha ?? 0) > 0
-      }
+      },
+      "Rail selection must not fill the full 36 by 36 hit target"
     )
+  }
+
+  @Test @MainActor
+  func settingsPagesUseContinuousRowStacksInsteadOfInsetOrGroupedContainers() async {
+    // Break caught: restoring inset List or grouped Form containers beneath aligned page headers.
+    let model = AppModel(
+      bridge: FakeBridgeClient(snapshot: .fixture),
+      preferences: MemoryAppPreferences(welcomeCompleted: true)
+    )
+    await model.start()
+
+    let pages: [(title: String, view: AnyView)] = [
+      ("Sources", AnyView(SourcesView(model: model))),
+      ("Models", AnyView(ModelsSettingsView(model: model))),
+      ("Preferences", AnyView(SettingsView(model: model))),
+    ]
+
+    for page in pages {
+      let hosted = host(page.view, size: NSSize(width: 680, height: 620))
+      #expect(
+        descendants(of: NSTableView.self, in: hosted).isEmpty,
+        "\(page.title) must not use an inset table-backed composition"
+      )
+      let roundedContainers = descendantLayers(of: hosted.layer ?? CALayer()).filter {
+        $0.cornerRadius >= 6
+          && ($0.backgroundColor?.alpha ?? 0) > 0
+          && $0.frame.width > 180
+          && $0.frame.height > 30
+      }
+      #expect(
+        roundedContainers.isEmpty,
+        "\(page.title) must not use prominent grouped-card containers"
+      )
+    }
   }
 
   @Test
@@ -238,6 +299,7 @@ struct AdaptiveShellRegressionTests {
 @MainActor
 private func host(_ view: AnyView, size: NSSize) -> NSHostingView<AnyView> {
   let hostingView = NSHostingView(rootView: view)
+  hostingView.wantsLayer = true
   hostingView.frame = NSRect(origin: .zero, size: size)
   hostingView.layoutSubtreeIfNeeded()
   settleLayout()

@@ -95,10 +95,11 @@ public struct AppNavigationView: View {
               .frame(width: 36, height: 36)
           }
           .buttonStyle(.plain)
-          .background {
+          .overlay(alignment: .leading) {
             if presentation.isSelected {
-              RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
+              Capsule()
+                .fill(Color.accentColor)
+                .frame(width: 2, height: 18)
             }
           }
           .foregroundStyle(

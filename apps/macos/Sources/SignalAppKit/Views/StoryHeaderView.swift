@@ -40,7 +40,6 @@ public struct StoryHeaderPresentation: Sendable, Equatable {
   public var accessibilityValue: String { isExpanded ? "Expanded" : "Collapsed" }
   public var emphasizesSignalLine: Bool { isExpanded || isHovered }
   public var signalRailOpacity: Double { emphasizesSignalLine ? 1 : 0.58 }
-  public var showsSelectionSurface: Bool { isExpanded || isHovered }
 
   public var accessibilityPresentation: StoryHeaderAccessibilityPresentation {
     if isExpanded {
@@ -95,13 +94,13 @@ public struct StoryHeaderView: View {
         headerLayout(accessibility: nil) {
           disclosureImage
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.horizontal, StoryRowMetrics.horizontalPadding)
+        .padding(.vertical, 7)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background { selectionSurface }
+      .overlay(alignment: .leading) { unrankedSelectionIndicator }
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(label)
       .accessibilityValue(value)
@@ -117,10 +116,10 @@ public struct StoryHeaderView: View {
         .accessibilityHint(accessibility.collapseHint)
         .accessibilitySortPriority(accessibility.statusSortPriority)
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 12)
+      .padding(.horizontal, StoryRowMetrics.horizontalPadding)
+      .padding(.vertical, 10)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background { selectionSurface }
+      .overlay(alignment: .leading) { unrankedSelectionIndicator }
       .accessibilityElement(children: .contain)
     }
   }
@@ -129,7 +128,7 @@ public struct StoryHeaderView: View {
     accessibility: ExpandedStoryHeaderAccessibility?,
     @ViewBuilder trailing: () -> Trailing
   ) -> some View {
-    HStack(alignment: .top, spacing: 12) {
+    HStack(alignment: .top, spacing: StoryRowMetrics.columnSpacing) {
       if let rank = presentation.row.rank {
         rankRail(rank)
       }
@@ -147,14 +146,6 @@ public struct StoryHeaderView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  @ViewBuilder
-  private var selectionSurface: some View {
-    if presentation.showsSelectionSurface {
-      RoundedRectangle(cornerRadius: 7, style: .continuous)
-        .fill(Color(nsColor: .unemphasizedSelectedContentBackgroundColor))
-    }
-  }
-
   private var disclosureImage: some View {
     Image(systemName: presentation.chevronSystemImage)
       .font(.system(size: rankSize, weight: .semibold))
@@ -164,6 +155,17 @@ public struct StoryHeaderView: View {
         height: VisualPolicy().minimumControlDimension
       )
       .accessibilityHidden(true)
+  }
+
+  @ViewBuilder
+  private var unrankedSelectionIndicator: some View {
+    if presentation.row.rank == nil, presentation.emphasizesSignalLine {
+      Rectangle()
+        .fill(Color.accentColor)
+        .frame(width: 2, height: presentation.isExpanded ? 44 : 28)
+        .opacity(presentation.signalRailOpacity)
+        .accessibilityHidden(true)
+    }
   }
 
   @ViewBuilder
@@ -260,7 +262,7 @@ public struct StoryHeaderView: View {
         .frame(width: 1, height: presentation.isExpanded ? 52 : 36)
     }
     .opacity(presentation.signalRailOpacity)
-    .frame(width: 28)
+    .frame(width: StoryRowMetrics.rankWidth)
     .accessibilityHidden(true)
   }
 }

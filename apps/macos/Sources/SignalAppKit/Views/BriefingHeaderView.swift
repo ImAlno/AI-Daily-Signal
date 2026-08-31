@@ -44,6 +44,6 @@ public struct BriefingHeaderView: View {
         .foregroundStyle(.secondary)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.bottom, 16)
+    .padding(.bottom, 12)
   }
 }

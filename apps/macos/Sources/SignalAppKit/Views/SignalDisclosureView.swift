@@ -45,12 +45,20 @@ public struct SignalDisclosureView: View {
 
       if disclosure.isExpanded, let story = model.story(id: presentation.storyID) {
         SummaryVariantPicker(story: story, model: model)
-          .padding(.horizontal, 12)
-          .padding(.top, 8)
+          .padding(
+            .leading,
+            StoryRowMetrics.expandedContentLeadingPadding(hasRank: presentation.rank != nil)
+          )
+          .padding(.trailing, StoryRowMetrics.horizontalPadding)
+          .padding(.top, 6)
         ExpandedStoryView(story: story, model: model)
-          .padding(.horizontal, 12)
-          .padding(.top, 18)
-          .padding(.bottom, 22)
+          .padding(
+            .leading,
+            StoryRowMetrics.expandedContentLeadingPadding(hasRank: presentation.rank != nil)
+          )
+          .padding(.trailing, StoryRowMetrics.horizontalPadding)
+          .padding(.top, 14)
+          .padding(.bottom, 18)
       }
       Divider()
     }

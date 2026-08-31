@@ -172,8 +172,6 @@ struct ReadingFlowTests {
     #expect(hovered.emphasizesSignalLine)
     #expect(collapsed.signalRailOpacity < expanded.signalRailOpacity)
     #expect(hovered.signalRailOpacity == expanded.signalRailOpacity)
-    #expect(!collapsed.showsSelectionSurface)
-    #expect(expanded.showsSelectionSurface)
     #expect(collapsed.titleLineLimit == 3)
     #expect(expanded.titleLineLimit == nil)
 

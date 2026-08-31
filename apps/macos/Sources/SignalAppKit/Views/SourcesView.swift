@@ -66,47 +66,51 @@ public struct SourcesView: View {
 
     VStack(spacing: 0) {
       if model.inlineEditorRoute == .addSource {
-        SourceEditorView(model: model)
-          .padding(.horizontal, 28)
-          .padding(.vertical, 24)
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        ScrollView {
+          SourceEditorView(model: model)
+            .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+            .padding(.vertical, SettingsGridMetrics.verticalPadding)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
       } else {
-        VStack(spacing: 0) {
-          SettingsPageHeaderView(
-            title: "Sources",
-            message: "Choose which feeds contribute to future briefings."
-          )
-          .padding(.horizontal, 28)
-          .padding(.vertical, 20)
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 0) {
+            SettingsPageHeaderView(
+              title: "Sources",
+              message: "Choose which feeds contribute to future briefings."
+            )
+            .padding(.bottom, SettingsGridMetrics.headerBottomSpacing)
 
-          List {
-            Section("Standard Sources") {
-              if standard.isEmpty {
-                sourceEmptyRow(
-                  "No standard sources",
-                  detail: "Build a briefing to initialize the standard source set."
-                )
-              } else {
-                ForEach(standard) { source in
-                  sourceRow(source)
-                }
+            settingsSectionLabel("Standard Sources")
+            if standard.isEmpty {
+              sourceEmptyRow(
+                "No standard sources",
+                detail: "Build a briefing to initialize the standard source set."
+              )
+            } else {
+              ForEach(standard) { source in
+                sourceRow(source)
+                Divider()
               }
             }
 
-            Section("Personal Sources") {
-              if personal.isEmpty {
-                sourceEmptyRow(
-                  "No personal sources",
-                  detail: "Add an RSS or Atom feed to include it in future briefings."
-                )
-              } else {
-                ForEach(personal) { source in
-                  sourceRow(source)
-                }
+            settingsSectionLabel("Personal Sources")
+            if personal.isEmpty {
+              sourceEmptyRow(
+                "No personal sources",
+                detail: "Add an RSS or Atom feed to include it in future briefings."
+              )
+            } else {
+              ForEach(personal) { source in
+                sourceRow(source)
+                Divider()
               }
             }
           }
-          .listStyle(.inset)
+          .frame(maxWidth: SettingsGridMetrics.maximumWidth, alignment: .leading)
+          .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+          .padding(.vertical, SettingsGridMetrics.verticalPadding)
+          .frame(maxWidth: .infinity, alignment: .center)
         }
       }
     }
@@ -169,8 +173,17 @@ public struct SourcesView: View {
           .frame(maxWidth: .infinity, alignment: .trailing)
       }
     }
-    .padding(.vertical, 5)
+    .padding(.vertical, SettingsGridMetrics.rowVerticalPadding)
     .accessibilityElement(children: .contain)
+  }
+
+  private func settingsSectionLabel(_ title: String) -> some View {
+    Text(title)
+      .font(.caption.weight(.medium))
+      .foregroundStyle(.secondary)
+      .padding(.top, SettingsGridMetrics.sectionSpacing)
+      .padding(.bottom, 5)
+      .accessibilityAddTraits(.isHeader)
   }
 
   private func sourceInformation(
@@ -269,6 +282,6 @@ public struct SourcesView: View {
       Image(systemName: "dot.radiowaves.left.and.right")
         .foregroundStyle(.secondary)
     }
-    .padding(.vertical, 6)
+    .padding(.vertical, SettingsGridMetrics.rowVerticalPadding)
   }
 }

@@ -24,24 +24,48 @@ public struct SettingsView: View {
     let presentation = PreferencesPresentation(
       hasUsableAIProfile: model.snapshot?.hasUsableAIProfile == true
     )
-    VStack(spacing: 0) {
-      SettingsPageHeaderView(title: presentation.title, message: presentation.guidance)
-        .padding(.horizontal, 28)
-        .padding(.vertical, 20)
+    ScrollView {
+      LazyVStack(alignment: .leading, spacing: 0) {
+        SettingsPageHeaderView(title: presentation.title, message: presentation.guidance)
+          .padding(.bottom, SettingsGridMetrics.headerBottomSpacing)
 
-      Form {
-        Section("Briefing") {
-          LabeledContent("Storage", value: presentation.storage)
-          LabeledContent("AI summaries", value: presentation.aiSummaries)
+        settingsSection("Briefing") {
+          settingsRow("Storage", value: presentation.storage)
+          settingsRow("AI summaries", value: presentation.aiSummaries)
         }
-        Section("Companion") {
-          LabeledContent("Launch behavior", value: presentation.launchBehavior)
-          LabeledContent("CLI", value: presentation.cliCompatibility)
+        settingsSection("Companion") {
+          settingsRow("Launch behavior", value: presentation.launchBehavior)
+          settingsRow("CLI", value: presentation.cliCompatibility)
         }
       }
-      .formStyle(.grouped)
+      .frame(maxWidth: SettingsGridMetrics.maximumWidth, alignment: .leading)
+      .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+      .padding(.vertical, SettingsGridMetrics.verticalPadding)
+      .frame(maxWidth: .infinity, alignment: .center)
     }
-    .frame(maxWidth: ReadingColumnMetrics.maximumWidth)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .background(Color(nsColor: .textBackgroundColor))
+  }
+
+  private func settingsSection<Content: View>(
+    _ title: String,
+    @ViewBuilder content: () -> Content
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Text(title)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+        .padding(.top, SettingsGridMetrics.sectionSpacing)
+        .padding(.bottom, 5)
+        .accessibilityAddTraits(.isHeader)
+      content()
+    }
+  }
+
+  private func settingsRow(_ title: String, value: String) -> some View {
+    VStack(spacing: 0) {
+      LabeledContent(title, value: value)
+        .padding(.vertical, SettingsGridMetrics.rowVerticalPadding)
+      Divider()
+    }
   }
 }

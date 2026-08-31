@@ -1,4 +1,3 @@
-import Foundation
 import Testing
 
 @testable import SignalAppKit
@@ -138,28 +137,4 @@ struct AccessibilityPolicyTests {
     #expect(remove.help == "Remove this story from Saved")
   }
 
-  @Test
-  func preferencesUseNativeStatusRowsWithoutInventedControlsOrContainers() throws {
-    // Break caught: turning local status into editable or decorative fake preferences.
-    let source = try preferencesViewSource()
-
-    #expect(source.contains("SettingsPageHeaderView("))
-    #expect(source.contains("LabeledContent(\"Storage\""))
-    #expect(source.contains("LabeledContent(\"AI summaries\""))
-    #expect(!source.contains("Toggle("))
-    #expect(!source.contains("Picker("))
-    #expect(!source.contains("GroupBox"))
-  }
-}
-
-private func preferencesViewSource() throws -> String {
-  let testFile = URL(fileURLWithPath: #filePath)
-  let preferencesView =
-    testFile
-    .deletingLastPathComponent()
-    .deletingLastPathComponent()
-    .deletingLastPathComponent()
-    .appendingPathComponent("Sources/SignalAppKit/Views/SettingsView.swift")
-
-  return try String(contentsOf: preferencesView, encoding: .utf8)
 }

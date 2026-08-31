@@ -108,7 +108,7 @@ public struct StoryListView: View {
           }
           .frame(maxWidth: ReadingColumnMetrics.maximumWidth, alignment: .leading)
           .padding(.horizontal, ReadingColumnMetrics.horizontalPadding(for: layoutMode))
-          .padding(.vertical, 30)
+          .padding(.vertical, 22)
           .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(Color(nsColor: .textBackgroundColor))

@@ -75,20 +75,27 @@ public struct ModelsSettingsView: View {
   public var body: some View {
     VStack(spacing: 0) {
       if model.inlineEditorRoute == .addModel {
-        ModelProfileEditorView(model: model)
-          .padding(.horizontal, 28)
-          .padding(.vertical, 24)
-          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        ScrollView {
+          ModelProfileEditorView(model: model)
+            .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+            .padding(.vertical, SettingsGridMetrics.verticalPadding)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
       } else {
-        VStack(spacing: 0) {
-          SettingsPageHeaderView(
-            title: "Models",
-            message: "Choose which provider creates optional AI summaries."
-          )
-          .padding(.horizontal, 28)
-          .padding(.vertical, 20)
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 0) {
+            SettingsPageHeaderView(
+              title: "Models",
+              message: "Choose which provider creates optional AI summaries."
+            )
+            .padding(.bottom, SettingsGridMetrics.headerBottomSpacing)
 
-          modelList
+            modelList
+          }
+          .frame(maxWidth: SettingsGridMetrics.maximumWidth, alignment: .leading)
+          .padding(.horizontal, SettingsGridMetrics.horizontalPadding)
+          .padding(.vertical, SettingsGridMetrics.verticalPadding)
+          .frame(maxWidth: .infinity, alignment: .center)
         }
       }
     }
@@ -146,30 +153,28 @@ public struct ModelsSettingsView: View {
   }
 
   private var modelList: some View {
-    List {
-      Section {
-        let profiles = model.snapshot?.modelProfiles ?? []
-        if profiles.isEmpty {
-          Label {
-            VStack(alignment: .leading, spacing: 3) {
-              Text("No model profiles")
-              Text("Raw and Smart summaries remain available without AI.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-          } icon: {
-            Image(systemName: "cpu")
+    let profiles = model.snapshot?.modelProfiles ?? []
+    return VStack(alignment: .leading, spacing: 0) {
+      if profiles.isEmpty {
+        Label {
+          VStack(alignment: .leading, spacing: 3) {
+            Text("No model profiles")
+            Text("Raw and Smart summaries remain available without AI.")
+              .font(.caption)
               .foregroundStyle(.secondary)
           }
-          .padding(.vertical, 6)
-        } else {
-          ForEach(profiles) { profile in
-            profileRow(profile)
-          }
+        } icon: {
+          Image(systemName: "cpu")
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, SettingsGridMetrics.rowVerticalPadding)
+      } else {
+        ForEach(profiles) { profile in
+          profileRow(profile)
+          Divider()
         }
       }
     }
-    .listStyle(.inset)
   }
 
   private var testConfirmation: Binding<Bool> {
@@ -209,7 +214,7 @@ public struct ModelsSettingsView: View {
           .frame(maxWidth: .infinity, alignment: .trailing)
       }
     }
-    .padding(.vertical, 5)
+    .padding(.vertical, SettingsGridMetrics.rowVerticalPadding)
   }
 
   private func profileInformation(
